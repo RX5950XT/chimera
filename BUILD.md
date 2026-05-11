@@ -42,7 +42,7 @@
 ### 1. 初始化
 
 ```powershell
-git clone https://github.com/chimera-emulator/chimera.git
+git clone https://github.com/RX5950XT/chimera.git
 cd chimera
 git submodule update --init --recursive
 ```
@@ -134,4 +134,4 @@ make -j$(nproc)
 
 ---
 
-*最後更新: 2026-05-09*
+*最後更新: 2026-05-11*
