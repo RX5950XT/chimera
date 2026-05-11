@@ -1,0 +1,3 @@
+[submodule "src/virtualization/qemu"]
+	path = src/virtualization/qemu
+	url = https://android.googlesource.com/platform/external/qemu

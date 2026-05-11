@@ -1,0 +1,53 @@
+{
+  "instance": {
+    "default": {
+      "name": "Pie64",
+      "cpus": 4,
+      "ram": 4096,
+      "dpi": 240,
+      "fb_width": 1920,
+      "fb_height": 1080,
+      "graphics_engine": "angle",
+      "graphics_renderer": "d3d11",
+      "max_fps": 60,
+      "enable_vsync": false,
+      "enable_root_access": false,
+      "game_controls_enabled": true,
+      "enable_notifications": true,
+      "show_sidebar": true,
+      "adb_port": 5555
+    }
+  },
+  "graphics": {
+    "prefer_dedicated_gpu": true,
+    "astc_decoding_mode": "software",
+    "enable_high_fps": false
+  },
+  "input": {
+    "custom_cursor_enabled": true,
+    "gamepad_detection": true,
+    "gamepad_vibration": true,
+    "key_controls_overlay_enabled": true,
+    "key_controls_overlay_opacity": 50
+  },
+  "audio": {
+    "sample_rate": 48000,
+    "channels": 2,
+    "backend": "wasapi"
+  },
+  "network": {
+    "dns_server": "8.8.8.8",
+    "dns_server2": "10.0.2.3",
+    "airplane_mode": false
+  },
+  "shortcuts": {
+    "toggle_fullscreen": "F11",
+    "open_controls_editor": "Ctrl+Shift+A",
+    "open_macro_recorder": "Ctrl+Shift+7",
+    "open_mim": "Ctrl+Shift+8",
+    "take_screenshot": "Ctrl+Shift+S",
+    "record_screen": "Ctrl+Shift+R",
+    "toggle_eco_mode": "Ctrl+Shift+F",
+    "install_apk": "Ctrl+Shift+B"
+  }
+}

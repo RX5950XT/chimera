@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/">
+        <file>ChimeraWindow.qml</file>
+        <file>InputMapperOverlay.qml</file>
+    </qresource>
+</RCC>

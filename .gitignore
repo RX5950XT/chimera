@@ -1,0 +1,86 @@
+/build/
+/out/
+/dist/
+/.vscode/
+/.idea/
+*.user
+*.suo
+*.cache
+compile_commands.json
+
+# QEMU build artifacts
+src/virtualization/qemu/build/
+src/virtualization/qemu/build-*/
+
+# AOSP build artifacts (if built in-tree)
+src/guest/aosp/out/
+
+# Qt build artifacts
+src/host/ui/build/
+*.pro.user
+*.qmlc
+*.jsc
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+
+# FFmpeg / media
+*.mp4
+*.avi
+*.mkv
+
+# IDE
+.vs/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+/tests/e2e/screenshots/
+/tests/e2e/videos/
+/tests/integration/temp/
+
+# Large binaries (should be downloaded, not committed)
+*.img
+*.vdi
+*.vhd
+*.vhdx
+*.qcow2
+*.iso
+*.dll
+*.exe
+*.lib
+
+# Third-party SDKs and tools (downloaded during setup)
+/third_party/android-sdk/
+/third_party/android-avd/
+/third_party/ffmpeg/
+/third_party/angle/bin/
+
+# Runtime data directories
+/instances/
+/recordings/
+/screenshots/
+/tmp/
+
+# Reference docs from reverse engineering (kept in docs/references/)
+# These are research artifacts, not source code
+*.lock
+*.ini.lock
+
+# Backup files
+*.bak
+*.orig
+
+# Log files
+*.log
+*_err.log
+*_out.log
