@@ -4,34 +4,44 @@
 
 ## Current State
 
-**Phase**: 4 (Core Virtualization) — IN PROGRESS  
-**Date**: 2026-05-09  
-**Next**: Memory trim, ANGLE libraries, disk compaction, Hyper-V HCS
+**Phase**: Phase 5a — HCS Framework (Week 1-3)
+**Date**: 2026-05-16
+**Next**: Build cuttlefish AOSP image (WSL2 kernel + dxgkrnl), then verify HCS VM creation with minimal Linux VHDX
+
+### v2 Phase 1 Verification Results (2026-05-16)
+
+- ✅ `chimera-ui.exe --qemu-backend` starts stock QEMU 11.0.50 via `QemuBackend`
+- ✅ QEMU boots Android-x86 9.0 r2 from ISO (`-vga vmware` required, boot=d cdrom)
+- ✅ VNC connection (port 5900) established by `VncFramebufferCapture` with auto-reconnect
+- ✅ QMP connection (port 4444) established; `input-send-event` returns `{'return': {}}`
+- ✅ **QMP mouse click verified**: click at (512,384) woke Android screen from sleep; Android-x86 setup wizard "Hi there" appeared with mouse cursor visible at correct position
+- ✅ Before/after VNC screenshots saved: `qmp_before.png` (black/sleep) → `qmp_after.png` (Android OOBE with cursor)
+- Note: `chimera-base.qcow2` is still empty (32 GiB virtual, no Android installed); boots Live CD only
 
 ### What's Working
 
 - ✅ Android Emulator (`emulator.exe`) boots Android 34 x86_64 via WHPX on this machine
 - ✅ AVD `chimera_dev` created and verified (`sys.boot_completed = 1`)
 - ✅ Full C++ skeleton compiles under MSVC + Qt 6.8.3
-- ✅ 3/3 unit tests passing
+- ✅ 6/6 unit tests passing
 - ✅ CMake build system configured for Visual Studio 2022
-- ✅ **VirtualMachine launches actual `emulator.exe`** with `-no-window -accel on -gpu swiftshader_indirect`
+- ✅ **VirtualMachine launches actual `emulator.exe`** with native visible window by default, `-accel on`, `-gpu host`, `-vsync-rate 60`, and crash-report prompts disabled
 - ✅ **ProcessLauncher::runAsync()** implemented with `CreateProcessW`, pipe redirection, reader threads
-- ✅ **ADB screencap** captures valid PNG frames (1.16MB, `?PNG` header verified)
+- ✅ **Native emulator window embedding** is the primary current display path; gRPC/ADB screencap remains `--stream-capture` fallback
 - ✅ **GuestDisplay** renders QImage with aspect-ratio preservation in Qt Quick
 - ✅ **InputBridge** forwards keyboard/mouse events via ADB `shell input` with worker thread + command queue
 - ✅ **Qt→Android keycode mapping** implemented for alphanumeric, arrows, function keys, modifiers
-- ✅ **End-to-end verified**: `chimera-ui.exe` → InstanceManager → emulator start → ADB boot → screen capture → Qt render
+- ✅ **End-to-end verified**: `chimera-ui.exe` → InstanceManager → emulator start with crash-report prompts disabled → native Win32 emulator window attach → Android 1280x720 / 60Hz
 
 ### Phase 2/2.x Features Completed
 
 - ✅ **Gamepad support**: XInput polling at 60 Hz, button/axis change detection, 14-button mapping to Android keycodes, analog stick → swipe gestures
 - ✅ **Instance persistence**: JSON save/load (`configs/instances.json`), auto-save on create/clone/delete, data directory copy on clone
 - ✅ **Screenshot**: `GuestDisplay::saveScreenshot()`, timestamped PNG files, toolbar button + `Ctrl+Shift+S` shortcut
-- ✅ **InputMapper integration**: `InputMapperOverlay` loads/saves schemes via `InputMapper` JSON, coordinate conversion
-- ✅ **Multi-instance dialog**: QML `Dialog` with instance list, create/start/stop/delete/clone, `QmlInstanceManager` QObject wrapper
+- ✅ **InputMapper integration**: right-side key mapping page plus stream-mode `InputMapperOverlay`, `InputMapper` JSON coordinate conversion
+- ✅ **Multi-instance manager**: right-side panel page with instance list, create/start/stop/delete/clone, `QmlInstanceManager` QObject wrapper
 - ✅ **Macro playback thread**: Background `std::thread` with `sleep_until` timing, loop support, injects via `InputBridge`
-- ✅ **Clone dialog + Macro UI**: Per-instance clone, macro record/play/delete with loop count, toolbar status indicators
+- ✅ **Macro UI**: Right-side panel page for record/play/delete, toolbar status indicators
 
 ### Phase 3 Features Completed
 
@@ -48,25 +58,69 @@
 - ✅ **Disk Compactor**: `DiskCompactor` analyzes instance directory size breakdown, safely removes `cache.img`, `*.log`, `*.tmp`, `*.dmp` files, optional zero-fill free space for host-level sparse file compaction
 - ✅ **ANGLE Libraries**: `libEGL.dll` + `libGLESv2.dll` copied from Chrome 147, verified exports, CMake auto-copies to output directory
 - ✅ **ANGLE Dynamic Loader**: `EglLoader.h` uses `QLibrary` to dynamically load `libEGL.dll` and resolve all core EGL functions at runtime (`eglGetDisplay`, `eglInitialize`, etc.). No import library (.lib) required
-- ✅ **Framebuffer Capture Abstraction**: `FramebufferCapture` base class with `AdbFramebufferCapture` (raw/PNG backends) and `VncFramebufferCapture` (RFB protocol client for future custom QEMU). Replaces inline `AdbScreenCapture` in `main.cpp`
+- ✅ **Framebuffer Capture Abstraction**: `FramebufferCapture` base class with `GrpcFramebufferCapture` (primary), `AdbFramebufferCapture` (fallback), and `VncFramebufferCapture` (future custom QEMU).
 - ✅ **VirtIO Audio**: `VirtualMachine::start()` passes `-qemu -device virtio-snd-pci` to emulator. Runtime verified: emulator accepts and boots with the device
 - ✅ **FFmpeg Bundle**: `scripts/fetch-ffmpeg.py` downloads BtbN Windows build (~200MB), extracts `ffmpeg.exe` to `third_party/ffmpeg/`. CMake post-build auto-copies to output dir. `ScreenRecorder` checks bundled path first
 
 ### Phase 5 Features (Advanced Virtualization)
 
 - ✅ **VirtIO Input Framework**: `VirtioInput` class created with QEMU arg generation (`virtio-keyboard-pci`, `virtio-mouse-pci`, `virtio-tablet-pci`). Prebuilt Android Emulator rejects these devices; requires custom QEMU build
-- ✅ **Hyper-V HCS API Framework**: `HyperVManager` class with `computecore.dll` dynamic loading, GPU-PV detection via `EnumDisplayDevicesW`, HCS operation function pointer resolution. VM creation is experimental scaffolding
-- ✅ **Performance Monitor**: `PerformanceMonitor` tracks FPS, frame time (avg/max), dropped frames. Logs every 5s. Exposed to QML as `PerfMonitor` context property. FPS counter visible in toolbar
+- ✅ **Hyper-V HCS API (Phase 5a Week 1-3)**: `HyperVManager` fully rewritten with correct `computecore.dll`/`computestorage.dll` function signatures, real async `createVm/startVm/stopVm/terminateVm` with `HcsWaitForOperationResult`, `buildHcsJsonString()` using nlohmann/json (LinuxKernelDirect + GPU-PV `AssignmentMode:Mirror`), proper thread lifecycle (no `detach()`, `QPointer` guard, `aborted` flag), mutex-protected `errorString`. `--hcs-backend` flag wired in `main.cpp`. `configs/hcs.json` config template created. Build verified: `computecore.dll` + `HcsCreateOperation` confirmed present on this machine.
+- ✅ **Performance Monitor**: `PerformanceMonitor` tracks FPS, frame time (avg/max), dropped frames. Logs every 5s. Exposed to QML as `PerfMonitor` context property.
 - ✅ **QMP Latency Measurement**: `QmpInput` measures round-trip time per command via `QElapsedTimer`. `lastLatencyMs()` property available
 - ✅ **QMP Input Integration**: `InputBridge` now prefers QMP over ADB for all input events (keyboard, mouse, gamepad). Qt→QEMU keycode map added for 60+ keys. Mouse absolute positioning via QMP. Falls back to ADB if QMP unavailable
 - ✅ **QMP Auto-Reconnect**: `QmpInput` retries connection every 5s if disconnected. Enabled by default in `main.cpp`
+- ✅ **Native Display Path**: `NativeEmulatorView` embeds the Android Emulator Win32 window in the QML shell. Runtime verified with Android reporting 1280x720, 240 dpi, and SurfaceFlinger 60.00 Hz.
+- ✅ **Embedded Control Shell**: Android Emulator auxiliary tool windows are hidden after native attach; Chimera provides a compact right-side status/action panel instead.
+- ✅ **Clean QML Shell Layout**: Top bar is product/status only, actions are consolidated in the right panel, FPS appears once, clipped hover tooltips were removed, and native-hidden QML dialogs were replaced by right-side pages.
+- ✅ **Android Navigation Controls**: Right-side panel includes Back, Home, and Recents buttons. QML calls `QmlAndroidControls`, which sends Android semantic keyevents through `InputBridge`.
+- ✅ **Native Recording / Screenshot Fix**: `NativeEmulatorView` can capture the embedded Win32 child window for screenshots and feed `ScreenRecorder` for native-mode recording.
+- ✅ **Native Aspect Fit**: Embedded display shell is constrained to 16:9 for the 1280×720 guest, avoiding emulator-side black bars from arbitrary host panel ratios.
+- ✅ **BlueStacks-Inspired Host Tuning**: Qt Quick is forced to D3D11 RHI before `QGuiApplication`; emulator/qemu process tree is boosted to high priority during startup.
+- ✅ **BlueStacks-Style Shortcuts**: Added keyboard coverage for screenshot, recording, key mapping page, macro page, multi-instance page, fullscreen, and `Esc` fullscreen exit.
+- ✅ **Visible Emulator Boot Fix**: `-crash-report-mode never` and `-no-metrics` prevent Android Emulator from stalling on crash-report consent before QEMU/ADB starts.
+- ✅ **gRPC Frame Capture**: `GrpcFramebufferCapture` uses Android Emulator `streamScreenshot` over HTTP/2 gRPC for `--stream-capture` fallback/debug mode. ADB raw starts only as fallback.
+- ✅ **gRPC Pre-Boot Retry**: `main.cpp` restarts the screenshot stream until the first frame arrives, preventing early pending connections from falling back permanently to ADB.
+- ✅ **gRPC Orientation / Bandwidth Fix**: Screenshot bytes are copied top-down; stream uses RGB888 instead of RGBA8888 to cut payload by 25%.
+- ✅ **720p Performance Profile**: Default guest and AVD hardware config are synchronized to 1280×720 / 240 dpi / 60Hz. gRPC fallback stream width is 960px.
+- ✅ **Traditional Chinese UI**: Main QML shell, toolbar, dialogs, and input overlay use Traditional Chinese labels.
 
-### Optimizations Applied
+### 2026-05-14 Review Fixes
 
-- ✅ **Frame capture interval**: Reduced from 50ms (20 FPS) → 33ms (~30 FPS target)
+- ✅ `Framebuffer::writeBackBuffer()` resize deadlock fixed; added `test-graphics-framebuffer`
+- ✅ `InstanceManager` now lists saved configs and live VMs, returns saved config data, and can start saved-only instances
+- ✅ `QmpInput` reconnect timer now starts after failed connection, socket error, or unexpected disconnect
+- ✅ `MacroEngine` stops existing playback before starting another thread
+- ✅ `InputMapper` and `MacroEngine` reject unsafe `../` file names
+- ✅ Removed stale `main.moc` include warning
+- ✅ `chimera-ui` build now auto-runs `windeployqt`, so `build\Release\chimera-ui.exe` can launch without manually setting Qt PATH
+- ✅ Fixed ADB device targeting: screen capture and ADB fallback input now use emulator serial (`-s emulator-<consolePort>`) instead of misusing `adb -P`
+- ✅ Fixed Android raw screencap parsing for current emulator output (16-byte header)
+- ✅ Disabled guest startup audio by launching emulator with `-no-audio` and skipping unused WASAPI bridge init
+- ✅ Removed broken VNC primary path. Android Emulator 36.5.11 reports VNC requires unsupported `-gpu guest`.
+- ✅ Default RAM reduced to 2048 MB to avoid Windows commit-limit launch failure on this machine.
+- ✅ Performance monitor no longer counts first-frame boot wait as max/average frame time.
+- ✅ gRPC capture retries pre-boot pending streams; live test verified boot completion in about 32 seconds and frame delivery after retries.
+- ✅ Stale AVD locks are cleaned when no emulator/qemu process is running.
+- ✅ Emulator termination now kills child `qemu-system-x86_64-headless.exe` processes to avoid orphaned resource usage.
+
+### 2026-05-15 Performance & UI Pass
+
+- ✅ **QMP low-latency socket**: `QmpInput` disables Nagle's algorithm (`LowDelayOption`) and enables `KeepAliveOption` on connect. Tiny QMP command packets no longer wait up to ~40ms for TCP coalescing.
+- ✅ **QMP mouse-move dedup**: `sendMouseMove()` drops duplicate coordinates, so high-rate mouse hardware no longer floods the QMP socket with no-op events.
+- ✅ **Adaptive gamepad polling**: `GamepadManager::poll()` re-probes unplugged XInput slots only ~2x/sec (staggered per slot) instead of every frame; connected controllers keep full 60Hz polling.
+- ✅ **PerformanceMonitor signal throttling**: `metricsChanged()` is emitted once per 1s window instead of per-frame, cutting 60Hz QML binding churn. `maxFrameTimeMs()` now reports the worst frame over the rolling window instead of an all-time value that never decays.
+- ✅ **Batched guest tuning**: `applyGuestPerformanceSettings()` issues all six guest settings in a single `adb shell` invocation instead of six separate process spawns.
+- ✅ **Modernized QML shell**: Refined neutral-dark palette, micro-interaction animations (hover/press transitions, press scale), top-bar status pill with pulsing indicator, recording badge, prominent FPS stat card, animated side-panel page transitions, app intro fade-in. All bindings and shortcuts preserved.
+
+### Optimizations Applied / Measured
+
+- ✅ **Frame capture bandwidth**: gRPC capture now requests 960px RGB888 frames; ADB fallback is throttled to 1 Hz
 - ✅ **Error recovery**: `AdbFramebufferCapture` skips frame if previous capture still running (prevents queue buildup)
 - ✅ **QMP port fix**: `VirtualMachine::start()` correctly maps `-ports qmpPort,adbPort` (console=5554/QMP, ADB=5555)
 - ✅ **Dynamic DLL loading**: ANGLE + HCS APIs loaded at runtime via `QLibrary`, no link-time dependency on import libraries
+- ✅ **Native display path**: live test attached the emulator window and Android reported active mode 60.00 Hz. gRPC fallback remains capped by screenshot-stream overhead.
+- ⚠️ **Game-level locked 60 FPS not yet proven**: Requires workload-specific profiling; the display path is 60Hz-capable, but guest app jank can still occur.
 
 ### Build Verification
 
@@ -91,8 +145,8 @@ ctest --test-dir build -C Release --output-on-failure
 │  └─ ApplicationWindow (toolbar, shortcuts)  │
 ├─────────────────────────────────────────────┤
 │  Host Service Layer (C++20)                 │
-│  ├─ Input: ADB command queue, key mapping   │
-│  ├─ Graphics: Frame callback (ADB screencap)│
+│  ├─ Input: QMP first, ADB fallback          │
+│  ├─ Display: native window, stream fallback │
 │  ├─ Audio: WASAPI bridge stub               │
 │  ├─ Storage: Shared folders (9pfs)          │
 │  ├─ Instance: VM lifecycle, CreateProcess   │
@@ -128,9 +182,11 @@ ctest --test-dir build -C Release --output-on-failure
 
 ### Communication Flows
 
-**Guest → Host Frame Delivery (Phase 1 — ADB screencap)**
+**Guest → Host Display (Current — native primary)**
 ```
-Guest SurfaceFlinger → ADB daemon → adb exec-out screencap -p → QProcess → QImage → GuestDisplay::setFrame() → paint()
+Guest SurfaceFlinger → Android Emulator native GPU window → NativeEmulatorView → Qt/QML shell
+Fallback/debug: Guest SurfaceFlinger → Android Emulator gRPC streamScreenshot → GrpcFramebufferCapture → QImage → GuestDisplay::setFrame() → paint()
+Compatibility fallback: Guest SurfaceFlinger → ADB daemon → adb exec-out screencap raw → AdbFramebufferCapture → QImage → GuestDisplay
 ```
 
 **Host Input → Guest (Phase 2 — ADB shell input + gamepad)**
@@ -168,9 +224,14 @@ User clicks "Start" → InstanceManager → VirtualMachine.buildEmulatorArgs() �
 | Issue | Status | Workaround |
 |-------|--------|------------|
 | MSYS2 GCC broken | WONTFIX | Use MSVC exclusively |
-| ADB screencap ~20 FPS (raw) | ACCEPTED | Phase 4+: QEMU display protocol or GPU texture sharing for 60+ FPS |
-| Audio not wired to emulator | OPEN | WASAPI output ready; need virtio-snd in QEMU args |
-| FFmpeg not bundled | OPEN | Auto-detected from PATH; falls back to PNG sequence |
+| Android Emulator gRPC stream peaks around 32 FPS under current 720p/RGB888 profile | ACCEPTED | Native window embedding is now default; shared GPU texture/custom QEMU remains future deep-integration path |
+| Native child window overlays QML content inside the viewport | ACCEPTED | Keep controls outside the embedded viewport; current right-side panel is outside the native child window |
+| High process priority can increase host contention | MONITOR | Use during 60 FPS tuning; profile desktop responsiveness under real games |
+| ADB raw screencap fallback is throttled | ACCEPTED | Keep only as compatibility fallback, not primary display path |
+| QMP mouse runtime validation | PARTIAL | Payload schema fixed; verify target-game behavior per title |
+| Framebuffer read-side synchronization | OPEN | Replace internal reference return with snapshot or guarded read API |
+| ProcessLauncher quoting | OPEN | Implement Windows command-line escaping for quotes/backslashes |
+| Clipboard Unicode | OPEN | Replace `CF_TEXT` with `CF_UNICODETEXT` |
 | No kernel input driver | OPEN | Phase 5: Windows filter driver (BstkDrv.sys equivalent) |
 
 ## File Locations
@@ -218,7 +279,7 @@ User clicks "Start" → InstanceManager → VirtualMachine.buildEmulatorArgs() �
 - [x] Disk compaction (DiskCompactor removes cache.img/logs/tmp, optional zero-fill)
 - [x] ANGLE libraries (libEGL.dll + libGLESv2.dll from Chrome, CMake auto-copy)
 - [x] ANGLE dynamic loader (EglLoader.h with QLibrary, no .lib required)
-- [x] Framebuffer capture abstraction (AdbFramebufferCapture + VncFramebufferCapture)
+- [x] Framebuffer capture abstraction (GrpcFramebufferCapture + AdbFramebufferCapture + VncFramebufferCapture)
 - [x] VirtIO Audio (emulator accepts `-device virtio-snd-pci`)
 - [x] FFmpeg bundle (fetch-ffmpeg.py + CMake auto-copy)
 - [ ] Replace ADB screencap with QEMU display protocol (VNC backend ready, needs custom QEMU)
@@ -263,10 +324,10 @@ User clicks "Start" → InstanceManager → VirtualMachine.buildEmulatorArgs() �
 
 | Document | Purpose |
 |----------|---------|
-| `PLAN.md` | 4-phase implementation plan with full task breakdown |
-| `ARCHITECTURE.md` | Detailed module responsibilities and tech choices |
-| `BUILD.md` | Step-by-step build instructions for MSVC + Qt 6 |
-| `STATUS.md` | Current phase status, verification log, resolved issues |
+| `docs/project/PLAN.md` | 4-phase implementation plan with full task breakdown |
+| `docs/architecture/ARCHITECTURE.md` | Detailed module responsibilities and tech choices |
+| `docs/project/BUILD.md` | Step-by-step build instructions for MSVC + Qt 6 |
+| `docs/project/STATUS.md` | Current phase status, verification log, resolved issues |
 | `AGENTS.md` | Agent workflow, coding standards, safety checklist |
 | `docs/references/windows_android_virtualization_analysis.md` | Windows Android virtualization tech analysis (from reverse engineering) |
 | `docs/references/bluestacks.conf` | BlueStacks configuration file reference |
@@ -281,6 +342,6 @@ Original analysis files from `BlueStacks_nxt/` have been copied to:
 
 ---
 
-*Updated: 2026-05-11*
-*Phase: 4 complete + Phase 5 framework + optimizations*
-*Tests: 3/3 passing*
+*Updated: 2026-05-15*
+*Phase: Phase 5 framework + stabilization*
+*Tests: 6/6 passing*

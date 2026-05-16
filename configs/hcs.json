@@ -1,0 +1,18 @@
+{
+  "hcs": {
+    "cpus": 4,
+    "ram_mb": 4096,
+    "gpu_mode": "partition",
+    "name": "chimera_hcs"
+  },
+  "boot": {
+    "kernel": "",
+    "initrd": "",
+    "cmdline": "root=/dev/sda rw console=hvc0 quiet androidboot.hardware=cutf_x86_64 androidboot.serialno=chimera001"
+  },
+  "disks": {
+    "system": "",
+    "vendor": "",
+    "userdata": ""
+  }
+}

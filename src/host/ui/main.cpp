@@ -1,13 +1,16 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
-#include <QSurfaceFormat>
 #include <QTimer>
 #include <QProcess>
 #include <QDebug>
 #include <QImage>
 #include <QQmlContext>
+#include <QQuickStyle>
+#include <QSize>
 #include "ChimeraWindow.h"
 #include "GuestDisplay.h"
+#include "NativeEmulatorView.h"
+#include "QmlAndroidControls.h"
 #include "QmlInstanceManager.h"
 #include "QmlMacroEngine.h"
 #include "ScreenRecorder.h"
@@ -19,10 +22,15 @@
 #include "AudioBridge.h"
 #include "DeviceSpoofer.h"
 #include "AdbFramebufferCapture.h"
+#include "GrpcFramebufferCapture.h"
+#include "VncFramebufferCapture.h"
 #include "PerformanceMonitor.h"
+#include "QemuBackend.h"
+#include "HyperVManager.h"
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <filesystem>
+#include <memory>
 
 using namespace chimera::instance;
 using namespace chimera::config;
@@ -30,6 +38,115 @@ using namespace chimera;
 
 static std::filesystem::path g_projectRoot;
 static std::filesystem::path g_adbPath;
+
+// v2 QEMU backend globals
+static QemuInstanceConfig g_qemuConfig;
+static bool g_qemuConfigLoaded = false;
+
+// Phase 5 HCS backend globals
+static HyperVManager::HcsConfig g_hcsConfig;
+static bool g_hcsConfigLoaded = false;
+
+static bool loadHcsConfig() {
+    const auto cfgPath = g_projectRoot / "configs" / "hcs.json";
+    if (!std::filesystem::exists(cfgPath)) {
+        qWarning() << "hcs.json not found at" << QString::fromStdString(cfgPath.string());
+        return false;
+    }
+    std::ifstream f(cfgPath);
+    nlohmann::json j;
+    f >> j;
+
+    const auto &hcs  = j.at("hcs");
+    const auto &boot = j.at("boot");
+    const auto &disk = j.at("disks");
+
+    g_hcsConfig.name   = QString::fromStdString(hcs.value("name", "chimera_hcs"));
+    g_hcsConfig.cpus   = hcs.value("cpus", 4);
+    g_hcsConfig.ramMB  = hcs.value("ram_mb", 4096);
+    const std::string gpuMode = hcs.value("gpu_mode", "partition");
+    g_hcsConfig.gpuMode = (gpuMode == "none") ? HyperVManager::GpuNone :
+                          (gpuMode == "dda")   ? HyperVManager::GpuDDA  :
+                                                 HyperVManager::GpuPartition;
+
+    auto absPath = [](const std::string &s) -> QString {
+        if (s.empty()) return {};
+        std::filesystem::path p(s);
+        if (p.is_relative()) p = g_projectRoot / p;
+        return QString::fromStdString(p.string());
+    };
+
+    g_hcsConfig.kernelPath   = absPath(boot.value("kernel", ""));
+    g_hcsConfig.initrdPath   = absPath(boot.value("initrd", ""));
+    g_hcsConfig.kernelCmdLine = QString::fromStdString(boot.value("cmdline", ""));
+
+    const std::string sys  = disk.value("system",   "");
+    const std::string vnd  = disk.value("vendor",   "");
+    const std::string data = disk.value("userdata",  "");
+    if (!sys.empty())  g_hcsConfig.readonlyDiskPaths << absPath(sys);
+    if (!vnd.empty())  g_hcsConfig.readonlyDiskPaths << absPath(vnd);
+    g_hcsConfig.writableDiskPath = absPath(data);
+
+    g_hcsConfigLoaded = !g_hcsConfig.kernelPath.isEmpty();
+    if (!g_hcsConfigLoaded)
+        qWarning() << "hcs.json: boot.kernel is empty — HCS backend will not start";
+    return g_hcsConfigLoaded;
+}
+
+static bool loadQemuConfig() {
+    const auto cfgPath = g_projectRoot / "configs" / "qemu.json";
+    if (!std::filesystem::exists(cfgPath)) {
+        qWarning() << "qemu.json not found at" << QString::fromStdString(cfgPath.string());
+        return false;
+    }
+    std::ifstream f(cfgPath);
+    nlohmann::json j;
+    f >> j;
+
+    const auto &qemu = j.at("qemu");
+    g_qemuConfig.qemuBinary = qemu.at("binary").get<std::string>();
+    g_qemuConfig.machineType = qemu.value("machine_type", "q35");
+    g_qemuConfig.accel       = qemu.value("accel", "whpx");
+    g_qemuConfig.cpus        = qemu.value("cpus", 4);
+    g_qemuConfig.ramMB       = qemu.value("ram_mb", 4096);
+    g_qemuConfig.vgaDevice   = qemu.value("vga", "vmware");
+    if (qemu.contains("extra_args")) {
+        for (const auto &arg : qemu.at("extra_args")) {
+            g_qemuConfig.extraArgs.push_back(arg.get<std::string>());
+        }
+    }
+
+    const auto &disk = j.at("disk");
+    {
+        std::string baseImg = disk.value("base_image", "");
+        if (!baseImg.empty()) {
+            std::filesystem::path p = baseImg;
+            if (p.is_relative()) p = g_projectRoot / p;
+            g_qemuConfig.diskImage = p;
+        }
+    }
+    {
+        std::string cdrom = disk.value("cdrom", "");
+        if (!cdrom.empty()) {
+            std::filesystem::path p = cdrom;
+            if (p.is_relative()) p = g_projectRoot / p;
+            g_qemuConfig.cdromImage = p;
+        }
+    }
+    g_qemuConfig.bootDevice = disk.value("boot", "c");
+
+    const auto &ports = j.at("ports");
+    const int vncBase = ports.value("vnc_base", 5900);
+    g_qemuConfig.vncDisplay = 0;               // display :0 → TCP 5900+0
+    g_qemuConfig.qmpPort    = ports.value("qmp_base", 4444);
+    g_qemuConfig.adbPort    = ports.value("adb_base", 5560);
+    g_qemuConfig.enableAdb  = true;
+    g_qemuConfig.name       = "chimera_dev";
+    (void)vncBase;
+
+    g_qemuConfigLoaded = true;
+    return true;
+}
 
 static std::filesystem::path findProjectRoot() {
     auto path = std::filesystem::current_path();
@@ -64,15 +181,76 @@ static bool loadSdkConfig() {
     return !g_adbPath.empty();
 }
 
-// Frame capture is now handled by chimera::graphics::AdbFramebufferCapture
+static QString adbPathString() {
+    return QString::fromStdString(g_adbPath.string());
+}
+
+static void runAdbShell(const QStringList &shellArgs, int timeoutMs = 1500) {
+    if (g_adbPath.empty()) return;
+
+    QProcess proc;
+    QStringList args;
+    args << "-s" << "emulator-5554" << "shell";
+    args << shellArgs;
+    proc.start(adbPathString(), args);
+    proc.waitForFinished(timeoutMs);
+}
+
+static void applyGuestPerformanceSettings() {
+    // Apply all guest tuning in a single adb shell invocation instead of six
+    // separate process spawns: one round-trip instead of six.
+    runAdbShell({
+        "settings", "put", "system", "peak_refresh_rate", "60.0", ";",
+        "settings", "put", "system", "min_refresh_rate", "60.0", ";",
+        "settings", "put", "global", "window_animation_scale", "0", ";",
+        "settings", "put", "global", "transition_animation_scale", "0", ";",
+        "settings", "put", "global", "animator_duration_scale", "0", ";",
+        "cmd", "power", "set-fixed-performance-mode-enabled", "true", ";",
+        // Hide Android navigation bar so the host right-panel controls are used instead
+        "settings", "put", "global", "policy_control", "immersive.navigation=*",
+    }, 5000);
+    qDebug() << "Guest performance settings applied";
+}
 
 int main(int argc, char *argv[]) {
+    // BlueStacks uses D3D11 for its Qt shell. Force the same Qt Quick RHI path
+    // before QGuiApplication is created so the UI does not fall back to OpenGL.
+    qputenv("QSG_RHI_BACKEND", "d3d11");
+    qputenv("QT_QUICK_BACKEND", "rhi");
+
     QGuiApplication app(argc, argv);
     app.setApplicationName("Chimera");
     app.setApplicationVersion("0.1.0");
     app.setOrganizationName("chimera-emulator");
+    QQuickStyle::setStyle(QStringLiteral("Basic"));
+    const bool noEmulator = app.arguments().contains(QStringLiteral("--no-emulator"));
+    const bool streamCapture = app.arguments().contains(QStringLiteral("--stream-capture"));
+    const bool nativeDisplayEnabled = !streamCapture;
+    // v2: stock QEMU + VNC display + real QMP input (Phase 1-3)
+    const bool qemuBackendMode = app.arguments().contains(QStringLiteral("--qemu-backend"));
+    // Phase 5: Hyper-V HCS + GPU-PV backend
+    const bool hcsBackendMode = app.arguments().contains(QStringLiteral("--hcs-backend"));
 
-    if (!loadSdkConfig()) {
+    g_projectRoot = findProjectRoot();
+    std::error_code cwdError;
+    std::filesystem::current_path(g_projectRoot, cwdError);
+    if (cwdError) {
+        qWarning() << "Failed to set working directory:"
+                   << QString::fromStdString(cwdError.message());
+    }
+
+    if (hcsBackendMode) {
+        if (!loadHcsConfig()) {
+            qWarning() << "Failed to load hcs.json. HCS backend will not start.";
+        } else {
+            qDebug() << "HCS backend: kernel=" << g_hcsConfig.kernelPath
+                     << "gpu=" << static_cast<int>(g_hcsConfig.gpuMode);
+        }
+    } else if (qemuBackendMode) {
+        if (!loadQemuConfig()) {
+            qWarning() << "Failed to load qemu.json. QEMU backend will not start.";
+        }
+    } else if (!noEmulator && !loadSdkConfig()) {
         qWarning() << "Failed to load Android SDK config. Emulator will not start.";
     }
 
@@ -80,16 +258,14 @@ int main(int argc, char *argv[]) {
     std::filesystem::create_directories(g_projectRoot / "screenshots");
     std::filesystem::create_directories(g_projectRoot / "recordings");
 
-    // Request OpenGL 4.1 Core for ANGLE / native rendering
-    QSurfaceFormat fmt;
-    fmt.setRenderableType(QSurfaceFormat::OpenGL);
-    fmt.setProfile(QSurfaceFormat::CoreProfile);
-    fmt.setVersion(4, 1);
-    QSurfaceFormat::setDefaultFormat(fmt);
-
     QQmlApplicationEngine engine;
     qmlRegisterType<chimera::ChimeraWindow>("Chimera.UI", 1, 0, "ChimeraWindow");
     qmlRegisterType<chimera::GuestDisplay>("Chimera.UI", 1, 0, "GuestDisplay");
+    qmlRegisterType<chimera::NativeEmulatorView>("Chimera.UI", 1, 0, "NativeEmulatorView");
+
+    // Expose instance manager to QML
+    chimera::QmlAndroidControls qmlAndroidControls;
+    engine.rootContext()->setContextProperty("AndroidControls", &qmlAndroidControls);
 
     // Expose instance manager to QML
     chimera::QmlInstanceManager qmlInstanceMgr;
@@ -103,17 +279,106 @@ int main(int argc, char *argv[]) {
     chimera::ScreenRecorder screenRecorder;
     engine.rootContext()->setContextProperty("ScreenRecorder", &screenRecorder);
 
-    // Start emulator instance
-    if (!g_adbPath.empty()) {
+    // Performance monitoring
+    auto *perfMonitor = new chimera::graphics::PerformanceMonitor(&app);
+    engine.rootContext()->setContextProperty("PerfMonitor", perfMonitor);
+
+    bool emulatorStarted = false;
+    int grpcCaptureWidth = 960;
+    int grpcCaptureHeight = 0;
+    QSize guestInputSize;
+    chimera::input::QmpInput *qmpInput = nullptr;
+
+    // Phase 5: Hyper-V HCS + GPU-PV backend
+    HyperVManager *hcsManager = nullptr;
+    if (hcsBackendMode && g_hcsConfigLoaded) {
+        if (!HyperVManager::isAvailable()) {
+            qWarning() << "HCS unavailable: Hyper-V not enabled or computecore.dll missing";
+        } else {
+            qDebug() << "HCS: GPU-PV supported:" << HyperVManager::isGpuPartitionSupported()
+                     << "| Partitions:" << HyperVManager::availableGpuPartitions();
+
+            hcsManager = new HyperVManager(&app);
+
+            QObject::connect(hcsManager, &HyperVManager::stateChanged, &app,
+                             [hcsManager](HyperVManager::State s) {
+                qDebug() << "HCS state ->" << static_cast<int>(s);
+                // Auto-start after VM is created
+                if (s == HyperVManager::State::Stopped) {
+                    qDebug() << "HCS: VM created, starting...";
+                    hcsManager->startVm();
+                } else if (s == HyperVManager::State::Running) {
+                    qDebug() << "HCS: VM running";
+                }
+            });
+            QObject::connect(hcsManager, &HyperVManager::error, &app,
+                             [](const QString &msg) {
+                qWarning() << "HCS error:" << msg;
+            });
+
+            qDebug() << "HCS: creating VM" << g_hcsConfig.name
+                     << QString("%1 CPU / %2 MB RAM").arg(g_hcsConfig.cpus).arg(g_hcsConfig.ramMB);
+            if (!hcsManager->createVm(g_hcsConfig)) {
+                qWarning() << "HCS createVm failed:" << hcsManager->lastError();
+            } else {
+                emulatorStarted = true;
+                guestInputSize  = QSize(1920, 1080);
+            }
+        }
+    }
+
+    // v2: Start stock QEMU instance
+    QemuBackend *qemuBackend = nullptr;
+    if (qemuBackendMode && g_qemuConfigLoaded) {
+        qemuBackend = new QemuBackend(g_qemuConfig, &app);
+
+        QObject::connect(qemuBackend, &QemuBackend::stateChanged, &app,
+                         [](QemuBackend::State s) {
+            qDebug() << "QemuBackend state:" << static_cast<int>(s);
+        });
+        QObject::connect(qemuBackend, &QemuBackend::errorOccurred, &app,
+                         [](const QString &msg) { qWarning() << "QemuBackend error:" << msg; });
+
+        if (!qemuBackend->start()) {
+            qWarning() << "Failed to start QEMU:" << qemuBackend->errorMessage();
+        } else {
+            qDebug() << "QEMU started. VNC on port" << qemuBackend->vncPort()
+                     << "| QMP on port" << qemuBackend->qmpPort()
+                     << "| ADB on port" << qemuBackend->adbPort();
+
+            // QMP input on the real QMP socket (not the SDK telnet console)
+            qmpInput = new chimera::input::QmpInput(&app);
+            qmpInput->setAutoReconnect(true, 3000);
+            qmpInput->setDisplaySize(g_qemuConfig.ramMB > 0 ? 1024 : 1024, 768);
+            chimera::input::InputBridge::instance().setQmpInput(qmpInput);
+            // Will connect once QEMU is ready; auto-reconnect handles the retry
+            QTimer::singleShot(3000, &app, [qmpInput, qemuBackend]() {
+                const bool ok = qmpInput->connectToHost(
+                    QStringLiteral("127.0.0.1"), qemuBackend->qmpPort());
+                if (ok) qDebug() << "QMP input connected to port" << qemuBackend->qmpPort();
+                else    qDebug() << "QMP not ready yet; auto-reconnect will retry";
+            });
+
+            guestInputSize = QSize(1024, 768);
+            emulatorStarted = true;
+        }
+    }
+
+    // v1: Start emulator instance
+    if (!hcsBackendMode && !qemuBackendMode && !noEmulator && !g_adbPath.empty()) {
         auto &mgr = InstanceManager::instance();
         InstanceConfig cfg;
         cfg.name = "chimera_dev";
         cfg.cpus = 4;
-        cfg.ramMB = 4096;
-        cfg.width = 1920;
-        cfg.height = 1080;
+        cfg.ramMB = 2048;
+        cfg.width = 1280;
+        cfg.height = 720;
         cfg.deviceProfile = "Samsung Galaxy S24 Ultra"; // Unlock high FPS/quality in games
+        cfg.graphicsRenderer = "host";
+        cfg.headless = !nativeDisplayEnabled;
+        cfg.processPriority = "high";
         cfg.dataDir = (g_projectRoot / "instances" / cfg.name).make_preferred();
+        guestInputSize = QSize(cfg.width, cfg.height);
 
         // Remove existing instance with same name to avoid duplicates in memory
         mgr.deleteInstance(cfg.name);
@@ -125,6 +390,7 @@ int main(int argc, char *argv[]) {
             });
             if (mgr.startInstance(cfg.name)) {
                 qDebug() << "Instance started:" << QString::fromStdString(cfg.name);
+                emulatorStarted = true;
             } else {
                 qWarning() << "Failed to start instance" << QString::fromStdString(cfg.name);
             }
@@ -134,28 +400,21 @@ int main(int argc, char *argv[]) {
 
         // Configure input bridge for ADB forwarding (fallback)
         chimera::input::InputBridge::instance().setAdbConfig(g_adbPath, 5555);
+        chimera::input::InputBridge::instance().setDisplaySize(cfg.width, cfg.height);
 
         // Try QMP low-latency input with auto-reconnect
-        auto *qmpInput = new chimera::input::QmpInput(&app);
+        qmpInput = new chimera::input::QmpInput(&app);
         qmpInput->setAutoReconnect(true, 5000);
+        qmpInput->setDisplaySize(cfg.width, cfg.height);
+        chimera::input::InputBridge::instance().setQmpInput(qmpInput);
         bool qmpConnected = qmpInput->connectToHost("localhost", 5554);
         if (qmpConnected) {
             qDebug() << "QMP input connected (low-latency mode)";
-            chimera::input::InputBridge::instance().setQmpInput(qmpInput);
         } else {
             qWarning() << "QMP input not available, falling back to ADB. Will retry every 5s.";
         }
 
-        // Initialize audio bridge
-        chimera::audio::AudioBridge::Config audioCfg;
-        audioCfg.sampleRate = 48000;
-        audioCfg.channels = 2;
-        audioCfg.bufferSize = 1024;
-        if (chimera::audio::AudioBridge::instance().initialize(audioCfg)) {
-            qDebug() << "Audio bridge initialized (WASAPI)";
-        } else {
-            qWarning() << "Audio bridge initialization failed";
-        }
+        qDebug() << "Guest audio disabled (-no-audio)";
 
         // Wire gamepad to input bridge
         auto &gp = chimera::input::GamepadManager::instance();
@@ -171,6 +430,9 @@ int main(int argc, char *argv[]) {
             gp.poll();
         });
         gpTimer->start(16); // ~60 Hz polling
+
+        grpcCaptureWidth = cfg.width > cfg.height ? 960 : 540;
+        grpcCaptureHeight = 0; // Preserve guest aspect ratio.
     }
 
     const QUrl url(QStringLiteral("qrc:/ChimeraWindow.qml"));
@@ -183,34 +445,119 @@ int main(int argc, char *argv[]) {
 
     engine.load(url);
 
-    // Set up ADB screen capture using the new FramebufferCapture abstraction
-    auto *capture = new chimera::graphics::AdbFramebufferCapture(
-        QString::fromStdString(g_adbPath.string()), 5555, false, &app);
-    capture->setIntervalMs(33); // Target ~30 FPS
+    GuestDisplay *guestDisplay = nullptr;
+    const auto roots = engine.rootObjects();
+    for (auto *obj : roots) {
+        guestDisplay = obj->findChild<GuestDisplay*>("guestDisplay");
+        if (guestDisplay) break;
+    }
+    if (!guestDisplay) {
+        qWarning() << "GuestDisplay not found; frame capture will not be visible";
+    } else if (guestInputSize.isValid()) {
+        guestDisplay->setGuestSize(guestInputSize);
+    }
 
-    // Performance monitoring
-    auto *perfMonitor = new chimera::graphics::PerformanceMonitor(&app);
-    engine.rootContext()->setContextProperty("PerfMonitor", perfMonitor);
-
-    // Find GuestDisplay in QML and connect frame updates
-    QObject::connect(capture, &chimera::graphics::FramebufferCapture::frameReady,
-                     &engine, [&engine, &screenRecorder, perfMonitor](const QImage &img) {
-        perfMonitor->onFrameReceived();
-        auto roots = engine.rootObjects();
-        for (auto *obj : roots) {
-            auto *guest = obj->findChild<GuestDisplay*>("guestDisplay");
-            if (guest) {
-                guest->setFrame(img);
+    auto currentDisplaySize = std::make_shared<QSize>();
+    auto logicalGuestSize = std::make_shared<QSize>(guestInputSize);
+    auto wireCapture = [&](chimera::graphics::FramebufferCapture *cap) {
+        QObject::connect(cap, &chimera::graphics::FramebufferCapture::frameReady,
+                         &engine, [guestDisplay, &screenRecorder, perfMonitor, qmpInput, currentDisplaySize, logicalGuestSize](const QImage &img) {
+            perfMonitor->onFrameReceived();
+            const QSize inputSize = logicalGuestSize->isValid() ? *logicalGuestSize : img.size();
+            if (*currentDisplaySize != inputSize) {
+                *currentDisplaySize = inputSize;
+                chimera::input::InputBridge::instance().setDisplaySize(inputSize.width(), inputSize.height());
+                if (qmpInput) qmpInput->setDisplaySize(inputSize.width(), inputSize.height());
+            }
+            if (guestDisplay) {
+                guestDisplay->setFrame(img);
                 screenRecorder.feedFrame(img);
+            }
+        });
+        QObject::connect(cap, &chimera::graphics::FramebufferCapture::captureError,
+                         &app, [perfMonitor](const QString &msg) {
+            qWarning() << "Frame capture error:" << msg;
+            perfMonitor->onFrameDropped();
+        });
+    };
+
+    // v2: VNC capture from stock QEMU
+    chimera::graphics::VncFramebufferCapture *vncCapture = nullptr;
+    if (qemuBackendMode && emulatorStarted && qemuBackend) {
+        vncCapture = new chimera::graphics::VncFramebufferCapture(
+            QStringLiteral("127.0.0.1"), qemuBackend->vncPort(), &app);
+        vncCapture->setAutoReconnect(true, 2000);
+        vncCapture->setDesiredResolution(1280, 720);
+        wireCapture(vncCapture);
+
+        // Initial retry timer: start VNC connection attempts until QEMU's VNC server is ready
+        auto *vncRetryTimer = new QTimer(&app);
+        vncRetryTimer->setInterval(1500);
+        vncRetryTimer->setProperty("attempts", 0);
+        QObject::connect(vncRetryTimer, &QTimer::timeout, &app,
+                         [vncCapture, vncRetryTimer]() {
+            int attempts = vncRetryTimer->property("attempts").toInt() + 1;
+            vncRetryTimer->setProperty("attempts", attempts);
+            if (vncCapture->isConnected()) {
+                // Fully in Ready/FramebufferUpdate state — frames are flowing
+                vncRetryTimer->stop();
+                qDebug() << "VNC: connected and ready after" << attempts << "attempts";
                 return;
             }
+            if (!vncCapture->isRunning()) {
+                // Socket disconnected — try again
+                qDebug() << "VNC: connecting attempt" << attempts;
+                vncCapture->start();
+                if (attempts >= 40) {
+                    qWarning() << "VNC: giving up after 60s";
+                    vncRetryTimer->stop();
+                }
+            }
+            // else: connection in progress, wait for next tick
+        });
+        vncRetryTimer->start();
+    }
+
+    // v1: gRPC / ADB capture
+    chimera::graphics::AdbFramebufferCapture *adbCapture = nullptr;
+    chimera::graphics::GrpcFramebufferCapture *grpcCapture = nullptr;
+    if (!hcsBackendMode && !qemuBackendMode && !noEmulator && emulatorStarted && streamCapture) {
+        grpcCapture = new chimera::graphics::GrpcFramebufferCapture(
+            QStringLiteral("127.0.0.1"), 8554, grpcCaptureWidth, grpcCaptureHeight, &app);
+        wireCapture(grpcCapture);
+
+        if (!g_adbPath.empty()) {
+            adbCapture = new chimera::graphics::AdbFramebufferCapture(
+                QString::fromStdString(g_adbPath.string()), 5555, false, &app);
+            adbCapture->setIntervalMs(1000);
+            wireCapture(adbCapture);
         }
-    });
-    QObject::connect(capture, &chimera::graphics::FramebufferCapture::captureError,
-                     &app, [perfMonitor](const QString &msg) {
-        qWarning() << "Frame capture error:" << msg;
-        perfMonitor->onFrameDropped();
-    });
+    }
+
+    if (!hcsBackendMode && !qemuBackendMode && !noEmulator && emulatorStarted && !g_adbPath.empty()) {
+        auto *guestPerfTimer = new QTimer(&app);
+        guestPerfTimer->setInterval(2000);
+        guestPerfTimer->setProperty("attempts", 0);
+        QObject::connect(guestPerfTimer, &QTimer::timeout, [guestPerfTimer]() {
+            int attempts = guestPerfTimer->property("attempts").toInt() + 1;
+            guestPerfTimer->setProperty("attempts", attempts);
+
+            QProcess proc;
+            proc.start(adbPathString(), QStringList() << "-s" << "emulator-5554"
+                                                     << "shell" << "getprop" << "sys.boot_completed");
+            proc.waitForFinished(1000);
+            const QString booted = QString::fromLocal8Bit(proc.readAllStandardOutput()).trimmed();
+            if (booted == QStringLiteral("1")) {
+                guestPerfTimer->stop();
+                applyGuestPerformanceSettings();
+                return;
+            }
+            if (attempts >= 60) {
+                guestPerfTimer->stop();
+            }
+        });
+        guestPerfTimer->start();
+    }
 
     // Log FPS every 5 seconds
     auto *perfTimer = new QTimer(&app);
@@ -224,14 +571,79 @@ int main(int argc, char *argv[]) {
     });
     perfTimer->start(5000);
 
-    // Start capture after 15s to allow Android boot
-    QTimer::singleShot(15000, [capture]() {
-        if (capture->start()) {
-            qDebug() << "ADB raw screen capture started (" << capture->intervalMs() << "ms interval)";
-        }
-    });
+    // ADB is a compatibility fallback. gRPC should be used for normal display streaming.
+    auto adbStartRequested = std::make_shared<bool>(false);
+    auto startAdbFallback = [adbCapture, adbStartRequested, &app]() {
+        if (!adbCapture || *adbStartRequested) return;
+        *adbStartRequested = true;
+
+        auto *bootTimer = new QTimer(&app);
+        bootTimer->setInterval(2000);
+        bootTimer->setProperty("attempts", 0);
+        QObject::connect(bootTimer, &QTimer::timeout, [adbCapture, bootTimer]() {
+            int attempts = bootTimer->property("attempts").toInt() + 1;
+            bootTimer->setProperty("attempts", attempts);
+
+            QProcess proc;
+            proc.start(QString::fromStdString(g_adbPath.string()),
+                       QStringList() << "-s" << "emulator-5554"
+                                     << "shell" << "getprop" << "sys.boot_completed");
+            proc.waitForFinished(1000);
+            const QString booted = QString::fromLocal8Bit(proc.readAllStandardOutput()).trimmed();
+            if (booted == QStringLiteral("1") || attempts >= 45) {
+                bootTimer->stop();
+                if (adbCapture->start()) {
+                    qDebug() << "ADB raw screen capture fallback started (" << adbCapture->intervalMs()
+                             << "ms target interval)";
+                }
+            }
+        });
+        bootTimer->start();
+    };
+
+    if (!hcsBackendMode && !qemuBackendMode && grpcCapture) {
+        auto grpcReceivedFrame = std::make_shared<bool>(false);
+        QObject::connect(grpcCapture, &chimera::graphics::FramebufferCapture::frameReady,
+                         &app, [grpcReceivedFrame, adbCapture]() {
+            *grpcReceivedFrame = true;
+            if (adbCapture && adbCapture->isRunning()) {
+                adbCapture->stop();
+            }
+        });
+
+        auto *grpcRetryTimer = new QTimer(&app);
+        grpcRetryTimer->setInterval(1000);
+        grpcRetryTimer->setProperty("attempts", 0);
+        QObject::connect(grpcRetryTimer, &QTimer::timeout,
+                         [grpcCapture, grpcRetryTimer, grpcReceivedFrame, startAdbFallback]() {
+            if (*grpcReceivedFrame) {
+                grpcRetryTimer->stop();
+                return;
+            }
+
+            int attempts = grpcRetryTimer->property("attempts").toInt() + 1;
+            grpcRetryTimer->setProperty("attempts", attempts);
+            if (!grpcCapture->isRunning()) {
+                qDebug() << "Starting gRPC screen capture stream";
+                grpcCapture->start();
+            } else if (attempts > 1 && attempts % 5 == 0) {
+                qWarning() << "gRPC capture has not produced a frame; restarting stream";
+                grpcCapture->stop();
+                grpcCapture->start();
+            }
+            if (attempts == 45 && !*grpcReceivedFrame) {
+                qWarning() << "gRPC capture has not produced a frame yet; starting ADB fallback in parallel";
+                startAdbFallback();
+            }
+            if (attempts >= 180 && !*grpcReceivedFrame) {
+                grpcRetryTimer->stop();
+                grpcCapture->stop();
+            }
+        });
+        grpcRetryTimer->start();
+    } else if (!hcsBackendMode && !qemuBackendMode && streamCapture) {
+        startAdbFallback();
+    }
 
     return app.exec();
 }
-
-#include "main.moc"
