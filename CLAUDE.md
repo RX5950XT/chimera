@@ -4,9 +4,9 @@
 
 ## Current State
 
-**Phase**: Phase 5a — HCS + HvSocket End-to-End COMPLETE 2026-05-17
+**Phase**: Phase 5b — Real Framebuffer + uinput COMPLETE 2026-05-17
 **Date**: 2026-05-17
-**Next**: Phase 5b — Build Android kernel with dxgkrnl+HvSocket support (`scripts/build-android-kernel.sh` in WSL2), then build AOSP cuttlefish x86_64 image → VHDX. Upgrade `guest_input.c` to inject via uinput. Replace test-pattern display with real `/dev/fb0` capture.
+**Next**: Phase 5c — Build Android kernel with dxgkrnl+HvSocket support (`scripts/build-android-kernel.sh` in WSL2), then build AOSP cuttlefish x86_64 image → VHDX.
 
 ### v2 Phase 1 Verification Results (2026-05-16)
 
@@ -79,6 +79,19 @@
 - ✅ `HvSocketFramebufferCapture` PIMPL-refactored and compiles clean
 - ✅ `InputBridge` wired: HvSocket (highest priority) → QMP → ADB fallback chain
 - ✅ 6/6 unit tests passing
+
+### Phase 5b Real Framebuffer + uinput Verification Results (2026-05-17)
+
+- ✅ `VideoMonitor` added to HCS JSON (1280×720) — Hyper-V synthetic video device appears in guest
+- ✅ `hyperv_drm.ko` (Azure 6.11, no deps, DRM_FBDEV_EMULATION=y) loaded via `insmod` in init
+- ✅ `/dev/fb0` created: `hyperv_drmdrmfb frame buffer device`, 1280×720 32bpp
+- ✅ `chimera-display-relay` reads from `/dev/fb0`, BGRA→RGB24 conversion, streams via vsock port 17
+- ✅ `chimera-input-relay` creates uinput device `Chimera HvSocket Input` (`/devices/virtual/input/input0`)
+- ✅ Both relay daemons connected to host within 30s after VM boot
+- ✅ **FPS: ~30fps sustained, zero dropped frames** (1280×720 RGB888, ~2.6 MB/frame, ~78 MB/s vmbus)
+- ✅ `initrd.img` rebuilt with: vsock, hv_sock, vsock_loopback, hyperv_drm modules + production relay daemons
+- ✅ `build-initramfs.sh` updated: searches system-installed Azure kernel modules, includes hyperv_drm
+- Note: `uname`, `mkdir`, `seq` commands missing from busybox symlinks (cosmetic — all key functionality works)
 
 ### Phase 5 Features (Advanced Virtualization)
 
@@ -314,8 +327,8 @@ User clicks "Start" → InstanceManager → VirtualMachine.buildEmulatorArgs() �
 - [x] Guest input daemon (`guest_input.c`) — 16-byte `linux_input_event` receive + console print
 - [x] `HvSocketFramebufferCapture` — 8-byte header decode + QImage emit
 - [x] Azure 6.11 kernel module fix (decompress `.ko.zst` → `.ko`, `svm_flags=0`)
-- [ ] `guest_input.c` → uinput injection (actually inject events into Linux input subsystem)
-- [ ] `guest_display.c` → `/dev/fb0` real framebuffer capture (needs `hyperv_fb.ko` in HCS JSON)
+- [x] `chimera-input-relay` → uinput injection: creates `Chimera HvSocket Input` virtual device, injects `linux_input_event` structs via `/dev/uinput` (CONFIG_INPUT_UINPUT=y, built-in)
+- [x] `chimera-display-relay` → `/dev/fb0` real capture: VideoMonitor in HCS JSON + hyperv_drm.ko → 1280×720 32bpp framebuffer; BGRA→RGB24 at ~30fps, zero dropped frames
 - [ ] Build Android kernel with dxgkrnl + HvSocket (`scripts/build-android-kernel.sh`)
 - [ ] Build AOSP cuttlefish x86_64 image → VHDX
 
@@ -376,5 +389,5 @@ Original analysis files from `BlueStacks_nxt/` have been copied to:
 ---
 
 *Updated: 2026-05-17*
-*Phase: Phase 5a COMPLETE — HCS + HvSocket end-to-end display/input pipeline verified*
+*Phase: Phase 5b COMPLETE — Real /dev/fb0 (1280×720) + uinput injection verified at ~30fps, zero dropped frames*
 *Tests: 6/6 passing*

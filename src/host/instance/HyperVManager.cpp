@@ -265,6 +265,11 @@ QString HyperVManager::buildHcsJsonString(const HcsConfig &cfg) {
     vm["Devices"]["HvSocket"]["HvSocketConfig"]["DefaultConnectSecurityDescriptor"] =
         "D:P(A;;FA;;;WD)";
 
+    // Synthetic video adapter — required for /dev/fb0 (hyperv_fb.ko) in guest.
+    // Resolution is advisory; the guest kernel/driver may report a different size.
+    vm["Devices"]["VideoMonitor"]["HorizontalResolution"] = 1280;
+    vm["Devices"]["VideoMonitor"]["VerticalResolution"]   = 720;
+
     // Serial console on COM1 for kernel diagnostics — read via \\.\pipe\chimera-serial
     vm["Devices"]["ComPorts"]["0"]["NamedPipe"] = "\\\\.\\pipe\\chimera-serial";
 

@@ -142,12 +142,14 @@ chimera/
 - ✅ QMP input integration (preferred over ADB for keyboard/mouse/gamepad)
 - ✅ QMP auto-reconnect (5-second retry loop; fixed after failed connection/socket error on 2026-05-14)
 - ✅ **HvSocket end-to-end (2026-05-17)**: HCS VM lifecycle → serial console pipe (CLIENT, not server) → AF_HYPERV dual-channel → `guest_display.c` 640×480 RGB888 ~30fps → `HvSocketFramebufferCapture` → `GuestDisplay` renders at 26–27 FPS, zero dropped frames. `guest_input.c` receives `linux_input_event` on port 16. Azure 6.11 kernel module fix: `.ko.zst` decompressed; `svm_flags=0` applied.
+- ✅ **Real framebuffer + uinput (2026-05-17)**: VideoMonitor (1280×720) in HCS JSON → `hyperv_drm.ko` creates `/dev/fb0` (1280×720 32bpp, DRM_FBDEV_EMULATION=y). `chimera-display-relay` reads real fb0 BGRA→RGB24 at ~30fps, zero dropped. `chimera-input-relay` creates `/dev/uinput` virtual device `Chimera HvSocket Input` (uinput=y built-in). `build-initramfs.sh` updated to find hyperv_drm from system modules.
 
 ## Current Review Notes
 
 - Latest review report: `docs/project/CODE_REVIEW.md`
 - Last verified: 2026-05-17, Release build passed, 6/6 Qt unit tests passed
 - HCS smoke (2026-05-17): `--hcs-backend` boots custom kernel/initrd, serial pipe reads kernel output, HvSocket port 16+17 both connected, display FPS 26–27 sustained with zero dropped frames
+- Phase 5b smoke (2026-05-17): VideoMonitor in HCS JSON → hyperv_drm loads → `/dev/fb0` 1280×720 32bpp created → chimera-display-relay reads real fb at 30fps, zero drops → chimera-input-relay creates uinput virtual device
 - Live smoke: stale AVD locks removed, emulator boot completed, QMP auto-reconnect succeeded, native emulator window attached, Android reports 1280x720 / 240 dpi / 60.00 Hz / `skiavk`
 - Toolbar smoke: native embedding hides Android Emulator auxiliary tool windows; Chimera exposes controls in its own compact right-side status/action panel and supports `Esc` to leave fullscreen.
 - UI shell pass: top bar is product/status only, repeated toolbar actions were consolidated, duplicate FPS badges were removed, clipped hover tooltips were removed, Android Back/Home/Recents controls were added, and key/multi/macro UI now opens inside the right panel so native child windows cannot cover it.

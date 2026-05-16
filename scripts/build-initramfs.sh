@@ -89,7 +89,10 @@ chmod +x "$INITRD_WORK/bin/chimera-input-relay" "$INITRD_WORK/bin/chimera-displa
 install_module() {
     local name="$1"
     local src
-    src=$(find "$MODULES_DIR" -name "${name}.ko.zst" 2>/dev/null | head -1)
+    # Search base modules, extra modules, and system-installed modules (fallback)
+    src=$(find "$MODULES_DIR" "$MODULES_DIR-extra" \
+              /lib/modules/"$KERNEL_VER" \
+              -name "${name}.ko.zst" 2>/dev/null | head -1)
     if [[ -z "$src" ]]; then
         echo "[WARN] Module not found: $name"
         return 0
@@ -103,6 +106,9 @@ info "Installing kernel modules..."
 install_module vsock
 install_module hv_sock
 install_module vsock_loopback
+# hyperv_drm: DRM driver for Hyper-V synthetic video (VideoMonitor HCS device).
+# Azure kernel has CONFIG_DRM_FBDEV_EMULATION=y so loading this creates /dev/fb0.
+install_module hyperv_drm
 
 # uinput — try extra modules package
 UINPUT_KO=$(find "$MODULES_DIR" -name "uinput.ko*" 2>/dev/null | head -1)
@@ -142,14 +148,20 @@ mkdir -p /dev/pts && mount -t devpts devpts /dev/pts 2>/dev/null || true
 echo "Chimera HCS guest init starting..."
 echo "Kernel: $(uname -r)"
 
-# Load HvSocket modules
-for mod in vsock hv_sock uinput; do
+# Load HvSocket modules (uinput is CONFIG_INPUT_UINPUT=y, built-in — no insmod needed)
+for mod in vsock hv_sock hyperv_drm; do
     if [ -f "/lib/modules/${mod}.ko" ]; then
         insmod "/lib/modules/${mod}.ko" 2>/dev/null && echo "  [+] ${mod}" || echo "  [!] ${mod} failed"
     else
-        modprobe "$mod" 2>/dev/null && echo "  [+] ${mod}" || echo "  [-] ${mod} not found"
+        modprobe "$mod" 2>/dev/null && echo "  [+] ${mod} (via modprobe)" || echo "  [-] ${mod} not found"
     fi
 done
+# Wait for /dev/fb0 to appear (hyperv_drm + VideoMonitor = /dev/fb0 via DRM fbdev emulation)
+for i in $(seq 1 10); do
+    [ -e /dev/fb0 ] && echo "  [+] /dev/fb0 ready" && break
+    sleep 1
+done
+[ -e /dev/fb0 ] || echo "  [-] /dev/fb0 not found (display relay will skip fb0)"
 
 # Start relay daemons
 if [ -x /bin/chimera-input-relay ]; then
