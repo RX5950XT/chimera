@@ -4,9 +4,9 @@
 
 ## Current State
 
-**Phase**: Phase 5b — Real Framebuffer + uinput COMPLETE 2026-05-17
+**Phase**: Phase 5c — WSL2 6.6 dxgkrnl+HvSocket Kernel COMPLETE 2026-05-17
 **Date**: 2026-05-17
-**Next**: Phase 5c — Build Android kernel with dxgkrnl+HvSocket support (`scripts/build-android-kernel.sh` in WSL2), then build AOSP cuttlefish x86_64 image → VHDX.
+**Next**: Phase 5d — Build AOSP cuttlefish x86_64 image → VHDX for GPU-PV guest.
 
 ### v2 Phase 1 Verification Results (2026-05-16)
 
@@ -92,6 +92,17 @@
 - ✅ `initrd.img` rebuilt with: vsock, hv_sock, vsock_loopback, hyperv_drm modules + production relay daemons
 - ✅ `build-initramfs.sh` updated: searches system-installed Azure kernel modules, includes hyperv_drm
 - Note: `uname`, `mkdir`, `seq` commands missing from busybox symlinks (cosmetic — all key functionality works)
+
+### Phase 5c WSL2 6.6 dxgkrnl+HvSocket Kernel Verification Results (2026-05-17)
+
+- ✅ `scripts/build-android-kernel.sh` builds WSL2 6.6.123.2 kernel with `CONFIG_DXGKRNL=y`, `CONFIG_VSOCKETS=y`, `CONFIG_INPUT_UINPUT=y`
+- ✅ `scripts/patch-kernel-vsock-drm-modules.sh` converts `hv_sock=m` + `hyperv_drm=m`; builds `net/vmw_vsock/hv_sock.ko` + `drivers/gpu/drm/hyperv/hyperv_drm.ko` (565KB + 892KB)
+- ✅ `scripts/build-wsl-initrd.sh` packs modules + relay daemons into 1.2MB initrd; init script runs `insmod hv_sock.ko` then `insmod hyperv_drm.ko` after boot
+- ✅ `hv_sock`: loads successfully on second VMBus registration attempt (VMBus channel offered post-init)
+- ✅ `hyperv_drm`: loads after `sleep 2`, probes Synthvid v3.5 VideoMonitor channel → `/dev/fb0` (1280×720 32bpp)
+- ✅ `test-hcs-wsl2-kernel.py`: 3/3 checks pass — `/dev/fb0 ready` + `Input relay connected` + `Display relay connected`
+- ✅ Azure 6.11 confirmed: has NO dxgkrnl → WSL2 6.6 is the correct base for GPU-PV
+- Note: hv_sock registers/unregisters once at insmod, then re-registers successfully (benign retry behaviour)
 
 ### Phase 5 Features (Advanced Virtualization)
 
@@ -329,7 +340,8 @@ User clicks "Start" → InstanceManager → VirtualMachine.buildEmulatorArgs() �
 - [x] Azure 6.11 kernel module fix (decompress `.ko.zst` → `.ko`, `svm_flags=0`)
 - [x] `chimera-input-relay` → uinput injection: creates `Chimera HvSocket Input` virtual device, injects `linux_input_event` structs via `/dev/uinput` (CONFIG_INPUT_UINPUT=y, built-in)
 - [x] `chimera-display-relay` → `/dev/fb0` real capture: VideoMonitor in HCS JSON + hyperv_drm.ko → 1280×720 32bpp framebuffer; BGRA→RGB24 at ~30fps, zero dropped frames
-- [ ] Build Android kernel with dxgkrnl + HvSocket (`scripts/build-android-kernel.sh`)
+- [x] Build WSL2 6.6 kernel with dxgkrnl + hv_sock=m + hyperv_drm=m (`scripts/build-android-kernel.sh` + `patch-kernel-vsock-drm-modules.sh`)
+- [x] Standalone HCS boot test 3/3 (`test-hcs-wsl2-kernel.py`): /dev/fb0 ✅ + input relay ✅ + display relay ✅
 - [ ] Build AOSP cuttlefish x86_64 image → VHDX
 
 ## Reference: BlueStacks Architecture (Gemini DeepResearch)
@@ -389,5 +401,5 @@ Original analysis files from `BlueStacks_nxt/` have been copied to:
 ---
 
 *Updated: 2026-05-17*
-*Phase: Phase 5b COMPLETE — Real /dev/fb0 (1280×720) + uinput injection verified at ~30fps, zero dropped frames*
+*Phase: Phase 5c COMPLETE — WSL2 6.6 kernel (dxgkrnl=y, hv_sock=m, hyperv_drm=m) boots via HCS, 3/3 checks pass: /dev/fb0 + input relay + display relay*
 *Tests: 6/6 passing*

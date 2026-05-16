@@ -20,10 +20,12 @@
 # =============================================================================
 set -euo pipefail
 
-OUT_DIR="${1:-$(pwd)/out/kernel}"
+PROJ_ROOT_WIN="/mnt/d/Workspace_cloud/Personal_Project/chimera"
+OUT_DIR="${1:-$PROJ_ROOT_WIN/out/android-kernel}"
 KERNEL_REPO="https://github.com/microsoft/WSL2-Linux-Kernel.git"
 KERNEL_BRANCH="linux-msft-wsl-6.6.y"
-KERNEL_DIR="$(pwd)/build/wsl2-kernel"
+# Build in WSL2 native ext4 for performance (avoids 9P NTFS I/O penalty)
+KERNEL_DIR="$HOME/build/wsl2-kernel"
 JOBS=$(nproc)
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -50,10 +52,12 @@ cd "$KERNEL_DIR"
 
 # ── Step 2: Base config ───────────────────────────────────────────────────
 info "Configuring kernel..."
-cp Microsoft/config-wsl arch/x86/configs/chimera_defconfig
+# Start from WSL2 config (has Hyper-V, VMBus, vsock, dxgkrnl) directly into .config
+# DO NOT use KCONFIG_CONFIG — it redirects output away from .config and breaks the build
+cp Microsoft/config-wsl .config
 
-# Append Android/cuttlefish + GPU-PV required options
-cat >> arch/x86/configs/chimera_defconfig << 'EOF'
+# Append Android/cuttlefish + GPU-PV required options directly to .config
+cat >> .config << 'EOF'
 
 # ---------- Chimera HCS/Android additions ----------
 
@@ -78,6 +82,10 @@ CONFIG_VIRTIO_NET=y
 
 # /dev/uinput (needed by HID bridge daemon to inject input events)
 CONFIG_INPUT_UINPUT=y
+
+# Hyper-V synthetic display (hyperv_drm) — creates /dev/fb0 via DRM fbdev emulation
+# Requires VideoMonitor device in HCS JSON to get the synthetic video adapter
+CONFIG_DRM_HYPERV=y
 
 # DRM framebuffer console (enables /dev/fb0 for display capture daemon)
 CONFIG_DRM_FBDEV_EMULATION=y
@@ -104,7 +112,8 @@ CONFIG_DEBUG_INFO=n
 CONFIG_DEBUG_KERNEL=n
 EOF
 
-make KCONFIG_CONFIG=arch/x86/configs/chimera_defconfig defconfig
+# Resolve config dependencies without overwriting existing settings
+make olddefconfig
 
 # Ensure dxgkrnl (GPU-PV driver) is enabled — already in WSL2 config
 if ! grep -q "CONFIG_DXGKRNL=y" .config; then

@@ -76,7 +76,7 @@ if [[ ! -f "$BUSYBOX_BIN" ]]; then
     chmod +x "$BUSYBOX_BIN"
 fi
 # Symlink common tools
-for tool in sh ash mount umount ls cat echo sleep modprobe insmod lsmod; do
+for tool in sh ash mount umount ls cat echo sleep modprobe insmod lsmod mkdir seq uname dmesg; do
     ln -sf busybox "$INITRD_WORK/bin/$tool" 2>/dev/null || true
 done
 

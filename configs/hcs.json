@@ -6,8 +6,8 @@
     "name": "chimera_test"
   },
   "boot": {
-    "kernel": "out/hyperv-kernel/bzImage",
-    "initrd": "out/hyperv-kernel/initrd.img",
+    "kernel": "out/android-kernel/bzImage",
+    "initrd": "out/android-kernel/initrd.img",
     "cmdline": "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 loglevel=8 ignore_loglevel panic=30 init=/init"
   },
   "disks": {
