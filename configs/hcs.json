@@ -1,18 +1,18 @@
 {
   "hcs": {
-    "cpus": 2,
-    "ram_mb": 1024,
+    "cpus": 4,
+    "ram_mb": 2048,
     "gpu_mode": "none",
-    "name": "chimera_test"
+    "name": "chimera_cuttlefish"
   },
   "boot": {
     "kernel": "out/android-kernel/bzImage",
-    "initrd": "out/android-kernel/initrd.img",
-    "cmdline": "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 loglevel=8 ignore_loglevel panic=30 init=/init"
+    "initrd": "out/cuttlefish/initrd.img",
+    "cmdline": "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 loglevel=8 ignore_loglevel panic=30 init=/init androidboot.selinux=permissive"
   },
   "disks": {
-    "system": "",
-    "vendor": "",
-    "userdata": ""
+    "system":   "out/cuttlefish/system.vhdx",
+    "vendor":   "out/cuttlefish/vendor.vhdx",
+    "userdata": "out/cuttlefish/userdata.vhdx"
   }
 }

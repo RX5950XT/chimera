@@ -4,9 +4,9 @@
 
 ## Current State
 
-**Phase**: Phase 5c — WSL2 6.6 dxgkrnl+HvSocket Kernel COMPLETE 2026-05-17
+**Phase**: Phase 5d — AOSP Cuttlefish x86_64 VHDX + HCS boot COMPLETE 2026-05-17
 **Date**: 2026-05-17
-**Next**: Phase 5d — Build AOSP cuttlefish x86_64 image → VHDX for GPU-PV guest.
+**Next**: Phase 5e — GPU-PV driver projection into Android guest (dxgkrnl + ANGLE/Vulkan).
 
 ### v2 Phase 1 Verification Results (2026-05-16)
 
@@ -92,6 +92,17 @@
 - ✅ `initrd.img` rebuilt with: vsock, hv_sock, vsock_loopback, hyperv_drm modules + production relay daemons
 - ✅ `build-initramfs.sh` updated: searches system-installed Azure kernel modules, includes hyperv_drm
 - Note: `uname`, `mkdir`, `seq` commands missing from busybox symlinks (cosmetic — all key functionality works)
+
+### Phase 5d AOSP Cuttlefish VHDX + HCS Boot Verification Results (2026-05-17)
+
+- ✅ `scripts/build-cuttlefish-vhdx.sh` — Android 34 SDK system.img + vendor.img → VHDX via `losetup --offset` (ext4 at 3,145,728 / 1,048,576 bytes)
+- ✅ `out/cuttlefish/system.vhdx` (2.9 GB): Android 14 rootfs with `/init` → `/system/bin/init` symlink, all system files
+- ✅ `out/cuttlefish/vendor.vhdx` (112 MB): Android vendor partition with HALs
+- ✅ `out/cuttlefish/userdata.vhdx` (184 MB): blank 4 GiB ext4 created via dd + mkfs.ext4
+- ✅ `scripts/build-android-initrd.sh`: builds 1.2 MB initrd with busybox, hv_sock.ko, hyperv_drm.ko, chimera-display-relay, chimera-input-relay; init uses `switch_root`
+- ✅ `test-hcs-cuttlefish.py`: **5/5 checks pass** — /dev/fb0 ✅ + input relay (vsock 16) ✅ + display relay (vsock 17) ✅ + system partition mount ✅ + switch_root ✅
+- ✅ HCS VM boots kernel → loads hyperv_drm → /dev/fb0 1280×720 → relay daemons connect → mounts system.vhdx at /newroot → switch_root to Android rootfs
+- Note: Android `/system/bin/init` is dynamically linked with Android's own linker; full Android init will require selinux policy + init.rc support
 
 ### Phase 5c WSL2 6.6 dxgkrnl+HvSocket Kernel Verification Results (2026-05-17)
 
@@ -342,7 +353,9 @@ User clicks "Start" → InstanceManager → VirtualMachine.buildEmulatorArgs() �
 - [x] `chimera-display-relay` → `/dev/fb0` real capture: VideoMonitor in HCS JSON + hyperv_drm.ko → 1280×720 32bpp framebuffer; BGRA→RGB24 at ~30fps, zero dropped frames
 - [x] Build WSL2 6.6 kernel with dxgkrnl + hv_sock=m + hyperv_drm=m (`scripts/build-android-kernel.sh` + `patch-kernel-vsock-drm-modules.sh`)
 - [x] Standalone HCS boot test 3/3 (`test-hcs-wsl2-kernel.py`): /dev/fb0 ✅ + input relay ✅ + display relay ✅
-- [ ] Build AOSP cuttlefish x86_64 image → VHDX
+- [x] Build AOSP cuttlefish x86_64 image → VHDX (`scripts/build-cuttlefish-vhdx.sh` + Android 34 SDK images)
+- [x] Build Android initrd with switch_root, hv_sock, hyperv_drm, relay daemons (`scripts/build-android-initrd.sh`)
+- [x] HCS Cuttlefish boot test 5/5 (`test-hcs-cuttlefish.py`): fb0 ✅ + input relay ✅ + display relay ✅ + system mount ✅ + switch_root ✅
 
 ## Reference: BlueStacks Architecture (Gemini DeepResearch)
 
@@ -401,5 +414,5 @@ Original analysis files from `BlueStacks_nxt/` have been copied to:
 ---
 
 *Updated: 2026-05-17*
-*Phase: Phase 5c COMPLETE — WSL2 6.6 kernel (dxgkrnl=y, hv_sock=m, hyperv_drm=m) boots via HCS, 3/3 checks pass: /dev/fb0 + input relay + display relay*
+*Phase: Phase 5d COMPLETE — AOSP Cuttlefish VHDX built from Android 34 SDK images; HCS boot test 5/5 passes: /dev/fb0 + input relay + display relay + system mount + switch_root*
 *Tests: 6/6 passing*
