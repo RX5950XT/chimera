@@ -4,6 +4,7 @@
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QDebug>
+#include <algorithm>
 #include "InputBridge.h"
 
 namespace chimera {
@@ -15,6 +16,7 @@ GuestDisplay::GuestDisplay(QQuickItem *parent)
     setAcceptedMouseButtons(Qt::AllButtons);
     setFlag(QQuickItem::ItemAcceptsInputMethod, true);
     setFlag(QQuickItem::ItemHasContents, true);
+    setActiveFocusOnTab(true);
     setFocus(true);
 }
 
@@ -24,13 +26,22 @@ QImage GuestDisplay::frame() const {
 
 void GuestDisplay::setFrame(const QImage &img) {
     if (m_frame.isNull() || img.size() != m_frame.size()) {
-        m_frame = img.copy();
+        m_frame = img;
         update();
         emit frameChanged();
         return;
     }
-    m_frame = img.copy();
+    m_frame = img;
     update();
+}
+
+bool GuestDisplay::hasFrame() const {
+    return !m_frame.isNull();
+}
+
+void GuestDisplay::setGuestSize(const QSize &size) {
+    if (size.width() <= 0 || size.height() <= 0 || m_guestSize == size) return;
+    m_guestSize = size;
 }
 
 bool GuestDisplay::saveScreenshot(const QString &filePath) const {
@@ -41,24 +52,19 @@ bool GuestDisplay::saveScreenshot(const QString &filePath) const {
 void GuestDisplay::paint(QPainter *painter) {
     if (m_frame.isNull()) {
         painter->fillRect(boundingRect(), Qt::black);
-        painter->setPen(Qt::white);
-        painter->drawText(boundingRect(), Qt::AlignCenter, "Waiting for guest display...");
+        painter->setPen(QColor(220, 230, 230));
+        painter->drawText(boundingRect(), Qt::AlignCenter, QStringLiteral("等待 Android 畫面..."));
         return;
     }
-    QRectF target = boundingRect();
     QRectF source(0, 0, m_frame.width(), m_frame.height());
-    // Preserve aspect ratio, letterbox
-    qreal sx = target.width() / source.width();
-    qreal sy = target.height() / source.height();
-    qreal s = qMin(sx, sy);
-    qreal nw = source.width() * s;
-    qreal nh = source.height() * s;
-    qreal nx = target.x() + (target.width() - nw) / 2;
-    qreal ny = target.y() + (target.height() - nh) / 2;
-    painter->drawImage(QRectF(nx, ny, nw, nh), m_frame, source);
+    painter->drawImage(displayRect(), m_frame, source);
 }
 
-QPointF GuestDisplay::mapToGuest(const QPointF &pos) const {
+QRectF GuestDisplay::displayRect() const {
+    if (m_frame.isNull() || m_frame.width() <= 0 || m_frame.height() <= 0) {
+        return QRectF();
+    }
+
     QRectF target = boundingRect();
     QRectF source(0, 0, m_frame.width(), m_frame.height());
     qreal sx = target.width() / source.width();
@@ -68,10 +74,21 @@ QPointF GuestDisplay::mapToGuest(const QPointF &pos) const {
     qreal nh = source.height() * scale;
     qreal nx = target.x() + (target.width() - nw) / 2;
     qreal ny = target.y() + (target.height() - nh) / 2;
+    return QRectF(nx, ny, nw, nh);
+}
 
-    qreal gx = (pos.x() - nx) / scale;
-    qreal gy = (pos.y() - ny) / scale;
-    return QPointF(qBound(qreal(0), gx, source.width()), qBound(qreal(0), gy, source.height()));
+bool GuestDisplay::mapToGuest(const QPointF &pos, QPointF &guestPos) const {
+    const QRectF rect = displayRect();
+    if (rect.isEmpty() || !rect.contains(pos)) return false;
+
+    const QSize guestSize = m_guestSize.isValid() ? m_guestSize : m_frame.size();
+    const qreal scaleX = guestSize.width() / rect.width();
+    const qreal scaleY = guestSize.height() / rect.height();
+    const qreal gx = (pos.x() - rect.x()) * scaleX;
+    const qreal gy = (pos.y() - rect.y()) * scaleY;
+    guestPos = QPointF(std::clamp(gx, qreal(0), qreal(guestSize.width() - 1)),
+                       std::clamp(gy, qreal(0), qreal(guestSize.height() - 1)));
+    return true;
 }
 
 void GuestDisplay::keyPressEvent(QKeyEvent *event) {
@@ -87,21 +104,34 @@ void GuestDisplay::keyReleaseEvent(QKeyEvent *event) {
 }
 
 void GuestDisplay::mousePressEvent(QMouseEvent *event) {
-    auto guestPos = mapToGuest(event->position());
+    forceActiveFocus();
+    QPointF guestPos;
+    if (!mapToGuest(event->position(), guestPos)) {
+        event->accept();
+        return;
+    }
     chimera::input::InputBridge::instance().onMouseButton(
         true, event->button(), static_cast<int>(guestPos.x()), static_cast<int>(guestPos.y()));
     event->accept();
 }
 
 void GuestDisplay::mouseReleaseEvent(QMouseEvent *event) {
-    auto guestPos = mapToGuest(event->position());
+    QPointF guestPos;
+    if (!mapToGuest(event->position(), guestPos)) {
+        event->accept();
+        return;
+    }
     chimera::input::InputBridge::instance().onMouseButton(
         false, event->button(), static_cast<int>(guestPos.x()), static_cast<int>(guestPos.y()));
     event->accept();
 }
 
 void GuestDisplay::mouseMoveEvent(QMouseEvent *event) {
-    auto guestPos = mapToGuest(event->position());
+    QPointF guestPos;
+    if (!mapToGuest(event->position(), guestPos)) {
+        event->accept();
+        return;
+    }
     chimera::input::InputBridge::instance().onMouseMove(
         static_cast<int>(guestPos.x()), static_cast<int>(guestPos.y()), 0, 0);
     event->accept();

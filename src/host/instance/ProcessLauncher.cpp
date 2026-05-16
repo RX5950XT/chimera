@@ -3,8 +3,56 @@
 #include <sstream>
 #include <thread>
 #include <array>
+#include <tlhelp32.h>
 
 namespace chimera::instance {
+
+namespace {
+
+std::vector<DWORD> collectChildProcesses(DWORD rootPid) {
+    std::vector<std::pair<DWORD, DWORD>> processes;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return {};
+
+    PROCESSENTRY32W entry = {};
+    entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            processes.emplace_back(entry.th32ProcessID, entry.th32ParentProcessID);
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+
+    std::vector<DWORD> result;
+    std::vector<DWORD> queue{rootPid};
+    for (size_t i = 0; i < queue.size(); ++i) {
+        const DWORD parent = queue[i];
+        for (const auto &[pid, parentPid] : processes) {
+            if (parentPid == parent) {
+                result.push_back(pid);
+                queue.push_back(pid);
+            }
+        }
+    }
+    return result;
+}
+
+void terminateProcessId(DWORD pid) {
+    HANDLE process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+    if (!process) return;
+    TerminateProcess(process, 1);
+    WaitForSingleObject(process, 3000);
+    CloseHandle(process);
+}
+
+void applyPriority(DWORD pid, DWORD priorityClass) {
+    HANDLE process = OpenProcess(PROCESS_SET_INFORMATION, FALSE, pid);
+    if (!process) return;
+    SetPriorityClass(process, priorityClass);
+    CloseHandle(process);
+}
+
+} // namespace
 
 ProcessLauncher::Result ProcessLauncher::runSync(const std::string &exe, const std::vector<std::string> &args) {
     Result res{ -1, {}, {} };
@@ -21,7 +69,8 @@ ProcessLauncher::Result ProcessLauncher::runSync(const std::string &exe, const s
 }
 
 HANDLE ProcessLauncher::runAsync(const std::string &exe, const std::vector<std::string> &args,
-                                  OutputCallback onStdout, OutputCallback onStderr) {
+                                  OutputCallback onStdout, OutputCallback onStderr,
+                                  bool startHidden) {
     // Build command line
     std::wstring cmdLine = L"\"";
     {
@@ -70,6 +119,10 @@ HANDLE ProcessLauncher::runAsync(const std::string &exe, const std::vector<std::
         si.hStdOutput = hStdOutWrite;
         si.hStdError = hStdErrWrite;
     }
+    if (startHidden) {
+        si.dwFlags |= STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+    }
 
     PROCESS_INFORMATION pi = {};
 
@@ -82,7 +135,7 @@ HANDLE ProcessLauncher::runAsync(const std::string &exe, const std::vector<std::
         nullptr,           // process security attributes
         nullptr,           // thread security attributes
         redirect ? TRUE : FALSE, // inherit handles
-        CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT,
+        CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
         nullptr,           // environment
         nullptr,           // current directory
         &si,
@@ -167,6 +220,11 @@ bool ProcessLauncher::isRunning(HANDLE hProcess) {
 
 bool ProcessLauncher::terminate(HANDLE hProcess) {
     if (!hProcess || hProcess == INVALID_HANDLE_VALUE) return false;
+    const DWORD rootPid = GetProcessId(hProcess);
+    auto children = collectChildProcesses(rootPid);
+    for (auto it = children.rbegin(); it != children.rend(); ++it) {
+        terminateProcessId(*it);
+    }
     return TerminateProcess(hProcess, 1) == TRUE;
 }
 
@@ -181,6 +239,19 @@ int ProcessLauncher::waitForExit(HANDLE hProcess, int timeoutMs) {
         }
     }
     return -1;
+}
+
+void ProcessLauncher::setProcessTreePriority(HANDLE hProcess, DWORD priorityClass) {
+    if (!hProcess || hProcess == INVALID_HANDLE_VALUE) return;
+    setProcessTreePriorityById(GetProcessId(hProcess), priorityClass);
+}
+
+void ProcessLauncher::setProcessTreePriorityById(DWORD rootPid, DWORD priorityClass) {
+    if (rootPid == 0) return;
+    applyPriority(rootPid, priorityClass);
+    for (DWORD childPid : collectChildProcesses(rootPid)) {
+        applyPriority(childPid, priorityClass);
+    }
 }
 
 } // namespace chimera::instance

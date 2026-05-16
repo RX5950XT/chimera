@@ -27,6 +27,7 @@ struct MacroEvent {
 class MacroEngine {
 public:
     static MacroEngine &instance();
+    ~MacroEngine();
 
     // Recording
     void startRecording(const std::string &name);

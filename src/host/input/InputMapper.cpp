@@ -1,10 +1,19 @@
 #include "InputMapper.h"
 #include <nlohmann/json.hpp>
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 
 namespace chimera::input {
 
 using json = nlohmann::json;
+
+static bool isSafeSchemeName(const std::string &name) {
+    if (name.empty()) return false;
+    return std::all_of(name.begin(), name.end(), [](unsigned char ch) {
+        return std::isalnum(ch) || ch == '_' || ch == '-' || ch == '.';
+    });
+}
 
 InputMapper &InputMapper::instance() {
     static InputMapper inst;
@@ -12,6 +21,8 @@ InputMapper &InputMapper::instance() {
 }
 
 bool InputMapper::loadScheme(const std::string &packageName) {
+    if (!isSafeSchemeName(packageName)) return false;
+
     auto path = std::filesystem::path("configs/input") / (packageName + ".json");
     std::ifstream f(path);
     if (!f.is_open()) return false;
@@ -40,6 +51,8 @@ bool InputMapper::loadScheme(const std::string &packageName) {
 }
 
 bool InputMapper::saveScheme(const std::string &packageName) const {
+    if (!isSafeSchemeName(packageName)) return false;
+
     auto dir = std::filesystem::path("configs/input");
     std::filesystem::create_directories(dir);
     auto path = dir / (packageName + ".json");

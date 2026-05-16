@@ -5,6 +5,7 @@
 #include <QDebug>
 #include <QFileInfo>
 #include <QDateTime>
+#include <QRegularExpression>
 
 namespace chimera {
 
@@ -22,10 +23,14 @@ bool ScreenRecorder::isRecording() const {
 }
 
 bool ScreenRecorder::hasFFmpeg(const QString &explicitPath) {
+    return !findFFmpeg(explicitPath).isEmpty();
+}
+
+QString ScreenRecorder::findFFmpeg(const QString &explicitPath) {
     if (!explicitPath.isEmpty()) {
-        return QFileInfo::exists(explicitPath);
+        return QFileInfo::exists(explicitPath) ? explicitPath : QString();
     }
-    // Check bundled ffmpeg first, then common locations + PATH
+
     QStringList candidates = {
         QCoreApplication::applicationDirPath() + "/ffmpeg.exe",
         "ffmpeg.exe",
@@ -34,13 +39,18 @@ bool ScreenRecorder::hasFFmpeg(const QString &explicitPath) {
         "C:/Program Files (x86)/ffmpeg/bin/ffmpeg.exe",
     };
     for (const auto &path : candidates) {
-        if (QFileInfo::exists(path)) return true;
+        if (QFileInfo::exists(path)) return path;
     }
-    // Try PATH
+
     QProcess tester;
     tester.start("where", QStringList() << "ffmpeg");
     tester.waitForFinished(2000);
-    return tester.exitCode() == 0 && !tester.readAllStandardOutput().isEmpty();
+    if (tester.exitCode() != 0) return QString();
+
+    const QString found = QString::fromLocal8Bit(tester.readAllStandardOutput())
+                              .split(QRegularExpression("[\r\n]"), Qt::SkipEmptyParts)
+                              .value(0);
+    return found.trimmed();
 }
 
 void ScreenRecorder::startRecording(const QString &outputPath, int fps) {
@@ -52,33 +62,8 @@ void ScreenRecorder::startRecording(const QString &outputPath, int fps) {
     m_frameHeight = 0;
 
     // Determine if we can use FFmpeg
-    m_usingFFmpeg = hasFFmpeg();
-
-    if (m_usingFFmpeg) {
-        // Start FFmpeg process with stdin pipe
-        m_ffmpegProcess = new QProcess(this);
-        QStringList args;
-        args << "-y"
-             << "-f" << "rawvideo"
-             << "-pix_fmt" << "rgb24"
-             << "-s" << "%1x%2" // placeholder, updated after first frame
-             << "-r" << QString::number(fps)
-             << "-i" << "-"
-             << "-pix_fmt" << "yuv420p"
-             << "-c:v" << "libx264"
-             << "-preset" << "fast"
-             << "-crf" << "23"
-             << outputPath;
-        m_ffmpegProcess->setProgram("ffmpeg");
-        m_ffmpegProcess->setArguments(args);
-        m_ffmpegProcess->start();
-        if (!m_ffmpegProcess->waitForStarted(3000)) {
-            qWarning() << "Failed to start FFmpeg, falling back to PNG";
-            m_usingFFmpeg = false;
-            delete m_ffmpegProcess;
-            m_ffmpegProcess = nullptr;
-        }
-    }
+    m_ffmpegPath = findFFmpeg();
+    m_usingFFmpeg = !m_ffmpegPath.isEmpty();
 
     if (!m_usingFFmpeg) {
         // PNG fallback: create directory
@@ -87,6 +72,9 @@ void ScreenRecorder::startRecording(const QString &outputPath, int fps) {
             m_pngDirectory += "_frames";
         }
         QDir().mkpath(m_pngDirectory);
+    } else {
+        QFileInfo outInfo(outputPath);
+        QDir().mkpath(outInfo.absolutePath());
     }
 
     m_recording = true;
@@ -119,10 +107,11 @@ void ScreenRecorder::feedFrame(const QImage &frame) {
         m_frameWidth = frame.width();
         m_frameHeight = frame.height();
 
-        if (m_usingFFmpeg && m_ffmpegProcess) {
-            // Update resolution in args if not already set
-            // Actually we need to restart ffmpeg with correct resolution
-            // For simplicity, just use PNG fallback if resolution changes
+        if (m_usingFFmpeg && !startFFmpegProcess()) {
+            qWarning() << "Failed to start FFmpeg, falling back to PNG";
+            m_usingFFmpeg = false;
+            m_pngDirectory = m_outputPath + "_frames";
+            QDir().mkpath(m_pngDirectory);
         }
     }
 
@@ -133,12 +122,44 @@ void ScreenRecorder::feedFrame(const QImage &frame) {
     }
 }
 
+bool ScreenRecorder::startFFmpegProcess() {
+    if (!m_usingFFmpeg || m_ffmpegProcess || m_frameWidth <= 0 || m_frameHeight <= 0) {
+        return m_ffmpegProcess != nullptr;
+    }
+
+    m_ffmpegProcess = new QProcess(this);
+    QStringList args;
+    args << "-y"
+         << "-f" << "rawvideo"
+         << "-pix_fmt" << "rgb24"
+         << "-s" << QStringLiteral("%1x%2").arg(m_frameWidth).arg(m_frameHeight)
+         << "-r" << QString::number(m_fps)
+         << "-i" << "-"
+         << "-pix_fmt" << "yuv420p"
+         << "-c:v" << "libx264"
+         << "-preset" << "veryfast"
+         << "-crf" << "23"
+         << m_outputPath;
+    m_ffmpegProcess->setProgram(m_ffmpegPath);
+    m_ffmpegProcess->setArguments(args);
+    m_ffmpegProcess->start();
+    if (m_ffmpegProcess->waitForStarted(3000)) return true;
+
+    delete m_ffmpegProcess;
+    m_ffmpegProcess = nullptr;
+    return false;
+}
+
 void ScreenRecorder::writeFrameToFFmpeg(const QImage &frame) {
     if (!m_ffmpegProcess || m_ffmpegProcess->state() != QProcess::Running) return;
 
     // Convert to RGB24 and write to stdin
     QImage rgbFrame = frame.convertToFormat(QImage::Format_RGB888);
-    m_ffmpegProcess->write(reinterpret_cast<const char*>(rgbFrame.bits()), rgbFrame.sizeInBytes());
+    const qint64 bytes = m_ffmpegProcess->write(
+        reinterpret_cast<const char*>(rgbFrame.bits()), rgbFrame.sizeInBytes());
+    if (bytes != rgbFrame.sizeInBytes()) {
+        emit errorOccurred(QStringLiteral("FFmpeg input pipe is not accepting frames"));
+    }
 }
 
 void ScreenRecorder::saveFrameAsPng(const QImage &frame) {

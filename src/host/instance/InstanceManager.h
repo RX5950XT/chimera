@@ -12,16 +12,18 @@ namespace chimera::instance {
 struct InstanceConfig {
     std::string name;
     int cpus = 4;
-    int ramMB = 4096;
-    int width = 1920;
-    int height = 1080;
+    int ramMB = 2048;
+    int width = 1280;
+    int height = 720;
     int dpi = 240;
     std::string graphicsEngine = "angle";
-    std::string graphicsRenderer = "d3d11";
+    std::string graphicsRenderer = "host";
     int maxFps = 60;
     bool enableVsync = false;
     bool enableRoot = false;
+    bool headless = false;
     std::string deviceProfile;           // Device spoofing profile name
+    std::string processPriority = "high";
     int qmpPort = 5554;
     std::filesystem::path dataDir;
 };

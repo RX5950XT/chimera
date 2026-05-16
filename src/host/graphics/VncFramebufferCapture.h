@@ -26,6 +26,9 @@ public:
     bool start() override;
     void stop() override;
     bool isRunning() const override;
+    bool isConnected() const { return m_state == State::Ready || m_state == State::FramebufferUpdate; }
+    void setAutoReconnect(bool enable, int intervalMs = 2000);
+    void setDesiredResolution(int w, int h);
     QString backendName() const override { return QStringLiteral("vnc-rfb"); }
 
 private slots:
@@ -55,13 +58,17 @@ private:
     void processFramebufferUpdate(QByteArray &buffer);
     void sendClientInit();
     void sendPixelFormat();
+    void sendEncodings();
     void sendFramebufferUpdateRequest(bool incremental);
+    void sendDesktopSizeRequest(int w, int h);
     void processRectangles(QByteArray &buffer);
 
     QString m_host;
     int m_port = 5900;
     QTcpSocket *m_socket = nullptr;
     QTimer *m_updateTimer = nullptr;
+    QTimer *m_reconnectTimer = nullptr;
+    bool m_autoReconnect = false;
     State m_state = State::Disconnected;
     bool m_running = false;
 
@@ -83,6 +90,10 @@ private:
     int m_rectBytesRemaining = 0;
     QByteArray m_rectPixelData;
     QImage m_framebuffer;
+    bool m_waitingForRectPixels = false;
+    bool m_updateInFlight = false;
+    int m_desiredWidth = 0;
+    int m_desiredHeight = 0;
 };
 
 } // namespace chimera::graphics

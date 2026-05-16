@@ -40,6 +40,12 @@ private slots:
         QCOMPARE(InputMapper::normToPixel(50.0f, 1920), 960);
         QCOMPARE(InputMapper::normToPixel(100.0f, 1080), 1080);
     }
+
+    void testRejectsUnsafeSchemeName() {
+        auto &mapper = InputMapper::instance();
+        QVERIFY(!mapper.loadScheme("../outside"));
+        QVERIFY(!mapper.saveScheme("../outside"));
+    }
 };
 
 QTEST_MAIN(TestInputMapper)

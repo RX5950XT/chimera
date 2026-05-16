@@ -1,14 +1,14 @@
 {
   "hcs": {
-    "cpus": 4,
-    "ram_mb": 4096,
-    "gpu_mode": "partition",
-    "name": "chimera_hcs"
+    "cpus": 2,
+    "ram_mb": 1024,
+    "gpu_mode": "none",
+    "name": "chimera_test"
   },
   "boot": {
-    "kernel": "",
-    "initrd": "",
-    "cmdline": "root=/dev/sda rw console=hvc0 quiet androidboot.hardware=cutf_x86_64 androidboot.serialno=chimera001"
+    "kernel": "out/hyperv-kernel/bzImage",
+    "initrd": "out/hyperv-kernel/initrd_azure.img",
+    "cmdline": "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 loglevel=8 ignore_loglevel panic=30 init=/init"
   },
   "disks": {
     "system": "",

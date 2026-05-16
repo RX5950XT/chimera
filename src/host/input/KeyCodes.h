@@ -143,6 +143,7 @@ enum class AndroidKeyCode : int {
     NumpadComma = 159,
     NumpadEnter = 160,
     NumpadEquals = 161,
+    AppSwitch = 187,
 };
 
 } // namespace chimera::input

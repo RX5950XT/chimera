@@ -36,7 +36,7 @@ public:
 
     double fps() const { return m_fps; }
     double averageFrameTimeMs() const;
-    double maxFrameTimeMs() const { return m_maxFrameTimeMs; }
+    double maxFrameTimeMs() const; // Worst frame time over the recent window.
     int droppedFrames() const { return m_droppedFrames; }
     int totalFrames() const { return m_totalFrames; }
 
@@ -55,7 +55,7 @@ private:
     static constexpr int MAX_SAMPLES = 60;
 
     double m_fps = 0.0;
-    double m_maxFrameTimeMs = 0.0;
+    bool m_hasLastFrame = false;
     int m_droppedFrames = 0;
     int m_totalFrames = 0;
     int m_framesInInterval = 0;

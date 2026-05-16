@@ -15,6 +15,10 @@ qt_add_executable(chimera-ui
     ChimeraWindow.h
     GuestDisplay.cpp
     GuestDisplay.h
+    NativeEmulatorView.cpp
+    NativeEmulatorView.h
+    QmlAndroidControls.cpp
+    QmlAndroidControls.h
     QmlInstanceManager.cpp
     QmlInstanceManager.h
     QmlMacroEngine.cpp
@@ -49,6 +53,24 @@ target_link_libraries(chimera-ui PRIVATE
 
 # ANGLE / OpenGL integration will be linked here later
 
+if(WIN32)
+    get_filename_component(QT_ROOT_DIR "${Qt6_DIR}/../../.." ABSOLUTE)
+    set(QT_WINDEPLOYQT_EXECUTABLE "${QT_ROOT_DIR}/bin/windeployqt.exe")
+
+    if(EXISTS "${QT_WINDEPLOYQT_EXECUTABLE}")
+        add_custom_command(TARGET chimera-ui POST_BUILD
+            COMMAND "${QT_WINDEPLOYQT_EXECUTABLE}"
+                --no-compiler-runtime
+                --no-translations
+                --qmldir "${CMAKE_CURRENT_SOURCE_DIR}"
+                "$<TARGET_FILE:chimera-ui>"
+            COMMENT "Deploying Qt runtime for chimera-ui"
+        )
+    else()
+        message(WARNING "windeployqt.exe not found; chimera-ui.exe may require Qt in PATH")
+    endif()
+endif()
+
 # Copy bundled FFmpeg to output directory if available
 set(FFMPEG_BIN ${CMAKE_SOURCE_DIR}/third_party/ffmpeg/ffmpeg.exe)
 if(EXISTS ${FFMPEG_BIN})
@@ -58,6 +80,10 @@ if(EXISTS ${FFMPEG_BIN})
             $<TARGET_FILE_DIR:chimera-ui>
         COMMENT "Copying bundled FFmpeg to output directory"
     )
+endif()
+
+if(WIN32)
+    set_target_properties(chimera-ui PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()
 
 install(TARGETS chimera-ui RUNTIME DESTINATION bin)

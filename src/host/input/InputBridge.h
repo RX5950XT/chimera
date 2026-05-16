@@ -42,6 +42,12 @@ public:
     void setQmpInput(class QmpInput *qmp);
     bool hasQmp() const;
 
+    // HvSocket input (highest priority — HCS/HyperV backend only)
+    void setHvSocketTransport(class HvSocketTransport *hvs);
+    bool hasHvSocket() const;
+
+    void setDisplaySize(int width, int height);
+
     // Host-facing methods (called from Qt event handlers)
     void onKeyEvent(bool press, int nativeScanCode, int nativeVirtualKey);
     void onMouseMove(int x, int y, int dx, int dy);
@@ -49,6 +55,10 @@ public:
     void onWheel(int deltaX, int deltaY);
     void onGamepadButton(int deviceId, int button, bool pressed);
     void onGamepadAxis(int deviceId, int axis, float value);
+
+    // Android system actions such as Back/Home/Recents use Android keycodes
+    // directly because QMP/Linux scan codes do not cover every semantic action.
+    bool sendAndroidKeyCode(int androidKeyCode);
 
     // Guest-facing methods
     void injectEvent(const Event &ev);
@@ -63,8 +73,10 @@ private:
     InputBridge();
     ~InputBridge();
     void workerLoop();
-    void enqueueAdbCommand(const std::string &cmd);
+    void enqueueAdbCommand(const std::string &cmd, bool dropIfBacklogged = false);
     int mapQtKeyToAndroid(int qtKey);
+    std::string keyNameFromQt(int qtKey) const;
+    bool injectMappedKey(int qtKey);
 
     EventCallback m_callback;
     bool m_forwarding = true;
@@ -75,6 +87,10 @@ private:
 
     // QMP low-latency input
     class QmpInput *m_qmpInput = nullptr;
+    // HvSocket input (HCS/HyperV backend)
+    class HvSocketTransport *m_hvSocketTransport = nullptr;
+    int m_displayWidth = 1920;
+    int m_displayHeight = 1080;
 
     // Command queue for async ADB execution
     std::queue<std::string> m_queue;

@@ -19,8 +19,12 @@ add_library(chimera-graphics STATIC
     FramebufferCapture.h
     AdbFramebufferCapture.cpp
     AdbFramebufferCapture.h
+    GrpcFramebufferCapture.cpp
+    GrpcFramebufferCapture.h
     VncFramebufferCapture.cpp
     VncFramebufferCapture.h
+    HvSocketFramebufferCapture.cpp
+    HvSocketFramebufferCapture.h
     PerformanceMonitor.cpp
     PerformanceMonitor.h
 )
@@ -46,6 +50,10 @@ target_link_libraries(chimera-graphics PRIVATE
     Qt6::OpenGL
     OpenGL::GL
 )
+
+if(WIN32)
+    target_link_libraries(chimera-graphics PRIVATE ws2_32 ole32)
+endif()
 
 # Copy ANGLE DLLs to output directory if available
 set(ANGLE_BIN_DIR ${CMAKE_SOURCE_DIR}/third_party/angle/bin)

@@ -17,6 +17,8 @@ add_library(chimera-input STATIC
     QmpInput.h
     VirtioInput.cpp
     VirtioInput.h
+    HvSocketTransport.cpp
+    HvSocketTransport.h
 )
 
 target_include_directories(chimera-input PUBLIC
@@ -35,5 +37,7 @@ if(WIN32)
         xinput
         dinput8
         dxguid
+        ws2_32
+        ole32
     )
 endif()

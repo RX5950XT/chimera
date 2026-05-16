@@ -45,8 +45,11 @@ using FnHcsTerminateComputeSystem= HRESULT       (WINAPI*)(HCS_SYSTEM, HCS_OPERA
 using FnHcsCloseComputeSystem    = HRESULT       (WINAPI*)(HCS_SYSTEM);
 
 // computestorage.dll — grants VM SID access to VHDX files
-using FnHcsGrantVmAccess         = HRESULT       (WINAPI*)(const wchar_t* vmId,
-                                                            const wchar_t* filePath);
+using FnHcsGrantVmAccess             = HRESULT (WINAPI*)(const wchar_t* vmId,
+                                                          const wchar_t* filePath);
+// Get compute system properties (e.g. RuntimeId / partition GUID for AF_HYPERV)
+using FnHcsGetComputeSystemProperties = HRESULT (WINAPI*)(HCS_SYSTEM, HCS_OPERATION,
+                                                           const wchar_t* propertyQuery);
 #endif // Q_OS_WIN
 
 // ---------------------------------------------------------------------------
@@ -55,7 +58,8 @@ using FnHcsGrantVmAccess         = HRESULT       (WINAPI*)(const wchar_t* vmId,
 class HyperVManager::Impl {
 public:
     HcsConfig config;
-    QString   vmId;
+    QString   vmId;         // ID we assigned (passed to HcsCreateComputeSystem)
+    QString   partitionId;  // Actual HV partition GUID used for AF_HYPERV SOCKADDR_HV
     std::atomic<State> currentState{State::Idle};
     std::atomic<bool>  aborted{false};
     std::thread        workerThread;
@@ -86,7 +90,8 @@ public:
     FnHcsShutDownComputeSystem  fnShutDown    = nullptr;
     FnHcsTerminateComputeSystem fnTerminate   = nullptr;
     FnHcsCloseComputeSystem     fnCloseSys    = nullptr;
-    FnHcsGrantVmAccess          fnGrantAccess = nullptr;
+    FnHcsGrantVmAccess                fnGrantAccess = nullptr;
+    FnHcsGetComputeSystemProperties   fnGetProps    = nullptr;
 
     bool hcsLoaded = false;
 
@@ -109,6 +114,7 @@ public:
         fnShutDown   = (FnHcsShutDownComputeSystem) res(computecore, "HcsShutDownComputeSystem");
         fnTerminate  = (FnHcsTerminateComputeSystem)res(computecore, "HcsTerminateComputeSystem");
         fnCloseSys   = (FnHcsCloseComputeSystem)    res(computecore, "HcsCloseComputeSystem");
+        fnGetProps   = (FnHcsGetComputeSystemProperties)res(computecore, "HcsGetComputeSystemProperties");
 
         if (!fnCreateOp || !fnCreateSys || !fnWaitResult || !fnStartSys) {
             setError("Required HCS functions not found in computecore.dll");
@@ -165,6 +171,45 @@ public:
             qWarning() << "HcsGrantVmAccess failed for" << path
                        << "hr=" << Qt::hex << static_cast<quint32>(hr);
     }
+
+    // Query the actual HV partition GUID (RuntimeId) used in AF_HYPERV SOCKADDR_HV.
+    // The ID we pass to HcsCreateComputeSystem is NOT the same GUID — HCS assigns a
+    // separate partition GUID that the hypervisor exposes for HvSocket connections.
+    QString queryPartitionId() {
+        if (!fnGetProps) { qWarning() << "HCS: fnGetProps null"; return {}; }
+        if (!system)     { qWarning() << "HCS: system null";    return {}; }
+        // Empty query returns all basic properties including RuntimeId
+        const std::wstring query = L"{}";
+        HCS_OPERATION op = fnCreateOp(nullptr, nullptr);
+        if (!op) return {};
+        HRESULT hr = fnGetProps(system, op, query.c_str());
+        qDebug() << "HCS: HcsGetComputeSystemProperties hr=" << Qt::hex << static_cast<quint32>(hr);
+        wchar_t *result = nullptr;
+        if (hr == HCS_E_OP_PENDING || SUCCEEDED(hr))
+            hr = fnWaitResult(op, 10000, &result);
+        qDebug() << "HCS: WaitForOpResult hr=" << Qt::hex << static_cast<quint32>(hr);
+        fnCloseOp(op);
+        if (FAILED(hr) || !result) {
+            qWarning() << "HCS: queryPartitionId failed hr=" << Qt::hex << static_cast<quint32>(hr);
+            if (result) LocalFree(result);
+            return {};
+        }
+        const QString jsonStr = QString::fromWCharArray(result);
+        LocalFree(result);
+        qDebug() << "HCS: properties JSON =" << jsonStr.left(300);
+        // Try several possible field names for the partition GUID
+        try {
+            auto j = json::parse(jsonStr.toStdString());
+            for (const auto &key : {"RuntimeId", "Id", "ID", "VmId"}) {
+                if (j.contains(key))
+                    return QString::fromStdString(j[key].get<std::string>());
+            }
+        } catch (const std::exception &e) {
+            qWarning() << "HCS: JSON parse error:" << e.what();
+        }
+        qWarning() << "HCS: no GUID field found in properties:" << jsonStr.left(200);
+        return {};
+    }
 #endif // Q_OS_WIN
 };
 
@@ -181,7 +226,6 @@ QString HyperVManager::buildHcsJsonString(const HcsConfig &cfg) {
     vm["StopOnReset"] = true;
 
     auto &chipset = vm["Chipset"];
-    chipset["Uefi"]["ApplyDefaultRuntimeFirmware"] = false;
     if (!cfg.kernelPath.isEmpty()) {
         auto &lkd = chipset["LinuxKernelDirect"];
         lkd["KernelFilePath"] = cfg.kernelPath.toStdString();
@@ -196,21 +240,33 @@ QString HyperVManager::buildHcsJsonString(const HcsConfig &cfg) {
     topo["Memory"]["AllowOvercommit"] = true;
     topo["Processor"]["Count"]        = cfg.cpus;
 
-    auto &scsi = vm["Devices"]["Scsi"]["primary"]["Attachments"];
-    int idx = 0;
-    for (const auto &path : cfg.readonlyDiskPaths) {
-        scsi[std::to_string(idx++)] = {
-            {"Type", "VirtualDisk"}, {"Path", path.toStdString()}, {"ReadOnly", true}
-        };
-    }
-    if (!cfg.writableDiskPath.isEmpty()) {
-        scsi[std::to_string(idx)] = {
-            {"Type", "VirtualDisk"}, {"Path", cfg.writableDiskPath.toStdString()}, {"ReadOnly", false}
-        };
+    const bool hasDisks = !cfg.readonlyDiskPaths.isEmpty() || !cfg.writableDiskPath.isEmpty();
+    if (hasDisks) {
+        auto &scsi = vm["Devices"]["Scsi"]["primary"]["Attachments"];
+        int idx = 0;
+        for (const auto &path : cfg.readonlyDiskPaths) {
+            scsi[std::to_string(idx++)] = {
+                {"Type", "VirtualDisk"}, {"Path", path.toStdString()}, {"ReadOnly", true}
+            };
+        }
+        if (!cfg.writableDiskPath.isEmpty()) {
+            scsi[std::to_string(idx)] = {
+                {"Type", "VirtualDisk"}, {"Path", cfg.writableDiskPath.toStdString()}, {"ReadOnly", false}
+            };
+        }
     }
 
+    // HvSocket configuration:
+    //   DefaultBindSecurityDescriptor — controls guest-side bind (who can create a server socket)
+    //   DefaultConnectSecurityDescriptor — controls host-side connect (who can dial in)
+    // Both set to "Everyone" (WD) so non-elevated host processes can connect.
     vm["Devices"]["HvSocket"]["HvSocketConfig"]["DefaultBindSecurityDescriptor"] =
-        "D:P(A;;FA;;;SY)(A;;FA;;;BA)";
+        "D:P(A;;FA;;;WD)";
+    vm["Devices"]["HvSocket"]["HvSocketConfig"]["DefaultConnectSecurityDescriptor"] =
+        "D:P(A;;FA;;;WD)";
+
+    // Serial console on COM1 for kernel diagnostics — read via \\.\pipe\chimera-serial
+    vm["Devices"]["ComPorts"]["0"]["NamedPipe"] = "\\\\.\\pipe\\chimera-serial";
 
     if (cfg.gpuMode != GpuNone) {
         vm["Devices"]["GpuP"]["AssignmentMode"]       = "Mirror";
@@ -330,7 +386,9 @@ bool HyperVManager::createVm(const HcsConfig &config) {
     for (const auto &p : config.readonlyDiskPaths) d->grantDiskAccess(p);
     if (!config.writableDiskPath.isEmpty())         d->grantDiskAccess(config.writableDiskPath);
 
-    std::wstring jsonW  = buildHcsJsonString(config).toStdWString();
+    const QString jsonStr = buildHcsJsonString(config);
+    qDebug() << "HCS JSON:" << jsonStr;
+    std::wstring jsonW  = jsonStr.toStdWString();
     std::wstring vmIdW  = d->vmId.toStdWString();
     QPointer<HyperVManager> guard(this);  // created on main thread
 
@@ -383,6 +441,10 @@ bool HyperVManager::startVm() {
         });
 
         if (SUCCEEDED(hr)) {
+            // Get actual HV partition GUID — different from the ID we passed to createVm.
+            const QString pid = d->queryPartitionId();
+            d->partitionId = pid.isEmpty() ? d->vmId : pid;
+            qDebug() << "HCS: partition GUID (for AF_HYPERV) =" << d->partitionId;
             d->currentState = State::Running;
             emitStateAsync(this, guard, State::Running, d->aborted);
         } else {
@@ -456,5 +518,7 @@ bool HyperVManager::terminateVm() {
 // Accessors
 // ---------------------------------------------------------------------------
 HyperVManager::State HyperVManager::state() const { return d->currentState.load(); }
-bool    HyperVManager::isRunning()  const { return d->currentState == State::Running; }
-QString HyperVManager::lastError()  const { return d->getError(); }
+bool    HyperVManager::isRunning()   const { return d->currentState == State::Running; }
+QString HyperVManager::lastError()   const { return d->getError(); }
+QString HyperVManager::vmId()        const { return d->vmId; }
+QString HyperVManager::partitionId() const { return d->partitionId; }

@@ -51,6 +51,11 @@ private:
     GamepadState m_prevState[4];
     bool m_hasPrevState[4] = {false, false, false, false};
 
+    // Adaptive polling: empty XInput slots are only re-probed a few times per
+    // second instead of every frame to avoid wasted CPU on unused controllers.
+    bool m_slotConnected[4] = {false, false, false, false};
+    unsigned m_pollTick = 0;
+
     void detectChanges(int deviceId, const GamepadState &current);
 };
 

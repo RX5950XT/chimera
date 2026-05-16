@@ -19,6 +19,8 @@ add_library(chimera-instance STATIC
     DiskCompactor.h
     HyperVManager.cpp
     HyperVManager.h
+    QemuBackend.cpp
+    QemuBackend.h
 )
 
 target_include_directories(chimera-instance PUBLIC

@@ -3,13 +3,14 @@
     "default": {
       "name": "Pie64",
       "cpus": 4,
-      "ram": 4096,
+      "ram": 2048,
       "dpi": 240,
-      "fb_width": 1920,
-      "fb_height": 1080,
+      "fb_width": 1280,
+      "fb_height": 720,
       "graphics_engine": "angle",
-      "graphics_renderer": "d3d11",
+      "graphics_renderer": "host",
       "max_fps": 60,
+      "process_priority": "high",
       "enable_vsync": false,
       "enable_root_access": false,
       "game_controls_enabled": true,
@@ -21,7 +22,8 @@
   "graphics": {
     "prefer_dedicated_gpu": true,
     "astc_decoding_mode": "software",
-    "enable_high_fps": false
+    "enable_high_fps": true,
+    "native_window_embedding": true
   },
   "input": {
     "custom_cursor_enabled": true,

@@ -27,10 +27,17 @@
 #include "PerformanceMonitor.h"
 #include "QemuBackend.h"
 #include "HyperVManager.h"
+#include "HvSocketTransport.h"
+#include "HvSocketFramebufferCapture.h"
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <filesystem>
 #include <memory>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <shellapi.h>
+#endif
 
 using namespace chimera::instance;
 using namespace chimera::config;
@@ -38,6 +45,85 @@ using namespace chimera;
 
 static std::filesystem::path g_projectRoot;
 static std::filesystem::path g_adbPath;
+
+#ifdef _WIN32
+// Read HCS VM serial console — connects as CLIENT to HCS's named pipe server.
+// HCS creates \\.\pipe\chimera-serial as the SERVER; we open it as CLIENT to read kernel output.
+// Must be called AFTER the VM is Running so the pipe already exists.
+static void startSerialConsoleReader() {
+    std::thread([](){
+        HANDLE h = INVALID_HANDLE_VALUE;
+        // Retry for up to 20 s (pipe appears once HCS processes the VM start)
+        for (int i = 0; i < 20 && h == INVALID_HANDLE_VALUE; ++i) {
+            h = CreateFileW(L"\\\\.\\pipe\\chimera-serial",
+                            GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+            if (h != INVALID_HANDLE_VALUE) break;
+            const DWORD err = GetLastError();
+            if (err == ERROR_PIPE_BUSY) {
+                WaitNamedPipeW(L"\\\\.\\pipe\\chimera-serial", 2000);
+            } else {
+                if (i == 0) qDebug() << "HCS serial: pipe not yet available (err" << err << "), retrying...";
+                Sleep(1000);
+            }
+        }
+        if (h == INVALID_HANDLE_VALUE) {
+            qWarning() << "HCS serial: pipe not found after 20 retries — ComPorts may not be "
+                          "supported in LinuxKernelDirect mode (err" << GetLastError() << ")";
+            return;
+        }
+        qDebug() << "HCS serial: pipe opened — reading kernel output:";
+        char buf[512];
+        DWORD n;
+        while (ReadFile(h, buf, sizeof(buf) - 1, &n, nullptr) && n > 0) {
+            buf[n] = '\0';
+            qDebug() << "[VM-serial]" << QString::fromLocal8Bit(buf, static_cast<int>(n));
+        }
+        CloseHandle(h);
+        qDebug() << "HCS serial: pipe closed";
+    }).detach();
+}
+#endif
+
+#ifdef _WIN32
+static bool isElevated() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+    TOKEN_ELEVATION elev{};
+    DWORD size = 0;
+    const bool result = GetTokenInformation(token, TokenElevation, &elev, sizeof(elev), &size)
+                        && elev.TokenIsElevated != 0;
+    CloseHandle(token);
+    return result;
+}
+
+// Re-launch the current process elevated via UAC (runas verb).
+// Returns true if ShellExecuteEx succeeded; the caller should exit(0) in that case.
+static bool selfElevate(int argc, char *argv[]) {
+    wchar_t exePath[MAX_PATH];
+    if (!GetModuleFileNameW(nullptr, exePath, MAX_PATH)) return false;
+
+    // Rebuild command line from all args (skip argv[0])
+    QString params;
+    for (int i = 1; i < argc; ++i) {
+        if (i > 1) params += QLatin1Char(' ');
+        const QString arg = QString::fromLocal8Bit(argv[i]);
+        // Quote args that contain spaces
+        if (arg.contains(QLatin1Char(' ')))
+            params += QLatin1Char('"') + arg + QLatin1Char('"');
+        else
+            params += arg;
+    }
+
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize       = sizeof(sei);
+    sei.fMask        = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb       = L"runas";
+    sei.lpFile       = exePath;
+    sei.lpParameters = reinterpret_cast<LPCWSTR>(params.utf16());
+    sei.nShow        = SW_SHOWNORMAL;
+    return ShellExecuteExW(&sei) != FALSE;
+}
+#endif
 
 // v2 QEMU backend globals
 static QemuInstanceConfig g_qemuConfig;
@@ -213,6 +299,46 @@ static void applyGuestPerformanceSettings() {
 }
 
 int main(int argc, char *argv[]) {
+#ifdef _WIN32
+    // HCS/AF_HYPERV require SeCreateGlobalPrivilege (held by administrators).
+    // If --hcs-backend is requested and we are not elevated, ask UAC to re-launch elevated.
+    {
+        bool needsHcs = false;
+        for (int i = 1; i < argc; ++i) {
+            if (strcmp(argv[i], "--hcs-backend") == 0) { needsHcs = true; break; }
+        }
+        if (needsHcs) {
+            const bool elevated = isElevated();
+            fprintf(stderr, "[INFO] HCS backend: process elevated = %s\n", elevated ? "YES" : "NO");
+            if (!elevated) {
+                fprintf(stderr, "[INFO] HCS backend requires elevation — requesting UAC...\n");
+                if (selfElevate(argc, argv)) {
+                    fprintf(stderr, "[INFO] Elevated process launched — exiting this instance.\n");
+                    return 0;
+                }
+                fprintf(stderr, "[WARN] UAC elevation denied or failed — continuing without elevation.\n");
+            }
+        }
+    }
+#endif
+
+    // Write debug log to file so we can inspect output without a debug viewer.
+    // Only active when --hcs-backend flag is present.
+    static FILE *g_logFile = nullptr;
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--hcs-backend") == 0 || strcmp(argv[i], "--qemu-backend") == 0) {
+            g_logFile = fopen("chimera-debug.log", "w");
+            break;
+        }
+    }
+    qInstallMessageHandler([](QtMsgType type, const QMessageLogContext &, const QString &msg) {
+        const char *prefix = (type == QtWarningMsg) ? "WARN" :
+                             (type == QtCriticalMsg || type == QtFatalMsg) ? "ERR " : "DBG ";
+        QByteArray b = msg.toLocal8Bit();
+        if (g_logFile) { fprintf(g_logFile, "[%s] %s\n", prefix, b.constData()); fflush(g_logFile); }
+        fprintf(stderr, "[%s] %s\n", prefix, b.constData());
+    });
+
     // BlueStacks uses D3D11 for its Qt shell. Force the same Qt Quick RHI path
     // before QGuiApplication is created so the UI does not fall back to OpenGL.
     qputenv("QSG_RHI_BACKEND", "d3d11");
@@ -291,6 +417,8 @@ int main(int argc, char *argv[]) {
 
     // Phase 5: Hyper-V HCS + GPU-PV backend
     HyperVManager *hcsManager = nullptr;
+    chimera::input::HvSocketTransport *hvInput = nullptr;
+    chimera::graphics::HvSocketFramebufferCapture *hvDisplay = nullptr;
     if (hcsBackendMode && g_hcsConfigLoaded) {
         if (!HyperVManager::isAvailable()) {
             qWarning() << "HCS unavailable: Hyper-V not enabled or computecore.dll missing";
@@ -300,21 +428,51 @@ int main(int argc, char *argv[]) {
 
             hcsManager = new HyperVManager(&app);
 
+            // HvSocket input transport — connects once VM is Running
+            hvInput = new chimera::input::HvSocketTransport(
+                QString(), &app); // VM GUID resolved after createVm
+            hvInput->setAutoReconnect(true, 3000);
+            chimera::input::InputBridge::instance().setHvSocketTransport(hvInput);
+
+            // HvSocket framebuffer capture — same GUID, different service port
+            hvDisplay = new chimera::graphics::HvSocketFramebufferCapture(
+                QString(), &app);
+            hvDisplay->setAutoReconnect(true, 3000);
+
             QObject::connect(hcsManager, &HyperVManager::stateChanged, &app,
-                             [hcsManager](HyperVManager::State s) {
+                             [hcsManager, hvInput, hvDisplay](HyperVManager::State s) {
                 qDebug() << "HCS state ->" << static_cast<int>(s);
-                // Auto-start after VM is created
                 if (s == HyperVManager::State::Stopped) {
                     qDebug() << "HCS: VM created, starting...";
                     hcsManager->startVm();
                 } else if (s == HyperVManager::State::Running) {
-                    qDebug() << "HCS: VM running";
+                    // partitionId() is the actual HV partition GUID for AF_HYPERV SOCKADDR_HV
+                    const QString partGuid = hcsManager->partitionId();
+                    qDebug() << "HCS: VM running, partitionId=" << partGuid
+                             << "— reading serial, connecting HvSocket in 30s";
+                    hvInput->setVmId(partGuid);
+                    hvDisplay->setVmId(partGuid);
+#ifdef _WIN32
+                    // Connect to HCS serial pipe now that the VM is Running
+                    startSerialConsoleReader();
+#endif
+                    // 30s delay: kernel boot + module load + vsock relay start
+                    QTimer::singleShot(30000, hvInput,  [hvInput]()  {
+                        qDebug() << "HvSocket: attempting input connect...";
+                        hvInput->connectToVm();
+                    });
+                    QTimer::singleShot(30000, hvDisplay, [hvDisplay](){
+                        qDebug() << "HvSocket: attempting display connect...";
+                        hvDisplay->start();
+                    });
                 }
             });
+            QObject::connect(hvInput, &chimera::input::HvSocketTransport::connected,
+                             &app, []() { qDebug() << "HvSocket input: connected"; });
+            QObject::connect(hvInput, &chimera::input::HvSocketTransport::error,
+                             &app, [](const QString &m) { qWarning() << "HvSocket input error:" << m; });
             QObject::connect(hcsManager, &HyperVManager::error, &app,
-                             [](const QString &msg) {
-                qWarning() << "HCS error:" << msg;
-            });
+                             [](const QString &msg) { qWarning() << "HCS error:" << msg; });
 
             qDebug() << "HCS: creating VM" << g_hcsConfig.name
                      << QString("%1 CPU / %2 MB RAM").arg(g_hcsConfig.cpus).arg(g_hcsConfig.ramMB);
@@ -480,6 +638,11 @@ int main(int argc, char *argv[]) {
             perfMonitor->onFrameDropped();
         });
     };
+
+    // Phase 5: HvSocket display capture (wired but auto-starts when HCS VM is Running)
+    if (hcsBackendMode && hvDisplay) {
+        wireCapture(hvDisplay);
+    }
 
     // v2: VNC capture from stock QEMU
     chimera::graphics::VncFramebufferCapture *vncCapture = nullptr;

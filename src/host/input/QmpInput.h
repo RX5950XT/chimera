@@ -35,6 +35,7 @@ public:
     // Auto-reconnect configuration
     void setAutoReconnect(bool enabled, int intervalMs = 5000);
     bool autoReconnect() const;
+    void setDisplaySize(int width, int height);
 
     // Latency measurement (last command round-trip in ms)
     double lastLatencyMs() const { return m_lastLatencyMs; }
@@ -43,6 +44,11 @@ public:
     bool sendKey(int keyCode, bool down);
     bool sendMouseButton(int button, bool down, int x, int y);
     bool sendMouseMove(int x, int y);
+
+    static QJsonObject buildKeyCommand(int keyCode, bool down);
+    static QJsonObject buildMouseMoveCommand(int x, int y, int width, int height);
+    static QJsonObject buildMouseButtonCommand(int button, bool down, int x, int y,
+                                               int width, int height);
 
 private slots:
     void onReadyRead();
@@ -64,6 +70,13 @@ private:
     QString m_host;
     int m_port = 5554;
     bool m_autoReconnect = false;
+    bool m_disconnectRequested = false;
+    int m_displayWidth = 1920;
+    int m_displayHeight = 1080;
+
+    // Last mouse-move position, used to drop duplicate coordinates.
+    int m_lastMoveX = -1;
+    int m_lastMoveY = -1;
 };
 
 } // namespace chimera::input

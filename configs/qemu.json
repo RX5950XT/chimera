@@ -1,0 +1,27 @@
+{
+  "qemu": {
+    "binary": "C:/qemu/qemu-system-x86_64.exe",
+    "machine_type": "q35",
+    "accel": "whpx",
+    "cpus": 4,
+    "ram_mb": 4096,
+    "vga": "vmware",
+    "extra_args": ["-global", "vmware-svga.vgamem_mb=16"]
+  },
+  "disk": {
+    "base_image": "chimera-base.qcow2",
+    "cdrom": "android-x86_64-9.0-r2.iso",
+    "boot": "d",
+    "instances_dir": "instances",
+    "overlay_per_instance": true
+  },
+  "ports": {
+    "vnc_base": 5900,
+    "qmp_base": 4444,
+    "adb_base": 5560
+  },
+  "display": {
+    "width": 1024,
+    "height": 768
+  }
+}

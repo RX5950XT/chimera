@@ -75,6 +75,8 @@ public:
     State   state() const;
     bool    isRunning() const;
     QString lastError() const;
+    QString vmId() const;         // GUID we assigned — passed to HcsCreateComputeSystem
+    QString partitionId() const;  // Actual HV partition GUID — use this for AF_HYPERV SOCKADDR_HV
 
     // Returns the HCS JSON document (for debugging / offline testing)
     static QString buildHcsJsonString(const HcsConfig &config);

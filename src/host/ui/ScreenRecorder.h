@@ -40,6 +40,8 @@ signals:
     void errorOccurred(const QString &message);
 
 private:
+    static QString findFFmpeg(const QString &explicitPath = QString());
+    bool startFFmpegProcess();
     void writeFrameToFFmpeg(const QImage &frame);
     void saveFrameAsPng(const QImage &frame);
     QString generatePngPath();
@@ -48,6 +50,7 @@ private:
     bool m_usingFFmpeg = false;
     int m_fps = 30;
     QString m_outputPath;
+    QString m_ffmpegPath;
     QProcess *m_ffmpegProcess = nullptr;
 
     // PNG fallback

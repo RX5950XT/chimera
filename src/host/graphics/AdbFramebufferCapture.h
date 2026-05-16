@@ -4,6 +4,8 @@
 #include <QProcess>
 #include <QTimer>
 #include <QString>
+#include <QByteArray>
+#include <QElapsedTimer>
 
 namespace chimera::graphics {
 
@@ -27,20 +29,32 @@ public:
     QString backendName() const override { return QStringLiteral("adb-screencap"); }
 
     void setAdbPort(int port) { m_adbPort = port; }
+    static QImage decodeRawFrameData(const QByteArray &data);
 
 private slots:
     void onCaptureTimeout();
     void onProcessFinished(int exitCode, QProcess::ExitStatus status);
+    void onReadyRead();
+    void onWatchdogTimeout();
 
 private:
+    void startRawStream();
+    void startSingleCapture();
+    void restartRawStream(const QString &reason);
+    void parseRawStream();
+
     QString m_adbPath;
     int m_adbPort = 5555;
     bool m_usePng = false;
     QProcess *m_process = nullptr;
     QTimer *m_timer = nullptr;
+    QTimer *m_watchdogTimer = nullptr;
+    QElapsedTimer m_lastFrameTimer;
+    QByteArray m_readBuffer;
     bool m_running = false;
+    bool m_restartPending = false;
 
-    QImage decodeRawFrame(const QByteArray &data);
+    static QImage decodeRawFrameBytes(const char *data, qsizetype size);
 };
 
 } // namespace chimera::graphics

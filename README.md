@@ -44,7 +44,11 @@ $env:PATH = "C:\Qt\6.8.3\msvc2022_64\bin;$env:PATH"
 ctest --test-dir build -C Release --output-on-failure
 
 # 7. 啟動模擬器
+# build 完成後會自動部署 Qt DLL 到 build\Release
 .\build\Release\chimera-ui.exe
+
+# 只看 UI / 驗證 QML，不啟動 Android
+.\build\Release\chimera-ui.exe --no-emulator
 ```
 
 ### 現有 AVD 直接啟動（若已有 Android Emulator）
@@ -65,12 +69,14 @@ $env:PATH = "$env:PATH;C:\Users\$env:USERNAME\AppData\Local\Android\Sdk\platform
 |------|------|------|
 | Android 14 (x86_64) | ✅ | QEMU + WHPX |
 | OpenGL ES → D3D11 | ✅ | ANGLE headers + Chrome libEGL/libGLESv2 |
+| 繁體中文介面 | ✅ | 主 UI、工具列、對話框已繁中化 |
 | 鍵盤/滑鼠輸入 | ✅ | QMP 優先，ADB fallback |
 | 手把支援 (XInput) | ✅ | 14 鍵映射，60 Hz 輪詢 |
-| 鍵盤映射編輯器 | ✅ | JSON scheme + QML overlay |
-| 多開管理器 | ✅ | JSON 持久化，clone 支援 |
-| 巨集錄製/播放 | ✅ | 背景執行緒，loop 支援 |
-| 螢幕錄影 | ✅ | FFmpeg H.264 + PNG fallback |
+| 顯示路徑 | ✅ | 預設 native emulator window embedding，Android 端 60Hz；`--stream-capture` 才啟用 gRPC/ADB fallback |
+| 鍵盤映射編輯器 | ✅ | 右側面板內頁；串流模式可用 QML overlay |
+| 多開管理器 | ✅ | 右側面板內頁，JSON 持久化，clone 支援 |
+| 巨集錄製/播放 | ✅ | 右側面板內頁，背景執行緒，loop 支援 |
+| 螢幕錄影 | ✅ | Native child window 擷取 + FFmpeg H.264 / PNG fallback |
 | 效能監控 | ✅ | FPS 計數器、幀時間、掉幀 |
 | 裝置偽裝 | ✅ | 5 種旗艦機型 build.prop |
 | 記憶體修剪 | ✅ | 自動監控 /proc/meminfo |
@@ -89,7 +95,8 @@ $env:PATH = "$env:PATH;C:\Users\$env:USERNAME\AppData\Local\Android\Sdk\platform
 Chimera (Host Windows)
 ├── UI Layer          → Qt 6 + QML (ChimeraWindow.qml)
 ├── Input System      → InputBridge (QMP 優先) / GamepadManager / InputMapper
-├── Graphics          → AdbFramebufferCapture / VncFramebufferCapture / PerformanceMonitor
+├── Display           → NativeEmulatorView / GuestDisplay fallback / PerformanceMonitor
+├── Graphics Capture  → GrpcFramebufferCapture / AdbFramebufferCapture (`--stream-capture`)
 ├── Audio Bridge      → WASAPI shared-mode
 ├── Instance Manager  → JSON persistence + VirtualMachine launcher
 ├── QEMU + WHPX       → Android Emulator (prebuilt) / custom QEMU (future)
@@ -103,12 +110,31 @@ Chimera (Host Windows)
 
 ## 使用方式
 
+### 目前效能現況
+
+- 預設顯示路徑已改為 `NativeEmulatorView`，直接嵌入 Android Emulator Win32 視窗，避開 screenshot/gRPC 每幀複製瓶頸。
+- Android Emulator 原生直式工具列會在嵌入後自動隱藏；Chimera 改用主視窗內建右側狀態/操作面板，包含返回、首頁、最近使用等 Android 導航鍵。
+- 介面只保留一個 FPS 狀態區，移除重複 FPS 顯示與會被裁切的 hover tooltip；鍵位、多開、巨集改成右側面板內頁，避免 Win32 native child window 蓋住 QML 彈窗。
+- 顯示框固定 16:9 適配目前 1280×720 guest，避免非 16:9 容器造成 Android Emulator 內部黑邊。
+- Qt shell 啟動時強制使用 D3D11 RHI；emulator/qemu process tree 預設套用 high priority，降低遊戲幀時間尖峰。
+- Live smoke 已驗證 Android 實際 `1280x720`、`240 dpi`、SurfaceFlinger `60.00 Hz`、native window attach 成功。
+- `--stream-capture` 才會啟用 gRPC/ADB 畫面擷取；gRPC/ADB 現在是 fallback/除錯路徑，不是主要遊玩路徑。
+
 ### 基本操作
 
 | 快捷鍵 | 功能 |
 |--------|------|
 | `Ctrl + Shift + S` | 截圖 |
+| `Ctrl + Shift + R` | 錄影 |
+| `Ctrl + Shift + A` | 鍵位配置 |
+| `Ctrl + Shift + 7` | 巨集 |
+| `Ctrl + Shift + 8` | 多開管理 |
+| `Shift + Tab` | 顯示/隱藏鍵位 |
+| `Alt + Left` | Android 返回 |
+| `Ctrl + Shift + H` | Android 首頁 |
+| `Ctrl + Shift + Tab` | Android 最近使用 |
 | `F11` | 全螢幕 |
+| `Esc` | 離開全螢幕 |
 | `Ctrl + 1~9` | 切換實例 |
 
 ### 遊戲手把
@@ -148,7 +174,7 @@ Chimera (Host Windows)
 
 本專案主要由 AI Agent 自動化開發，人類監督為輔。
 
-歡迎提交 Issue 與 PR！請參閱 [CONTRIBUTING.md](docs/CONTRIBUTING.md)。
+歡迎提交 Issue 與 PR！請參閱 [CONTRIBUTING.md](docs/process/CONTRIBUTING.md)。
 
 ---
 
@@ -156,12 +182,14 @@ Chimera (Host Windows)
 
 | 文件 | 內容 |
 |------|------|
-| [BUILD.md](BUILD.md) | MSVC + Qt 6 詳細建置說明 |
+| [docs/README.md](docs/README.md) | 文件總索引 |
+| [docs/project/BUILD.md](docs/project/BUILD.md) | MSVC + Qt 6 詳細建置說明 |
 | [AGENTS.md](AGENTS.md) | AI Agent 工作流程與編碼標準 |
 | [CLAUDE.md](CLAUDE.md) | 架構決策與技術細節 |
-| [STATUS.md](STATUS.md) | 當前階段狀態與驗證記錄 |
-| [PLAN.md](PLAN.md) | 完整實作計畫 |
-| [HANDOVER.md](HANDOVER.md) | 給下一個開發者的交接文件 |
+| [docs/project/STATUS.md](docs/project/STATUS.md) | 當前階段狀態與驗證記錄 |
+| [docs/project/CODE_REVIEW.md](docs/project/CODE_REVIEW.md) | 最新程式碼審查、已修正問題與追蹤項目 |
+| [docs/project/PLAN.md](docs/project/PLAN.md) | 完整實作計畫 |
+| [docs/process/HANDOVER.md](docs/process/HANDOVER.md) | 給下一個開發者的交接文件 |
 
 ---
 

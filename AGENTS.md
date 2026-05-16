@@ -50,7 +50,7 @@ chimera/
 ├── src/host/ui/          # Qt 6 QML window, input overlay, screen recorder
 ├── src/host/config/      # JSON config manager (nlohmann/json)
 ├── src/host/input/       # Input bridge, mapper, gamepad, macros, QMP, virtio
-├── src/host/graphics/    # Framebuffer capture (ADB/VNC), renderer, ANGLE backend, performance monitor
+├── src/host/graphics/    # Framebuffer capture (gRPC/ADB/VNC), renderer, ANGLE backend, performance monitor
 ├── src/host/audio/       # WASAPI audio bridge
 ├── src/host/storage/     # Shared folders (9pfs)
 ├── src/host/instance/    # VM lifecycle, process launcher, device spoofer, memory trimmer, disk compactor, Hyper-V manager
@@ -60,6 +60,9 @@ chimera/
 ├── scripts/              # Python automation scripts
 ├── configs/              # Default settings JSON
 ├── docs/                 # Architecture docs, reference materials
+│   ├── architecture/     # Architecture overview
+│   ├── process/          # Contributing and handover docs
+│   ├── project/          # Build, status, plan, review reports
 │   └── references/       # Reverse engineering artifacts (bluestacks.conf, virtualization analysis)
 └── third_party/          # nlohmann/json, ANGLE headers, Android SDK, FFmpeg
 ```
@@ -96,12 +99,13 @@ chimera/
 - Each test file: `QTEST_MAIN(TestClassName)` + `#include "file.moc"` at bottom
 - Run with: `ctest --test-dir build -C Release`
 - Qt DLLs must be in PATH or tests fail with `0xC0000135`
+- Current unit tests: config manager, input mapper, instance manager, graphics framebuffer, ADB raw framebuffer, QMP input
 
 ## Completed Features (Phase 1-5)
 
 ### Core (Phase 1 MVP)
 - ✅ Android Emulator (`emulator.exe`) boots via WHPX
-- ✅ ADB screencap (raw format, ~20 FPS)
+- ✅ Native Android Emulator window embedding primary display path + gRPC/ADB raw fallback via `--stream-capture`
 - ✅ Qt 6 QML guest display with aspect-ratio preservation
 - ✅ Keyboard/mouse input forwarding via ADB
 
@@ -109,13 +113,13 @@ chimera/
 - ✅ XInput gamepad support (60 Hz polling, 14-button mapping)
 - ✅ Instance persistence (JSON save/load, clone with data dir copy)
 - ✅ Screenshot (timestamped PNG, toolbar + Ctrl+Shift+S)
-- ✅ Input mapper overlay (JSON scheme load/save)
-- ✅ Multi-instance manager (QML dialog + QObject wrapper)
+- ✅ Input mapper side panel + stream-mode overlay (JSON scheme load/save)
+- ✅ Multi-instance manager (right-side panel + QObject wrapper)
 - ✅ Macro engine (background thread, loop support)
 
 ### Performance (Phase 3)
 - ✅ WASAPI audio bridge (shared-mode, render thread)
-- ✅ Screen recorder (FFmpeg H.264 pipe + PNG sequence fallback)
+- ✅ Screen recorder (native child-window capture + FFmpeg H.264 pipe + PNG sequence fallback)
 - ✅ ANGLE headers integration (auto-download script, CMake detection)
 - ✅ ANGLE libraries copied from Chrome (libEGL.dll + libGLESv2.dll)
 - ✅ Dynamic EGL loader (QLibrary, no .lib import library needed)
@@ -126,7 +130,7 @@ chimera/
 - ✅ QMP input (console port IS QMP, runtime verified)
 - ✅ Memory trimmer (polls /proc/meminfo, auto-trims on critical pressure)
 - ✅ Disk compactor (removes cache/logs/tmp, optional zero-fill)
-- ✅ Framebuffer capture abstraction (AdbFramebufferCapture + VncFramebufferCapture)
+- ✅ Framebuffer capture abstraction (GrpcFramebufferCapture + AdbFramebufferCapture + VncFramebufferCapture)
 - ✅ VirtIO Audio (`-device virtio-snd-pci`, emulator accepts)
 - ✅ FFmpeg bundle (fetch-ffmpeg.py + CMake auto-copy)
 
@@ -136,7 +140,25 @@ chimera/
 - ✅ Performance monitor (FPS, frame time, drops, QML UI counter)
 - ✅ QMP latency measurement (round-trip timer per command)
 - ✅ QMP input integration (preferred over ADB for keyboard/mouse/gamepad)
-- ✅ QMP auto-reconnect (5-second retry loop)
+- ✅ QMP auto-reconnect (5-second retry loop; fixed after failed connection/socket error on 2026-05-14)
+- ✅ **HvSocket end-to-end (2026-05-17)**: HCS VM lifecycle → serial console pipe (CLIENT, not server) → AF_HYPERV dual-channel → `guest_display.c` 640×480 RGB888 ~30fps → `HvSocketFramebufferCapture` → `GuestDisplay` renders at 26–27 FPS, zero dropped frames. `guest_input.c` receives `linux_input_event` on port 16. Azure 6.11 kernel module fix: `.ko.zst` decompressed; `svm_flags=0` applied.
+
+## Current Review Notes
+
+- Latest review report: `docs/project/CODE_REVIEW.md`
+- Last verified: 2026-05-17, Release build passed, 6/6 Qt unit tests passed
+- HCS smoke (2026-05-17): `--hcs-backend` boots custom kernel/initrd, serial pipe reads kernel output, HvSocket port 16+17 both connected, display FPS 26–27 sustained with zero dropped frames
+- Live smoke: stale AVD locks removed, emulator boot completed, QMP auto-reconnect succeeded, native emulator window attached, Android reports 1280x720 / 240 dpi / 60.00 Hz / `skiavk`
+- Toolbar smoke: native embedding hides Android Emulator auxiliary tool windows; Chimera exposes controls in its own compact right-side status/action panel and supports `Esc` to leave fullscreen.
+- UI shell pass: top bar is product/status only, repeated toolbar actions were consolidated, duplicate FPS badges were removed, clipped hover tooltips were removed, Android Back/Home/Recents controls were added, and key/multi/macro UI now opens inside the right panel so native child windows cannot cover it.
+- Native viewport pass: embedded emulator viewport is constrained to the 1280×720 guest's 16:9 aspect ratio; screenshots/recording now work on the native child-window path.
+- Perf & UI pass (2026-05-15): QMP socket disables Nagle (`LowDelayOption`) + enables KeepAlive; `sendMouseMove` drops duplicate coordinates; `GamepadManager` adaptively backs off polling on unplugged XInput slots; `PerformanceMonitor` emits `metricsChanged` once per 1s window and reports rolling-window max frame time; `applyGuestPerformanceSettings` batches all six guest tweaks into one `adb shell` call; QML shell modernized with micro-interaction animations, status pill, FPS stat card — all bindings/shortcuts preserved.
+- BlueStacks reference pass: use native display, D3D11 Qt shell, 60 FPS cap, 240 DPI, dense shortcuts, and process priority tuning; findings are in `docs/references/bluestacks_runtime_findings.md`
+- Visible/native boot requires `-crash-report-mode never`; otherwise Android Emulator may stall on a crash-report consent dialog before QEMU/ADB starts
+- Known follow-ups: game-level 60 FPS profiling under real workloads, framebuffer read-side synchronization, ProcessLauncher quoting, Unicode clipboard
+- Runtime note: ADB host commands must target Android Emulator by serial (`emulator-5554` style), not by `adb -P <devicePort>`
+- Runtime note: Current emulator raw screencap uses a 16-byte header; image decode must account for it
+- Runtime note: Android Emulator 36.5.11 VNC is not viable with host GPU; it requires unsupported `-gpu guest`. Use gRPC first and ADB only as fallback.
 
 ## Critical Decisions (Do Not Change Without Discussion)
 
@@ -145,7 +167,8 @@ chimera/
 3. **ANGLE dynamic loading**: `libEGL.dll` + `libGLESv2.dll` loaded at runtime via QLibrary. No import library (.lib) required.
 4. **AVD `google_apis`**: Avoid `google_apis_playstore` images — they cause ADB RSA authorization issues in automation.
 5. **QMP over ADB**: InputBridge prefers QMP (console port 5554) for all input events. Falls back to ADB if QMP unavailable.
-6. **Reference files**: Reverse engineering artifacts (bluestacks.conf, virtualization analysis) stored in `docs/references/`. Do NOT commit BlueStacks binaries.
+6. **Native window over screenshot streaming**: Default display path is `NativeEmulatorView` embedding the Android Emulator Win32 window. `GrpcFramebufferCapture` and ADB raw capture are fallback/debug paths behind `--stream-capture`.
+7. **Reference files**: Reverse engineering artifacts (bluestacks.conf, virtualization analysis) stored in `docs/references/`. Do NOT commit BlueStacks binaries.
 
 ## Git Workflow
 
@@ -158,8 +181,8 @@ chimera/
 
 | File | When to Update |
 |------|---------------|
-| `STATUS.md` | After any major milestone or blocker resolution |
-| `BUILD.md` | When build steps, dependencies, or tools change |
+| `docs/project/STATUS.md` | After any major milestone or blocker resolution |
+| `docs/project/BUILD.md` | When build steps, dependencies, or tools change |
 | `AGENTS.md` | When agent workflow, conventions, or environment changes |
 | `CLAUDE.md` | When architecture, module boundaries, or decisions change |
 | `README.md` | When user-facing features or quick-start steps change |
@@ -179,6 +202,9 @@ chimera/
 
 ### Qt6 not found by CMake
 → Ensure `-DCMAKE_PREFIX_PATH=C:/Qt/6.8.3/msvc2022_64`
+
+### `chimera-ui.exe` fails with missing `Qt6*.dll`
+→ Rebuild `Release`; `src/host/ui/CMakeLists.txt` now runs `windeployqt` post-build and deploys Qt runtime into `build/Release/`
 
 ### Tests fail with `0xC0000135`
 → Add Qt bin to PATH: `$env:PATH = "C:\Qt\6.8.3\msvc2022_64\bin;$env:PATH"`
@@ -208,3 +234,71 @@ chimera/
 ---
 
 *Keep this file updated. Agents depend on it.*
+
+
+<claude-mem-context>
+# Memory Context
+
+# [chimera] recent context, 2026-05-15 2:36am GMT+8
+
+Legend: 🎯session 🔴bugfix 🟣feature 🔄refactor ✅change 🔵discovery ⚖️decision 🚨security_alert 🔐security_note
+Format: ID TIME TYPE TITLE
+Fetch details: get_observations([IDs]) | Search: mem-search skill
+
+Stats: 50 obs (21,183t read) | 414,116t work | 95% savings
+
+### May 14, 2026
+946 10:48a 🔵 Build Passes With One AutoMoc Warning; All 3 Tests Green
+947 " 🔵 README Feature Table Overstates Completeness of Several Features
+948 " ⚖️ Code Review Work Plan Established: Fix Then Document
+949 " 🟣 Framebuffer Deadlock Regression Test Added
+950 10:49a 🔵 Framebuffer Deadlock Test Confirms Issue Reproducible — Exit Code 1
+951 11:00a ⚖️ Root Directory File Organization Policy Established
+952 11:01a 🔵 Chimera Project Root Directory Inventory
+953 11:02a ✅ Chimera Docs Folder Reorganized — Root Cleaned to 3 Markdown Files
+954 " ✅ All Stale Doc Links Updated and docs/README.md Index Created
+955 11:03a ✅ Chimera Docs Reorganization Complete — Final State Verified
+956 " 🔵 Markdown Link Validation Script Times Out on Windows
+957 " 🔵 Markdown Link Validation Passed and All 4 Tests Green Post-Reorganization
+967 7:14p 🔵 All 4 Unit Tests Passing in Chimera Project
+968 " 🔵 Chimera Release Build Artifacts Confirmed
+969 " 🔵 Chimera CMake Project Structure Mapped
+981 9:25p 🔵 Android Emulator gRPC Probe Fails Due to Zombie Process Holding AVD Lock
+982 9:26p 🔴 Zombie Emulator Processes Killed and chimera_dev AVD Locks Cleared
+983 " 🔵 gRPC Connection Now Succeeds But Android Guest Not Yet Booted After 45s
+984 9:29p 🔵 gRPC getScreenshot Fails: 720x1560 RGBA8888 Frame Exceeds Default 4MB Message Limit
+985 9:30p 🔵 Chimera Graphics Subsystem Architecture: FramebufferCapture Abstraction with ADB and VNC Backends
+986 " 🔵 Chimera main.cpp: VNC is Primary Capture Path, ADB is Fallback; No gRPC Integration Yet
+987 9:31p 🔵 Chimera Instance Management Architecture: InstanceManager Singleton with JSON Persistence and Hyper-V Support
+988 " 🟣 New GrpcFramebufferCapture C++ Backend Added to chimera-graphics
+989 9:32p 🟣 GrpcFramebufferCapture.cpp Implementation: Hand-Rolled Protobuf Over Qt HTTP/2 gRPC Streaming
+990 9:33p ✅ GrpcFramebufferCapture Integrated into chimera-graphics Build; VNC Disabled in VirtualMachineConfig
+991 " ✅ VirtualMachine.cpp: gRPC Args Added, VNC/virtio-snd Gated, Early-Exit Check and Logging Wired
+992 9:34p 🟣 main.cpp: VNC Replaced by GrpcFramebufferCapture as Primary Display Backend; RAM Lowered to 2048MB
+993 " ✅ Full Release Build Succeeds After gRPC Capture Integration
+994 9:35p ✅ All 6 CTest Unit Tests Pass After gRPC Integration
+995 " ✅ chimera-ui.exe Smoke Test Passes: Stays Alive 6s in --no-emulator Mode
+996 9:38p 🟣 End-to-End gRPC Display Capture Working in Production: 227 Frames Received at 7-13 FPS Post-Boot
+997 9:41p 🟣 gRPC Capture Sustains 15-21 FPS Under Active Touch Input via ADB Swipe Stress Test
+998 9:42p 🔵 gRPC MMAP Transport Confirmed Working: Pixel Data Written to Shared File, Not gRPC Message
+999 " 🔴 PerformanceMonitor First-Frame Boot Spike Fixed with m_hasLastFrame Guard
+1000 9:43p 🔵 README.md Architecture Section Lists VncFramebufferCapture — Now Stale After gRPC Migration
+### May 15, 2026
+1001 2:03a 🔵 Android Emulator / Screen Mirroring App — Three Critical Issues Identified
+1002 2:06a 🔵 Chimera gRPC Screenshot Capture Fails: Emulator Exits During Capture
+1003 " 🔵 InstanceManager.createInstance Does Not Pass -read-only Flag to Emulator
+1004 " 🔵 Stale Lock File Found in chimera_pie64.avd Causing False Multi-Instance FATAL
+1005 2:07a 🔴 Stale AVD Lock Cleanup Added to VirtualMachine Startup Sequence
+1006 " ✅ Stale AVD Lock Fix Builds Successfully with MSVC 2022
+1007 " ✅ All 6 CTest Suites Pass After AVD Lock Fix
+1008 2:10a 🔵 Second gRPC Screenshot Capture Run Produces No Stdout Output
+1009 " 🟣 GrpcFramebufferCapture switched from RGBA8888 to RGB888 format
+1010 " ✅ Full Release build and all 6 unit tests pass after RGB888 change
+1011 2:12a 🔵 Live smoke test: gRPC RGB888 stream starts but frame rate degrades to near-zero
+1012 " 🔵 Stale AVD lock files and a background qemu headless process explain the duplicate-AVD FATAL warning
+1013 2:13a 🔴 ProcessLauncher::terminate() now kills the full child-process tree before killing the root
+1014 2:15a 🔵 Second smoke test confirms end-to-end system health: stale locks cleared, cold boot in 38.5s, gRPC reached 32 FPS
+1015 2:16a ✅ Large pending commit: docs reorganized into subdirectories, GrpcFramebufferCapture added, many source files modified
+
+Access 414k tokens of past work via get_observations([IDs]) or mem-search skill.
+</claude-mem-context>

@@ -23,9 +23,17 @@ void GamepadManager::shutdown() {
 
 void GamepadManager::poll() {
     if (!m_initialized) return;
+    ++m_pollTick;
     for (int i = 0; i < 4; ++i) {
+        // XInputGetState on an unplugged slot is comparatively slow. Probe
+        // disconnected slots only ~2x/sec (staggered per slot); connected
+        // controllers keep polling every frame for full responsiveness.
+        if (!m_slotConnected[i] && (m_pollTick % 120u) != static_cast<unsigned>(i)) {
+            continue;
+        }
         XINPUT_STATE state;
         if (XInputGetState(i, &state) == ERROR_SUCCESS) {
+            m_slotConnected[i] = true;
             GamepadState gs;
             gs.deviceId = i;
             gs.connected = true;
@@ -56,6 +64,7 @@ void GamepadManager::poll() {
             m_prevState[i] = gs;
             m_hasPrevState[i] = true;
         } else {
+            m_slotConnected[i] = false;
             m_hasPrevState[i] = false;
         }
     }

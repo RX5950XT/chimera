@@ -2,6 +2,8 @@
 #include "InputBridge.h"
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <thread>
 #include <chrono>
@@ -10,12 +12,25 @@ namespace chimera::input {
 
 using json = nlohmann::json;
 
+static bool isSafeMacroName(const std::string &name) {
+    if (name.empty()) return false;
+    return std::all_of(name.begin(), name.end(), [](unsigned char ch) {
+        return std::isalnum(ch) || ch == '_' || ch == '-' || ch == '.';
+    });
+}
+
 MacroEngine &MacroEngine::instance() {
     static MacroEngine inst;
     return inst;
 }
 
+MacroEngine::~MacroEngine() {
+    stopPlayback();
+}
+
 void MacroEngine::startRecording(const std::string &name) {
+    if (!isSafeMacroName(name)) return;
+
     m_recording = true;
     m_currentMacroName = name;
     m_events.clear();
@@ -36,6 +51,9 @@ void MacroEngine::recordEvent(const MacroEvent &event) {
 }
 
 void MacroEngine::startPlayback(const std::string &name, int loopCount) {
+    if (m_playbackThread.joinable()) {
+        stopPlayback();
+    }
     if (!loadMacro(name)) return;
     if (m_events.empty()) return;
     {
@@ -112,6 +130,8 @@ std::vector<std::string> MacroEngine::listMacros() const {
 }
 
 bool MacroEngine::loadMacro(const std::string &name) {
+    if (!isSafeMacroName(name)) return false;
+
     auto path = std::filesystem::path("configs/macros") / (name + ".json");
     std::ifstream f(path);
     if (!f.is_open()) return false;
@@ -137,6 +157,8 @@ bool MacroEngine::loadMacro(const std::string &name) {
 }
 
 bool MacroEngine::saveMacro(const std::string &name) const {
+    if (!isSafeMacroName(name)) return false;
+
     auto dir = std::filesystem::path("configs/macros");
     std::filesystem::create_directories(dir);
     auto path = dir / (name + ".json");
@@ -161,6 +183,8 @@ bool MacroEngine::saveMacro(const std::string &name) const {
 }
 
 bool MacroEngine::deleteMacro(const std::string &name) {
+    if (!isSafeMacroName(name)) return false;
+
     auto path = std::filesystem::path("configs/macros") / (name + ".json");
     return std::filesystem::remove(path);
 }

@@ -2,6 +2,7 @@
 
 #include <QQuickPaintedItem>
 #include <QImage>
+#include <QSize>
 
 namespace chimera {
 
@@ -15,12 +16,15 @@ namespace chimera {
 class GuestDisplay : public QQuickPaintedItem {
     Q_OBJECT
     Q_PROPERTY(QImage frame READ frame WRITE setFrame NOTIFY frameChanged)
+    Q_PROPERTY(bool hasFrame READ hasFrame NOTIFY frameChanged)
 
 public:
     explicit GuestDisplay(QQuickItem *parent = nullptr);
 
     QImage frame() const;
     void setFrame(const QImage &img);
+    bool hasFrame() const;
+    void setGuestSize(const QSize &size);
 
     Q_INVOKABLE bool saveScreenshot(const QString &filePath) const;
 
@@ -38,7 +42,9 @@ protected:
 
 private:
     QImage m_frame;
-    QPointF mapToGuest(const QPointF &pos) const;
+    QSize m_guestSize;
+    QRectF displayRect() const;
+    bool mapToGuest(const QPointF &pos, QPointF &guestPos) const;
 };
 
 } // namespace chimera

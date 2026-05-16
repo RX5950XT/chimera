@@ -19,7 +19,11 @@ void Framebuffer::resize(uint32_t width, uint32_t height) {
 void Framebuffer::writeBackBuffer(const std::vector<uint8_t> &pixels, uint32_t width, uint32_t height) {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (width != m_back.width || height != m_back.height) {
-        resize(width, height);
+        m_front.width = m_back.width = width;
+        m_front.height = m_back.height = height;
+        size_t size = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+        m_front.pixels.resize(size);
+        m_back.pixels.resize(size);
     }
     if (pixels.size() == m_back.pixels.size()) {
         std::memcpy(m_back.pixels.data(), pixels.data(), pixels.size());

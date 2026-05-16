@@ -2,6 +2,7 @@
 #include "VirtualMachine.h"
 #include "DeviceSpoofer.h"
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <set>
 #include <nlohmann/json.hpp>
@@ -14,7 +15,15 @@ public:
     std::vector<InstanceConfig> savedConfigs;
     std::filesystem::path instancesDir;
     std::filesystem::path instancesJsonPath;
+    InstanceManager::StateCallback stateCallback;
 };
+
+static bool isValidInstanceName(const std::string &name) {
+    if (name.empty()) return false;
+    return std::all_of(name.begin(), name.end(), [](unsigned char ch) {
+        return std::isalnum(ch) || ch == '_' || ch == '-' || ch == '.';
+    });
+}
 
 static std::filesystem::path getProjectRoot() {
     auto path = std::filesystem::current_path();
@@ -31,9 +40,13 @@ static nlohmann::json loadAndroidSdkConfig() {
     auto root = getProjectRoot();
     auto path = root / "configs" / "android_sdk.json";
     nlohmann::json j;
-    if (std::filesystem::exists(path)) {
-        std::ifstream f(path);
-        if (f.is_open()) f >> j;
+    try {
+        if (std::filesystem::exists(path)) {
+            std::ifstream f(path);
+            if (f.is_open()) f >> j;
+        }
+    } catch (...) {
+        return nlohmann::json::object();
     }
     return j;
 }
@@ -62,15 +75,17 @@ void InstanceManager::loadInstances() {
             InstanceConfig cfg;
             cfg.name = item.value("name", "");
             cfg.cpus = item.value("cpus", 4);
-            cfg.ramMB = item.value("ramMB", 4096);
-            cfg.width = item.value("width", 1920);
-            cfg.height = item.value("height", 1080);
+            cfg.ramMB = item.value("ramMB", 2048);
+            cfg.width = item.value("width", 1280);
+            cfg.height = item.value("height", 720);
             cfg.dpi = item.value("dpi", 240);
             cfg.graphicsEngine = item.value("graphicsEngine", "angle");
-            cfg.graphicsRenderer = item.value("graphicsRenderer", "d3d11");
+            cfg.graphicsRenderer = item.value("graphicsRenderer", "host");
             cfg.maxFps = item.value("maxFps", 60);
             cfg.enableVsync = item.value("enableVsync", false);
             cfg.enableRoot = item.value("enableRoot", false);
+            cfg.headless = item.value("headless", false);
+            cfg.processPriority = item.value("processPriority", "high");
             cfg.dataDir = item.value("dataDir", "");
             d->savedConfigs.push_back(cfg);
         }
@@ -99,6 +114,8 @@ void InstanceManager::saveInstances() const {
         item["maxFps"] = cfg.maxFps;
         item["enableVsync"] = cfg.enableVsync;
         item["enableRoot"] = cfg.enableRoot;
+        item["headless"] = cfg.headless;
+        item["processPriority"] = cfg.processPriority;
         item["dataDir"] = cfg.dataDir.string();
         arr.push_back(item);
     }
@@ -112,10 +129,13 @@ void InstanceManager::saveInstances() const {
         item["ramMB"] = c.ramMB;
         item["width"] = c.width;
         item["height"] = c.height;
+        item["dpi"] = c.dpi;
         item["graphicsEngine"] = c.graphicsEngine;
         item["graphicsRenderer"] = c.graphicsRenderer;
         item["maxFps"] = c.maxFps;
         item["enableVsync"] = c.enableVsync;
+        item["headless"] = c.headless;
+        item["processPriority"] = c.processPriority;
         item["dataDir"] = c.dataDir.string();
         arr.push_back(item);
     }
@@ -131,23 +151,42 @@ InstanceManager &InstanceManager::instance() {
 
 std::vector<std::string> InstanceManager::listInstances() const {
     std::vector<std::string> names;
+    std::set<std::string> seen;
+    for (auto &cfg : d->savedConfigs) {
+        if (!cfg.name.empty() && !seen.count(cfg.name)) {
+            names.push_back(cfg.name);
+            seen.insert(cfg.name);
+        }
+    }
     for (auto &vm : d->vms) {
-        names.push_back(vm->config().name);
+        const auto &name = vm->config().name;
+        if (!name.empty() && !seen.count(name)) {
+            names.push_back(name);
+            seen.insert(name);
+        }
     }
     return names;
 }
 
 bool InstanceManager::createInstance(const InstanceConfig &config) {
+    if (!isValidInstanceName(config.name)) return false;
+    for (auto &vm : d->vms) {
+        if (vm->config().name == config.name) return false;
+    }
+
     VirtualMachineConfig vmConfig;
     vmConfig.name = config.name;
     vmConfig.cpus = config.cpus;
     vmConfig.ramMB = config.ramMB;
     vmConfig.width = config.width;
     vmConfig.height = config.height;
+    vmConfig.dpi = config.dpi;
     vmConfig.graphicsEngine = config.graphicsEngine;
     vmConfig.graphicsRenderer = config.graphicsRenderer;
     vmConfig.maxFps = config.maxFps;
     vmConfig.enableVsync = config.enableVsync;
+    vmConfig.headless = config.headless;
+    vmConfig.processPriority = config.processPriority;
     vmConfig.qmpPort = config.qmpPort;
     vmConfig.deviceProfile = config.deviceProfile;
     vmConfig.dataDir = config.dataDir.empty() ? (d->instancesDir / config.name) : config.dataDir;
@@ -170,9 +209,17 @@ bool InstanceManager::createInstance(const InstanceConfig &config) {
     if (sdkCfg.contains("avd_name")) {
         vmConfig.avdName = sdkCfg["avd_name"].get<std::string>();
     }
+    if (sdkCfg.contains("avd_home")) {
+        vmConfig.avdHome = sdkCfg["avd_home"].get<std::string>();
+    }
 
     auto vm = std::make_unique<VirtualMachine>(vmConfig);
     if (!vm->create()) return false;
+    if (d->stateCallback) {
+        vm->setStateCallback([this, name = vm->config().name](VMState s) {
+            d->stateCallback(name, s);
+        });
+    }
     d->vms.push_back(std::move(vm));
 
     // Update saved config
@@ -185,6 +232,8 @@ bool InstanceManager::createInstance(const InstanceConfig &config) {
 }
 
 bool InstanceManager::cloneInstance(const std::string &sourceName, const std::string &newName) {
+    if (!isValidInstanceName(sourceName) || !isValidInstanceName(newName)) return false;
+
     // Find source config
     InstanceConfig srcCfg;
     bool found = false;
@@ -221,6 +270,10 @@ bool InstanceManager::cloneInstance(const std::string &sourceName, const std::st
 }
 
 bool InstanceManager::deleteInstance(const std::string &name) {
+    if (!isValidInstanceName(name)) return false;
+
+    bool liveRemoved = false;
+
     // Stop and remove from live VMs
     for (auto &vm : d->vms) {
         if (vm->config().name == name) {
@@ -230,21 +283,32 @@ bool InstanceManager::deleteInstance(const std::string &name) {
     auto it = std::remove_if(d->vms.begin(), d->vms.end(), [&](auto &vm) {
         return vm->config().name == name;
     });
-    if (it != d->vms.end()) d->vms.erase(it, d->vms.end());
+    if (it != d->vms.end()) {
+        liveRemoved = true;
+        d->vms.erase(it, d->vms.end());
+    }
 
     // Remove from saved configs
+    std::filesystem::path dataDir = d->instancesDir / name;
     auto sit = std::remove_if(d->savedConfigs.begin(), d->savedConfigs.end(),
-                              [&](const auto &c) { return c.name == name; });
+                              [&](const auto &c) {
+                                  if (c.name != name) return false;
+                                  if (!c.dataDir.empty()) dataDir = c.dataDir;
+                                  return true;
+                              });
     bool removed = sit != d->savedConfigs.end();
     d->savedConfigs.erase(sit, d->savedConfigs.end());
 
     // Remove data directory
-    auto dataDir = d->instancesDir / name;
-    if (std::filesystem::exists(dataDir)) {
-        std::filesystem::remove_all(dataDir);
+    try {
+        if (std::filesystem::exists(dataDir)) {
+            std::filesystem::remove_all(dataDir);
+        }
+    } catch (...) {
+        return false;
     }
 
-    if (removed || it != d->vms.end()) {
+    if (removed || liveRemoved) {
         saveInstances();
         return true;
     }
@@ -252,15 +316,25 @@ bool InstanceManager::deleteInstance(const std::string &name) {
 }
 
 bool InstanceManager::startInstance(const std::string &name) {
+    if (!isValidInstanceName(name)) return false;
+
     for (auto &vm : d->vms) {
         if (vm->config().name == name) {
             return vm->start();
+        }
+    }
+    for (auto &cfg : d->savedConfigs) {
+        if (cfg.name == name) {
+            if (!createInstance(cfg)) return false;
+            return startInstance(name);
         }
     }
     return false;
 }
 
 bool InstanceManager::stopInstance(const std::string &name) {
+    if (!isValidInstanceName(name)) return false;
+
     for (auto &vm : d->vms) {
         if (vm->config().name == name) {
             return vm->stop();
@@ -270,6 +344,8 @@ bool InstanceManager::stopInstance(const std::string &name) {
 }
 
 bool InstanceManager::pauseInstance(const std::string &name) {
+    if (!isValidInstanceName(name)) return false;
+
     for (auto &vm : d->vms) {
         if (vm->config().name == name) {
             return vm->pause();
@@ -279,6 +355,8 @@ bool InstanceManager::pauseInstance(const std::string &name) {
 }
 
 bool InstanceManager::resumeInstance(const std::string &name) {
+    if (!isValidInstanceName(name)) return false;
+
     for (auto &vm : d->vms) {
         if (vm->config().name == name) {
             return vm->resume();
@@ -288,15 +366,24 @@ bool InstanceManager::resumeInstance(const std::string &name) {
 }
 
 VMState InstanceManager::getInstanceState(const std::string &name) const {
+    if (!isValidInstanceName(name)) return VMState::Error;
+
     for (auto &vm : d->vms) {
         if (vm->config().name == name) {
             return vm->state();
+        }
+    }
+    for (auto &cfg : d->savedConfigs) {
+        if (cfg.name == name) {
+            return VMState::Stopped;
         }
     }
     return VMState::Error;
 }
 
 InstanceConfig InstanceManager::getInstanceConfig(const std::string &name) const {
+    if (!isValidInstanceName(name)) return InstanceConfig{};
+
     for (auto &vm : d->vms) {
         if (vm->config().name == name) {
             auto &c = vm->config();
@@ -306,11 +393,19 @@ InstanceConfig InstanceManager::getInstanceConfig(const std::string &name) const
             cfg.ramMB = c.ramMB;
             cfg.width = c.width;
             cfg.height = c.height;
+            cfg.dpi = c.dpi;
             cfg.graphicsEngine = c.graphicsEngine;
             cfg.graphicsRenderer = c.graphicsRenderer;
             cfg.maxFps = c.maxFps;
             cfg.enableVsync = c.enableVsync;
+            cfg.headless = c.headless;
+            cfg.processPriority = c.processPriority;
             cfg.dataDir = c.dataDir;
+            return cfg;
+        }
+    }
+    for (auto &cfg : d->savedConfigs) {
+        if (cfg.name == name) {
             return cfg;
         }
     }
@@ -318,9 +413,10 @@ InstanceConfig InstanceManager::getInstanceConfig(const std::string &name) const
 }
 
 void InstanceManager::setStateCallback(StateCallback cb) {
+    d->stateCallback = cb;
     for (auto &vm : d->vms) {
-        vm->setStateCallback([cb, name = vm->config().name](VMState s) {
-            cb(name, s);
+        vm->setStateCallback([this, name = vm->config().name](VMState s) {
+            if (d->stateCallback) d->stateCallback(name, s);
         });
     }
 }
