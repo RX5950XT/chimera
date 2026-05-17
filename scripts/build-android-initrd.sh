@@ -123,6 +123,14 @@ i=0; while [ $i -lt 15 ]; do
 done
 [ -e /dev/fb0 ] || echo "[chimera-android] /dev/fb0 not found"
 
+# Check for dxgkrnl GPU-PV device (built-in, appears if GPU-PV is configured)
+i=0; while [ $i -lt 10 ]; do
+    [ -e /dev/dxg ] && echo "[chimera-android] /dev/dxg ready" && break
+    sleep 1; i=$((i+1))
+done
+[ -e /dev/dxg ] && echo "[chimera-android] dxgkrnl GPU-PV active" || \
+    echo "[chimera-android] /dev/dxg not found (GPU-PV not configured or not available)"
+
 # Start relay daemons now — they survive switch_root (statically linked processes)
 [ -x /bin/chimera-display-relay ] && /bin/chimera-display-relay &
 echo "[chimera-android] Display relay started"

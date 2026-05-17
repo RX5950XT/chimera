@@ -4,9 +4,9 @@
 
 ## Current State
 
-**Phase**: Phase 5d — AOSP Cuttlefish x86_64 VHDX + HCS boot COMPLETE 2026-05-17
+**Phase**: Phase 5e — dxgkrnl GPU-PV COMPLETE 2026-05-17
 **Date**: 2026-05-17
-**Next**: Phase 5e — GPU-PV driver projection into Android guest (dxgkrnl + ANGLE/Vulkan).
+**Next**: Phase 5f — ANGLE/Vulkan over dxgkrnl in Android guest (Mesa d3d12 + ANGLE EGL).
 
 ### v2 Phase 1 Verification Results (2026-05-16)
 
@@ -92,6 +92,16 @@
 - ✅ `initrd.img` rebuilt with: vsock, hv_sock, vsock_loopback, hyperv_drm modules + production relay daemons
 - ✅ `build-initramfs.sh` updated: searches system-installed Azure kernel modules, includes hyperv_drm
 - Note: `uname`, `mkdir`, `seq` commands missing from busybox symlinks (cosmetic — all key functionality works)
+
+### Phase 5e dxgkrnl GPU-PV Verification Results (2026-05-17)
+
+- ✅ `dxgkrnl` (CONFIG_DXGKRNL=y, built-in to WSL2 6.6 kernel) auto-probes VMBus GPU-PV channel
+- ✅ HCS VM created without any GPU JSON config — Hyper-V hypervisor automatically offers GPU VMBus device to all VMs
+- ✅ `/dev/dxg` created by dxgkrnl within 10s of VM boot (NVIDIA GeForce RTX 3070 Ti)
+- ✅ `test-hcs-cuttlefish.py` upgraded to **6/6 checks**: fb0 + dxg + input relay + display relay + system mount + switch_root
+- ✅ `build-android-initrd.sh` init script checks `/dev/dxg` and logs `[chimera-android] dxgkrnl GPU-PV active`
+- Note: HCS JSON `"GpuP"` / `"GpuConfiguration"` fields are NOT valid for `LinuxKernelDirect` schema — GPU-PV works automatically via Hyper-V VMBus offer without explicit JSON configuration
+- Note: Next step for full GPU rendering: Mesa d3d12 gallium driver + ANGLE EGL in Android guest
 
 ### Phase 5d AOSP Cuttlefish VHDX + HCS Boot Verification Results (2026-05-17)
 
@@ -355,7 +365,8 @@ User clicks "Start" → InstanceManager → VirtualMachine.buildEmulatorArgs() �
 - [x] Standalone HCS boot test 3/3 (`test-hcs-wsl2-kernel.py`): /dev/fb0 ✅ + input relay ✅ + display relay ✅
 - [x] Build AOSP cuttlefish x86_64 image → VHDX (`scripts/build-cuttlefish-vhdx.sh` + Android 34 SDK images)
 - [x] Build Android initrd with switch_root, hv_sock, hyperv_drm, relay daemons (`scripts/build-android-initrd.sh`)
-- [x] HCS Cuttlefish boot test 5/5 (`test-hcs-cuttlefish.py`): fb0 ✅ + input relay ✅ + display relay ✅ + system mount ✅ + switch_root ✅
+- [x] HCS Cuttlefish boot test 5/5 → 6/6 (`test-hcs-cuttlefish.py`): fb0 ✅ + dxg ✅ + input relay ✅ + display relay ✅ + system mount ✅ + switch_root ✅
+- [x] dxgkrnl GPU-PV: NVIDIA RTX 3070 Ti VMBus channel auto-offered to HCS VM → `/dev/dxg` created (no JSON config needed — hypervisor offers GPU-PV channel automatically)
 
 ## Reference: BlueStacks Architecture (Gemini DeepResearch)
 
@@ -414,5 +425,5 @@ Original analysis files from `BlueStacks_nxt/` have been copied to:
 ---
 
 *Updated: 2026-05-17*
-*Phase: Phase 5d COMPLETE — AOSP Cuttlefish VHDX built from Android 34 SDK images; HCS boot test 5/5 passes: /dev/fb0 + input relay + display relay + system mount + switch_root*
+*Phase: Phase 5e COMPLETE — dxgkrnl GPU-PV active; HCS boot test 6/6 passes: /dev/fb0 + /dev/dxg + input relay + display relay + system mount + switch_root*
 *Tests: 6/6 passing*

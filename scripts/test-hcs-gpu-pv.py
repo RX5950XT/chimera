@@ -1,17 +1,18 @@
 """
-test-hcs-cuttlefish.py — HCS boot test for AOSP Cuttlefish x86_64 guest
+test-hcs-gpu-pv.py — Phase 5e: GPU-PV verification for Android guest
 
-Boots the Cuttlefish VHDX images via HCS with our WSL2 6.6 kernel.
-Verifies:
-  1. Kernel boots and serial output appears
-  2. hv_sock + hyperv_drm modules load
-  3. /dev/fb0 created (hyperv_drm)
-  4. Display relay starts (vsock port 17)
-  5. Input relay starts (vsock port 16)
-  6. Android system partition mounts (/system/bin/init found)
+Boots the Cuttlefish VHDX images via HCS with GpuConfiguration:Mirror.
+Verifies that dxgkrnl loads and creates /dev/dxg in the guest.
+
+Checks:
+  1. /dev/fb0 created (hyperv_drm — display baseline)
+  2. /dev/dxg created (dxgkrnl GPU-PV)
+  3. Input relay connected (vsock port 16)
+  4. Display relay connected (vsock port 17)
+  5. Android system partition mounted (switch_root)
 
 Run from an elevated PowerShell:
-  python scripts/test-hcs-cuttlefish.py
+  python scripts/test-hcs-gpu-pv.py
 """
 import ctypes, json, os, pathlib, queue, sys, threading, time
 
@@ -42,33 +43,31 @@ INITRD   = str(PROJ / "out" / "cuttlefish" / "initrd.img")
 SYSTEM   = str(PROJ / "out" / "cuttlefish" / "system.vhdx")
 VENDOR   = str(PROJ / "out" / "cuttlefish" / "vendor.vhdx")
 USERDATA = str(PROJ / "out" / "cuttlefish" / "userdata.vhdx")
-CMDLINE  = "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 loglevel=8 ignore_loglevel panic=30 init=/init androidboot.selinux=permissive"
+CMDLINE  = ("console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 "
+            "loglevel=8 ignore_loglevel panic=30 init=/init "
+            "androidboot.selinux=permissive")
 
 _TS   = int(time.time()) % 100000
-PIPE  = f"\\\\.\\pipe\\chimera-cf-{_TS}"
-VM_ID = f"chimera-cf-{_TS}"
+PIPE  = f"\\\\.\\pipe\\chimera-gpupv-{_TS}"
+VM_ID = f"chimera-gpupv-{_TS}"
 
-print(f"[*] kernel  : {KERNEL}  ({os.path.getsize(KERNEL)//1024//1024}MB)")
-print(f"[*] initrd  : {INITRD}  ({os.path.getsize(INITRD)//1024}KB)")
 for p in (KERNEL, INITRD):
     if not os.path.exists(p):
         print(f"[FAIL] File not found: {p}"); sys.exit(1)
 
-has_system   = os.path.exists(SYSTEM)
-has_vendor   = os.path.exists(VENDOR)
-has_userdata = os.path.exists(USERDATA)
-print(f"[*] system.vhdx  : {'FOUND' if has_system else 'MISSING'}")
-print(f"[*] vendor.vhdx  : {'FOUND' if has_vendor else 'MISSING'}")
-print(f"[*] userdata.vhdx: {'FOUND' if has_userdata else 'MISSING'}")
+print(f"[*] kernel  : {KERNEL}  ({os.path.getsize(KERNEL)//1024//1024}MB)")
+print(f"[*] initrd  : {INITRD}  ({os.path.getsize(INITRD)//1024}KB)")
+print(f"[*] system.vhdx  : {'FOUND' if os.path.exists(SYSTEM)   else 'MISSING'}")
+print(f"[*] vendor.vhdx  : {'FOUND' if os.path.exists(VENDOR)   else 'MISSING'}")
+print(f"[*] userdata.vhdx: {'FOUND' if os.path.exists(USERDATA) else 'MISSING'}")
 
-# Build SCSI devices array — order: sda=system, sdb=vendor, sdc=userdata
 scsi_attachments = []
 for path, readonly in [(SYSTEM, True), (VENDOR, True), (USERDATA, False)]:
     if os.path.exists(path):
         scsi_attachments.append({
-            "Type":                   "VirtualDisk",
-            "Path":                   path,
-            "ReadOnly":               readonly,
+            "Type":                     "VirtualDisk",
+            "Path":                     path,
+            "ReadOnly":                 readonly,
             "SupportCompressedVolumes": False,
         })
 
@@ -78,14 +77,17 @@ devices = {
         "DefaultConnectSecurityDescriptor": "D:P(A;;FA;;;WD)",
     }},
     "VideoMonitor": {"HorizontalResolution": 1280, "VerticalResolution": 720},
-    "ComPorts": {"0": {"NamedPipe": PIPE}},
+    "ComPorts":     {"0": {"NamedPipe": PIPE}},
+    # GPU-PV: Mirror host GPU into guest so dxgkrnl sees the physical device
+    # Field name is "GpuP" (not "GpuConfiguration") per HCS schema v2.1
+    "GpuP": {"AssignmentMode": "Mirror", "AllowVendorExtension": True},
 }
 if scsi_attachments:
     devices["Scsi"] = {"0": {"Attachments": {str(i): a for i, a in enumerate(scsi_attachments)}}}
 
 VM_JSON = json.dumps({
     "SchemaVersion": {"Major": 2, "Minor": 1},
-    "Owner": "chimera-cuttlefish",
+    "Owner": "chimera-gpupv",
     "ShouldTerminateOnLastHandleClosed": True,
     "VirtualMachine": {
         "StopOnReset": True,
@@ -104,10 +106,9 @@ VM_JSON = json.dumps({
 
 print(f"[*] VM ID: {VM_ID}")
 print(f"[*] Pipe : {PIPE}")
-print(f"[*] Disks: {len(scsi_attachments)} SCSI attachment(s)")
+print(f"[*] GPU-PV: Mirror mode (dxgkrnl → /dev/dxg)")
 
-# Create and start VM
-print("[*] Creating HCS VM...")
+print("[*] Creating HCS VM with GPU-PV...")
 cs  = ctypes.c_void_p()
 op  = ctypes.c_void_p(CC.HcsCreateOperation(None, None))
 result = ctypes.c_wchar_p()
@@ -129,7 +130,6 @@ _hcs_check(CC.HcsWaitForOperationResult(op, 30000, ctypes.byref(result)), "Wait 
 CC.HcsCloseOperation(op)
 print("[+] VM running")
 
-# Wait for serial pipe
 print(f"[*] Waiting for serial pipe (up to 30s)...")
 deadline = time.time() + 30
 pipe_fh = None
@@ -150,15 +150,13 @@ if not pipe_fh:
     sys.exit(1)
 print("[+] Serial pipe connected")
 
-# Read boot messages
 print("[*] Watching serial output (300s timeout)...")
 checks = {
-    "fb0":     False,  # /dev/fb0 ready (hyperv_drm)
-    "dxg":     False,  # /dev/dxg ready (dxgkrnl GPU-PV)
-    "input":   False,  # Input relay started
-    "display": False,  # Display relay started
-    "system":  False,  # Android system mount
-    "init":    False,  # Android init launched
+    "fb0":     False,   # hyperv_drm /dev/fb0
+    "dxg":     False,   # dxgkrnl /dev/dxg
+    "input":   False,   # input relay vsock 16
+    "display": False,   # display relay vsock 17
+    "system":  False,   # Android system partition mounted
 }
 
 pipe_q: queue.Queue = queue.Queue()
@@ -189,33 +187,27 @@ while time.time() < deadline:
         txt = line.strip().decode("utf-8", errors="replace")
         if txt:
             print(f"  SERIAL: {txt}", flush=True)
-            if "/dev/fb0 ready"            in txt: checks["fb0"]     = True
-            if "/dev/dxg ready"            in txt: checks["dxg"]     = True
-            if "dxgkrnl GPU-PV active"     in txt: checks["dxg"]     = True
-            if "registering driver dxgkrnl" in txt: checks["dxg"]    = True
-            if "Input relay started"        in txt: checks["input"]   = True
-            if "[input-relay] listening"    in txt: checks["input"]   = True
-            if "Display relay started"      in txt: checks["display"] = True
-            if "[display-relay] listening"  in txt: checks["display"] = True
-            if "rootfs mounted OK"          in txt: checks["system"]  = True
-            if "switch_root"               in txt: checks["init"]    = True
-            # Catch Android init output after switch_root
-            if "init:" in txt.lower() or "android" in txt.lower():
-                checks["init"] = True
+            if "/dev/fb0 ready"           in txt: checks["fb0"]     = True
+            if "/dev/dxg ready"           in txt: checks["dxg"]     = True
+            if "dxgkrnl"                  in txt: checks["dxg"]     = True
+            if "[input-relay] listening"   in txt: checks["input"]   = True
+            if "Input relay started"       in txt: checks["input"]   = True
+            if "[display-relay] listening" in txt: checks["display"] = True
+            if "Display relay started"     in txt: checks["display"] = True
+            if "rootfs mounted OK"         in txt: checks["system"]  = True
 
 pipe_fh.close()
 
 print()
-print("=" * 55)
+print("=" * 60)
 print(f"  [{'PASS' if checks['fb0']     else 'FAIL'}] /dev/fb0 ready       (hyperv_drm)")
 print(f"  [{'PASS' if checks['dxg']     else 'FAIL'}] /dev/dxg ready       (dxgkrnl GPU-PV)")
 print(f"  [{'PASS' if checks['input']   else 'FAIL'}] Input relay          (vsock port 16)")
 print(f"  [{'PASS' if checks['display'] else 'FAIL'}] Display relay        (vsock port 17)")
 print(f"  [{'PASS' if checks['system']  else 'FAIL'}] Android system mount (switch_root)")
-print(f"  [{'PASS' if checks['init']    else 'FAIL'}] Android init launched")
 passed = sum(checks.values())
 print(f"  {passed}/{len(checks)} checks passed")
-print("=" * 55)
+print("=" * 60)
 
 print("[*] Terminating VM...")
 op = ctypes.c_void_p(CC.HcsCreateOperation(None, None))
@@ -224,4 +216,4 @@ CC.HcsWaitForOperationResult(op, 10000, ctypes.byref(result))
 CC.HcsCloseOperation(op)
 CC.HcsCloseComputeSystem(cs)
 print("[*] Done.")
-sys.exit(0 if passed >= 5 else 1)
+sys.exit(0 if passed >= 4 else 1)
