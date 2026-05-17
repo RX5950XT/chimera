@@ -51,7 +51,12 @@ musl-gcc -static -O2 $KINCLUDE \
     -o "$WORK/chimera-input-relay" \
     "$GUEST_SRC/chimera-input-relay.c"
 
-ls -lh "$WORK/chimera-display-relay" "$WORK/chimera-input-relay"
+info "Compiling dxg-enum (Phase 5f: dxgkrnl GPU-PV adapter test)..."
+musl-gcc -static -O2 \
+    -o "$WORK/dxg-enum" \
+    "$GUEST_SRC/dxg-enum.c"
+
+ls -lh "$WORK/chimera-display-relay" "$WORK/chimera-input-relay" "$WORK/dxg-enum"
 
 # ── Step 3: Build initramfs tree ──────────────────────────────────────────────
 info "Building initramfs tree..."
@@ -83,10 +88,11 @@ for ko in hv_sock.ko hyperv_drm.ko; do
     fi
 done
 
-# Relay daemons
+# Relay daemons + dxg-enum
 cp "$WORK/chimera-display-relay" "$INITRD_TREE/bin/"
 cp "$WORK/chimera-input-relay"   "$INITRD_TREE/bin/"
-chmod +x "$INITRD_TREE/bin/chimera-display-relay" "$INITRD_TREE/bin/chimera-input-relay"
+cp "$WORK/dxg-enum"              "$INITRD_TREE/bin/"
+chmod +x "$INITRD_TREE/bin/chimera-display-relay" "$INITRD_TREE/bin/chimera-input-relay" "$INITRD_TREE/bin/dxg-enum"
 
 # ── Step 4: init script ───────────────────────────────────────────────────────
 cat > "$INITRD_TREE/init" << 'INIT_EOF'
@@ -128,8 +134,13 @@ i=0; while [ $i -lt 10 ]; do
     [ -e /dev/dxg ] && echo "[chimera-android] /dev/dxg ready" && break
     sleep 1; i=$((i+1))
 done
-[ -e /dev/dxg ] && echo "[chimera-android] dxgkrnl GPU-PV active" || \
-    echo "[chimera-android] /dev/dxg not found (GPU-PV not configured or not available)"
+if [ -e /dev/dxg ]; then
+    echo "[chimera-android] /dev/dxg ready (dxgkrnl registered, VMBus GPU channel: pending)"
+    # dxg-enum verifies if the VMBus GPU channel was actually offered by the hypervisor
+    [ -x /bin/dxg-enum ] && /bin/dxg-enum || true
+else
+    echo "[chimera-android] /dev/dxg not found"
+fi
 
 # Start relay daemons now — they survive switch_root (statically linked processes)
 [ -x /bin/chimera-display-relay ] && /bin/chimera-display-relay &

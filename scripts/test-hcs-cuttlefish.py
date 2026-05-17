@@ -154,7 +154,8 @@ print("[+] Serial pipe connected")
 print("[*] Watching serial output (300s timeout)...")
 checks = {
     "fb0":     False,  # /dev/fb0 ready (hyperv_drm)
-    "dxg":     False,  # /dev/dxg ready (dxgkrnl GPU-PV)
+    "dxg":     False,  # dxgkrnl registered (device node present; VMBus GPU channel may not be offered)
+    "dxg_ioctl": False,  # dxg-enum PASS (VMBus GPU channel established — optional)
     "input":   False,  # Input relay started
     "display": False,  # Display relay started
     "system":  False,  # Android system mount
@@ -189,16 +190,17 @@ while time.time() < deadline:
         txt = line.strip().decode("utf-8", errors="replace")
         if txt:
             print(f"  SERIAL: {txt}", flush=True)
-            if "/dev/fb0 ready"            in txt: checks["fb0"]     = True
-            if "/dev/dxg ready"            in txt: checks["dxg"]     = True
-            if "dxgkrnl GPU-PV active"     in txt: checks["dxg"]     = True
-            if "registering driver dxgkrnl" in txt: checks["dxg"]    = True
-            if "Input relay started"        in txt: checks["input"]   = True
-            if "[input-relay] listening"    in txt: checks["input"]   = True
-            if "Display relay started"      in txt: checks["display"] = True
-            if "[display-relay] listening"  in txt: checks["display"] = True
-            if "rootfs mounted OK"          in txt: checks["system"]  = True
-            if "switch_root"               in txt: checks["init"]    = True
+            if "/dev/fb0 ready"                    in txt: checks["fb0"]      = True
+            if "/dev/dxg ready"                    in txt: checks["dxg"]      = True
+            if "dxgkrnl registered"                in txt: checks["dxg"]      = True
+            if "registering driver dxgkrnl"        in txt: checks["dxg"]      = True
+            if "dxgkrnl GPU-PV enumeration PASS"   in txt: checks["dxg_ioctl"] = True
+            if "Input relay started"               in txt: checks["input"]    = True
+            if "[input-relay] listening"           in txt: checks["input"]    = True
+            if "Display relay started"             in txt: checks["display"]  = True
+            if "[display-relay] listening"         in txt: checks["display"]  = True
+            if "rootfs mounted OK"                 in txt: checks["system"]   = True
+            if "switch_root"                       in txt: checks["init"]     = True
             # Catch Android init output after switch_root
             if "init:" in txt.lower() or "android" in txt.lower():
                 checks["init"] = True
@@ -206,16 +208,19 @@ while time.time() < deadline:
 pipe_fh.close()
 
 print()
-print("=" * 55)
-print(f"  [{'PASS' if checks['fb0']     else 'FAIL'}] /dev/fb0 ready       (hyperv_drm)")
-print(f"  [{'PASS' if checks['dxg']     else 'FAIL'}] /dev/dxg ready       (dxgkrnl GPU-PV)")
-print(f"  [{'PASS' if checks['input']   else 'FAIL'}] Input relay          (vsock port 16)")
-print(f"  [{'PASS' if checks['display'] else 'FAIL'}] Display relay        (vsock port 17)")
-print(f"  [{'PASS' if checks['system']  else 'FAIL'}] Android system mount (switch_root)")
-print(f"  [{'PASS' if checks['init']    else 'FAIL'}] Android init launched")
-passed = sum(checks.values())
-print(f"  {passed}/{len(checks)} checks passed")
-print("=" * 55)
+print("=" * 60)
+print(f"  [{'PASS' if checks['fb0']      else 'FAIL'}] /dev/fb0 ready         (hyperv_drm)")
+print(f"  [{'PASS' if checks['dxg']      else 'FAIL'}] dxgkrnl registered     (VMBus driver present)")
+print(f"  [{'INFO' if checks['dxg_ioctl'] else 'N/A '}] dxg-enum IOCTL PASS   (VMBus GPU channel — optional)")
+print(f"  [{'PASS' if checks['input']    else 'FAIL'}] Input relay            (vsock port 16)")
+print(f"  [{'PASS' if checks['display']  else 'FAIL'}] Display relay          (vsock port 17)")
+print(f"  [{'PASS' if checks['system']   else 'FAIL'}] Android system mount   (switch_root)")
+print(f"  [{'PASS' if checks['init']     else 'FAIL'}] Android init launched")
+# dxg_ioctl is optional (VMBus GPU channel not offered to HCS LinuxKernelDirect VMs)
+core_checks = {k: v for k, v in checks.items() if k != "dxg_ioctl"}
+passed = sum(core_checks.values())
+print(f"  {passed}/{len(core_checks)} core checks passed  (dxg_ioctl: {'PASS' if checks['dxg_ioctl'] else 'N/A — VMBus GPU channel not offered'})")
+print("=" * 60)
 
 print("[*] Terminating VM...")
 op = ctypes.c_void_p(CC.HcsCreateOperation(None, None))
