@@ -8,7 +8,7 @@
   "boot": {
     "kernel": "out/android-kernel/bzImage",
     "initrd": "out/cuttlefish/initrd.img",
-    "cmdline": "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 loglevel=8 ignore_loglevel panic=30 init=/init androidboot.selinux=permissive"
+    "cmdline": "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 loglevel=8 ignore_loglevel panic=30 init=/init androidboot.selinux=permissive androidboot.hardware=cutf_cvm androidboot.lcd_density=240 androidboot.opengles.version=131072"
   },
   "disks": {
     "system":   "out/cuttlefish/system.vhdx",

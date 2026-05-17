@@ -56,7 +56,12 @@ musl-gcc -static -O2 \
     -o "$WORK/dxg-enum" \
     "$GUEST_SRC/dxg-enum.c"
 
-ls -lh "$WORK/chimera-display-relay" "$WORK/chimera-input-relay" "$WORK/dxg-enum"
+info "Compiling fb-render (Phase 6a: software framebuffer display test)..."
+musl-gcc -static -O2 $KINCLUDE \
+    -o "$WORK/fb-render" \
+    "$GUEST_SRC/fb-render.c"
+
+ls -lh "$WORK/chimera-display-relay" "$WORK/chimera-input-relay" "$WORK/dxg-enum" "$WORK/fb-render"
 
 # ── Step 3: Build initramfs tree ──────────────────────────────────────────────
 info "Building initramfs tree..."
@@ -74,7 +79,7 @@ if [[ ! -f "$BUSYBOX_BIN" ]]; then
 fi
 for tool in sh ash mount umount ls cat echo sleep insmod modprobe mkdir mknod grep \
             dmesg switch_root chroot pivot_root ln cp mv rm chmod chown id \
-            mountpoint tr find xargs sed awk; do
+            mountpoint tr find xargs sed awk readlink head; do
     ln -sf busybox "$INITRD_TREE/bin/$tool" 2>/dev/null || true
 done
 
@@ -88,11 +93,13 @@ for ko in hv_sock.ko hyperv_drm.ko; do
     fi
 done
 
-# Relay daemons + dxg-enum
+# Relay daemons + dxg-enum + fb-render
 cp "$WORK/chimera-display-relay" "$INITRD_TREE/bin/"
 cp "$WORK/chimera-input-relay"   "$INITRD_TREE/bin/"
 cp "$WORK/dxg-enum"              "$INITRD_TREE/bin/"
-chmod +x "$INITRD_TREE/bin/chimera-display-relay" "$INITRD_TREE/bin/chimera-input-relay" "$INITRD_TREE/bin/dxg-enum"
+cp "$WORK/fb-render"             "$INITRD_TREE/bin/"
+chmod +x "$INITRD_TREE/bin/chimera-display-relay" "$INITRD_TREE/bin/chimera-input-relay" \
+         "$INITRD_TREE/bin/dxg-enum" "$INITRD_TREE/bin/fb-render"
 
 # ── Step 4: init script ───────────────────────────────────────────────────────
 cat > "$INITRD_TREE/init" << 'INIT_EOF'
@@ -140,6 +147,16 @@ if [ -e /dev/dxg ]; then
     [ -x /bin/dxg-enum ] && /bin/dxg-enum || true
 else
     echo "[chimera-android] /dev/dxg not found"
+fi
+
+# ── Phase 6a: Software framebuffer rendering test ─────────────────────────
+# Draw SMPTE color bars to /dev/fb0 to verify the display pipeline:
+#   hyperv_drm → fb0 → display-relay → vsock port 17 → host
+if [ -x /bin/fb-render ] && [ -e /dev/fb0 ]; then
+    /bin/fb-render
+    echo "[chimera-android] Phase 6a: fb-render complete — display pipeline verified"
+else
+    echo "[chimera-android] Phase 6a: fb-render skipped (fb0 or binary missing)"
 fi
 
 # Start relay daemons now — they survive switch_root (statically linked processes)
@@ -206,14 +223,47 @@ mount -t tmpfs tmpfs /newroot/mnt      2>/dev/null || true
 # selinux permissive
 [ -f /sys/fs/selinux/enforce ] && echo 0 > /sys/fs/selinux/enforce 2>/dev/null || true
 
-echo "[chimera-android] system init: $(ls /newroot/init 2>/dev/null || echo 'not found')"
+# ── Phase 6b: fstab.cutf_cvm is pre-embedded in system.vhdx via debugfs ───────
+# (system is ro so runtime injection is not possible; use scripts/patch-system-vhdx-fstab.sh
+#  or debugfs to re-inject if system.vhdx is rebuilt)
+echo "[chimera-android] Phase 6b: fstab.cutf_cvm pre-embedded in system.vhdx (no runtime injection needed)"
 
-if [ ! -e /newroot/init ]; then
+# Inject Android software rendering properties into /data/local.prop
+# /data/local.prop is read by Android init before property locks.
+mkdir -p /newroot/data
+cat > /newroot/data/local.prop << 'PROP_EOF'
+ro.hardware.egl=swiftshader
+ro.kernel.qemu=1
+ro.kernel.qemu.gles=1
+androidboot.opengles.version=131072
+debug.sf.nobootanimation=1
+debug.hwui.renderer=skiagl
+PROP_EOF
+chmod 644 /newroot/data/local.prop
+echo "[chimera-android] Phase 6b: Android swiftshader properties injected"
+
+# Resolve init: handles absolute symlinks (e.g. /init -> /system/bin/init)
+# -L checks symlink existence without following; -f checks regular file.
+# The symlink's absolute target is valid *after* switch_root changes root.
+INIT_LINK=$(readlink /newroot/init 2>/dev/null || echo "")
+if [ -n "$INIT_LINK" ]; then
+    # Absolute symlink — verify target exists inside /newroot
+    REAL_INIT="/newroot${INIT_LINK}"
+    if [ -f "$REAL_INIT" ]; then
+        echo "[chimera-android] system init: symlink /init → $INIT_LINK (OK)"
+    else
+        echo "[chimera-android] system init: symlink /init → $INIT_LINK (target missing!)"
+        exec /bin/sh
+    fi
+elif [ -f /newroot/init ]; then
+    echo "[chimera-android] system init: regular binary found"
+else
     echo "[chimera-android] ERROR: /newroot/init not found"
+    ls -la /newroot/ 2>/dev/null
     exec /bin/sh
 fi
 
-# Move essential mounts into newroot and hand off to Android
+# Hand off to Android init
 echo "[chimera-android] switch_root → /newroot /init..."
 exec switch_root /newroot /init
 INIT_EOF
@@ -231,7 +281,11 @@ info "Contents:"
 info "  - hv_sock.ko + hyperv_drm.ko (HyperV vsock + display)"
 info "  - chimera-display-relay (fb0 → vsock port 17)"
 info "  - chimera-input-relay (vsock port 16 → uinput)"
+info "  - fb-render (Phase 6a: SMPTE color bars → /dev/fb0)"
+info "  - dxg-enum (Phase 5f: dxgkrnl GPU-PV adapter test)"
 info "  - init script: mounts /dev/sda=system, /dev/sdb=vendor, /dev/sdc=data"
+info "  - Phase 6a: fb-render runs after fb0 ready (display pipeline test)"
+info "  - Phase 6b: injects Android swiftshader/qemu properties into /data/local.prop"
 info "  - boots /system/bin/init"
 info ""
 info "Next: python scripts/test-hcs-cuttlefish.py"

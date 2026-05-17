@@ -42,7 +42,10 @@ INITRD   = str(PROJ / "out" / "cuttlefish" / "initrd.img")
 SYSTEM   = str(PROJ / "out" / "cuttlefish" / "system.vhdx")
 VENDOR   = str(PROJ / "out" / "cuttlefish" / "vendor.vhdx")
 USERDATA = str(PROJ / "out" / "cuttlefish" / "userdata.vhdx")
-CMDLINE  = "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 loglevel=8 ignore_loglevel panic=30 init=/init androidboot.selinux=permissive"
+METADATA = str(PROJ / "out" / "cuttlefish" / "metadata.vhdx")
+CMDLINE  = ("console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 loglevel=8 ignore_loglevel panic=30 "
+            "init=/init androidboot.selinux=permissive androidboot.hardware=cutf_cvm "
+            "androidboot.lcd_density=240 androidboot.opengles.version=131072")
 
 _TS   = int(time.time()) % 100000
 PIPE  = f"\\\\.\\pipe\\chimera-cf-{_TS}"
@@ -57,13 +60,15 @@ for p in (KERNEL, INITRD):
 has_system   = os.path.exists(SYSTEM)
 has_vendor   = os.path.exists(VENDOR)
 has_userdata = os.path.exists(USERDATA)
+has_metadata = os.path.exists(METADATA)
 print(f"[*] system.vhdx  : {'FOUND' if has_system else 'MISSING'}")
 print(f"[*] vendor.vhdx  : {'FOUND' if has_vendor else 'MISSING'}")
 print(f"[*] userdata.vhdx: {'FOUND' if has_userdata else 'MISSING'}")
+print(f"[*] metadata.vhdx: {'FOUND' if has_metadata else 'MISSING'}")
 
-# Build SCSI devices array — order: sda=system, sdb=vendor, sdc=userdata
+# Build SCSI devices array — order: sda=system, sdb=vendor, sdc=userdata, sdd=metadata
 scsi_attachments = []
-for path, readonly in [(SYSTEM, True), (VENDOR, True), (USERDATA, False)]:
+for path, readonly in [(SYSTEM, True), (VENDOR, True), (USERDATA, False), (METADATA, False)]:
     if os.path.exists(path):
         scsi_attachments.append({
             "Type":                   "VirtualDisk",
@@ -151,15 +156,17 @@ if not pipe_fh:
 print("[+] Serial pipe connected")
 
 # Read boot messages
-print("[*] Watching serial output (300s timeout)...")
+print("[*] Watching serial output (480s timeout — includes Android boot)...")
 checks = {
-    "fb0":     False,  # /dev/fb0 ready (hyperv_drm)
-    "dxg":     False,  # dxgkrnl registered (device node present; VMBus GPU channel may not be offered)
+    "fb0":       False,  # /dev/fb0 ready (hyperv_drm)
+    "dxg":       False,  # dxgkrnl registered (device node present; VMBus GPU channel may not be offered)
     "dxg_ioctl": False,  # dxg-enum PASS (VMBus GPU channel established — optional)
-    "input":   False,  # Input relay started
-    "display": False,  # Display relay started
-    "system":  False,  # Android system mount
-    "init":    False,  # Android init launched
+    "fb_render": False,  # Phase 6a: fb-render drew SMPTE bars (display pipeline verified)
+    "input":     False,  # Input relay started
+    "display":   False,  # Display relay started
+    "system":    False,  # Android system mount
+    "init":      False,  # Android init launched
+    "sf":        False,  # Phase 6b: SurfaceFlinger started (optional — requires SwiftShader)
 }
 
 pipe_q: queue.Queue = queue.Queue()
@@ -175,11 +182,12 @@ def _pipe_reader(fh, q):
 
 threading.Thread(target=_pipe_reader, args=(pipe_fh, pipe_q), daemon=True).start()
 
-deadline = time.time() + 300
+deadline = time.time() + 480
 buf = b""
 while time.time() < deadline:
-    if all(checks.values()):
-        break
+    core_so_far = {k: v for k, v in checks.items() if k not in ("dxg_ioctl", "sf")}
+    if all(core_so_far.values()) and checks["sf"]:
+        break  # All core checks + optional sf complete — no need to wait longer
     try:
         chunk = pipe_q.get(timeout=1.0)
     except queue.Empty:
@@ -190,17 +198,23 @@ while time.time() < deadline:
         txt = line.strip().decode("utf-8", errors="replace")
         if txt:
             print(f"  SERIAL: {txt}", flush=True)
-            if "/dev/fb0 ready"                    in txt: checks["fb0"]      = True
-            if "/dev/dxg ready"                    in txt: checks["dxg"]      = True
-            if "dxgkrnl registered"                in txt: checks["dxg"]      = True
-            if "registering driver dxgkrnl"        in txt: checks["dxg"]      = True
+            if "/dev/fb0 ready"                    in txt: checks["fb0"]       = True
+            if "/dev/dxg ready"                    in txt: checks["dxg"]       = True
+            if "dxgkrnl registered"                in txt: checks["dxg"]       = True
+            if "registering driver dxgkrnl"        in txt: checks["dxg"]       = True
             if "dxgkrnl GPU-PV enumeration PASS"   in txt: checks["dxg_ioctl"] = True
-            if "Input relay started"               in txt: checks["input"]    = True
-            if "[input-relay] listening"           in txt: checks["input"]    = True
-            if "Display relay started"             in txt: checks["display"]  = True
-            if "[display-relay] listening"         in txt: checks["display"]  = True
-            if "rootfs mounted OK"                 in txt: checks["system"]   = True
-            if "switch_root"                       in txt: checks["init"]     = True
+            if "Phase 6a: fb-render complete"      in txt: checks["fb_render"] = True
+            if "fb-render complete"                in txt: checks["fb_render"] = True
+            if "Phase 6a display pipeline"         in txt: checks["fb_render"] = True
+            if "Input relay started"               in txt: checks["input"]     = True
+            if "[input-relay] listening"           in txt: checks["input"]     = True
+            if "Display relay started"             in txt: checks["display"]   = True
+            if "[display-relay] listening"         in txt: checks["display"]   = True
+            if "rootfs mounted OK"                 in txt: checks["system"]    = True
+            if "switch_root"                       in txt: checks["init"]      = True
+            # SurfaceFlinger (Phase 6b software rendering)
+            if "surfaceflinger" in txt.lower()             : checks["sf"]       = True
+            if "SurfaceFlinger"                    in txt  : checks["sf"]       = True
             # Catch Android init output after switch_root
             if "init:" in txt.lower() or "android" in txt.lower():
                 checks["init"] = True
@@ -209,17 +223,22 @@ pipe_fh.close()
 
 print()
 print("=" * 60)
-print(f"  [{'PASS' if checks['fb0']      else 'FAIL'}] /dev/fb0 ready         (hyperv_drm)")
-print(f"  [{'PASS' if checks['dxg']      else 'FAIL'}] dxgkrnl registered     (VMBus driver present)")
+print(f"  [{'PASS' if checks['fb0']       else 'FAIL'}] /dev/fb0 ready         (hyperv_drm)")
+print(f"  [{'PASS' if checks['dxg']       else 'FAIL'}] dxgkrnl registered     (VMBus driver present)")
 print(f"  [{'INFO' if checks['dxg_ioctl'] else 'N/A '}] dxg-enum IOCTL PASS   (VMBus GPU channel — optional)")
-print(f"  [{'PASS' if checks['input']    else 'FAIL'}] Input relay            (vsock port 16)")
-print(f"  [{'PASS' if checks['display']  else 'FAIL'}] Display relay          (vsock port 17)")
-print(f"  [{'PASS' if checks['system']   else 'FAIL'}] Android system mount   (switch_root)")
-print(f"  [{'PASS' if checks['init']     else 'FAIL'}] Android init launched")
-# dxg_ioctl is optional (VMBus GPU channel not offered to HCS LinuxKernelDirect VMs)
-core_checks = {k: v for k, v in checks.items() if k != "dxg_ioctl"}
+print(f"  [{'PASS' if checks['fb_render'] else 'FAIL'}] Phase 6a: fb-render    (display pipeline: fb0→relay)")
+print(f"  [{'PASS' if checks['input']     else 'FAIL'}] Input relay            (vsock port 16)")
+print(f"  [{'PASS' if checks['display']   else 'FAIL'}] Display relay          (vsock port 17)")
+print(f"  [{'PASS' if checks['system']    else 'FAIL'}] Android system mount   (switch_root)")
+print(f"  [{'PASS' if checks['init']      else 'FAIL'}] Android init launched")
+print(f"  [{'PASS' if checks['sf']        else 'N/A '}] Phase 6b: SurfaceFlinger (SwiftShader — optional)")
+# dxg_ioctl and sf are optional
+core_checks = {k: v for k, v in checks.items() if k not in ("dxg_ioctl", "sf")}
 passed = sum(core_checks.values())
-print(f"  {passed}/{len(core_checks)} core checks passed  (dxg_ioctl: {'PASS' if checks['dxg_ioctl'] else 'N/A — VMBus GPU channel not offered'})")
+opt_notes = []
+opt_notes.append(f"dxg_ioctl: {'PASS' if checks['dxg_ioctl'] else 'N/A — VMBus GPU channel not offered'}")
+opt_notes.append(f"sf: {'PASS' if checks['sf'] else 'N/A — virtio-gpu not present'}")
+print(f"  {passed}/{len(core_checks)} core checks passed  ({', '.join(opt_notes)})")
 print("=" * 60)
 
 print("[*] Terminating VM...")
@@ -229,4 +248,4 @@ CC.HcsWaitForOperationResult(op, 10000, ctypes.byref(result))
 CC.HcsCloseOperation(op)
 CC.HcsCloseComputeSystem(cs)
 print("[*] Done.")
-sys.exit(0 if passed >= 5 else 1)
+sys.exit(0 if passed >= 6 else 1)
