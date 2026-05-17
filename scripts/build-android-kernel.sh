@@ -107,6 +107,12 @@ CONFIG_SQUASHFS_XZ=y
 # ext4 (userdata partition)
 CONFIG_EXT4_FS=y
 
+# DMA-BUF heaps (required by Android 14 gralloc.ranchu.so for GPU buffer allocation)
+# Without this, gralloc fails on open("/dev/dma_heap/system") → SurfaceFlinger crash-loops
+CONFIG_DMABUF_HEAPS=y
+CONFIG_DMABUF_HEAPS_SYSTEM=y
+CONFIG_DMABUF_HEAPS_CMA=n
+
 # Disable unused debug/tracing to reduce size
 CONFIG_DEBUG_INFO=n
 CONFIG_DEBUG_KERNEL=n
