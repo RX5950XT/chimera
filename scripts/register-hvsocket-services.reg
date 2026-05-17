@@ -1,0 +1,11 @@
+Windows Registry Editor Version 5.00
+
+; Chimera HvSocket Service Registration
+; Run this file as Administrator (double-click and confirm UAC prompt)
+; Required for AF_HYPERV connections from host to Chimera HCS VMs
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Virtualization\GuestCommunicationServices\{00000010-FACB-11E6-BD58-64006A7986D3}]
+"ElementName"="Chimera Input Service"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Virtualization\GuestCommunicationServices\{00000011-FACB-11E6-BD58-64006A7986D3}]
+"ElementName"="Chimera Display Service"
