@@ -187,5 +187,25 @@ Chimera 的等效路徑：Android Console `event` protocol on port 5554（繞過
   - `setup_wizard_has_run=1` → 抑制「完成設定」通知
   - `stay_on_while_plugged_in=3` → 螢幕永不關閉（充電中 = 模擬器永遠在充電）
   - 預設 IME 設為 Gboard
+- ✅ **Audio toggle**：`enableAudio` 欄位加入 `VirtualMachineConfig`/`InstanceConfig`；UI 開關在 Settings 進階頁
+- ✅ **Device profile selector**：Settings 頁加入 5 款旗艦裝置選單；`QmlInstanceManager::availableDeviceProfiles()` 回傳 DeviceSpoofer 內建清單
+- ✅ **Clipboard sync**：Side panel 按鈕 → `ClipboardBridge::instance().syncHostToGuest()`
+- ✅ **GPS location UI**：Side panel 新增 GPS 頁面，台北/東京/首爾/上海預設城市 + 自訂座標
+- ✅ **感應器注入**：加速計/陀螺儀預設 preset + 自訂，透過 `AndroidConsoleInput::sendSensor()`
+- ✅ **電池模擬**：充電狀態 + 電量 slider，透過 `AndroidConsoleInput::sendPowerCapacity/Status()`
+- ✅ **File sharing**：`pushFileToGuest()` → ADB push 到 `/sdcard/Download/`
+- ✅ **Unit tests 擴充**：ClipboardBridge、LocationSimulator、DeviceSpoofer、MacroEngine、GamepadManager、AudioBridge → **15/15 PASS**
+- ✅ **DeviceSpoofer bug fix**：`applyProfile()` 原本對不存在的 AVD 也會建立 junk 目錄 → 改為檢查 `config.ini` 才視為有效 AVD
+- ✅ **AudioBridge CoUninitialize bug fix**：`shutdown()` 無條件呼叫 `CoUninitialize()` 即使 COM 是 Qt 初始化的（`RPC_E_CHANGED_MODE`）→ 加 `m_coOwned` flag
+- ✅ **ChimeraWindow input forwarding**：`keyPressEvent`/`keyReleaseEvent`/`mouseEvent`/`wheelEvent`/`resizeEvent` → `InputBridge`；`takeScreenshot()`/`showInputMapper()` → emit 對應 signals
 
-*Updated: 2026-05-18 — Session 3*
+---
+
+## 重要 Bug 修正記錄（續）
+
+| Bug | 症狀 | Root Cause | 修法 | Commit |
+|-----|------|-----------|------|--------|
+| DeviceSpoofer junk dir | 對任意 AVD name 都建立 `overlay/system/` | `applyProfile` 只检查 `avdDir.empty()` | 改為檢查 `avdDir / "config.ini"` exists | 9bcc532 |
+| AudioBridge segfault | WASAPI test 結束時 crash | `CoUninitialize()` 在 COM 非本函式所初始化時被呼叫 | `m_coOwned` 旗標追蹤 | c08151f |
+
+*Updated: 2026-05-18 — Session 3 (continued)*

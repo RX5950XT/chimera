@@ -1,4 +1,5 @@
 #include "ChimeraWindow.h"
+#include "InputBridge.h"
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -37,13 +38,11 @@ void ChimeraWindow::toggleFullscreen() {
 }
 
 void ChimeraWindow::showInputMapper() {
-    qDebug() << "InputMapper requested";
-    // TODO: emit signal to QML layer to show InputMapperOverlay
+    emit requestShowInputMapper();
 }
 
 void ChimeraWindow::takeScreenshot() {
-    qDebug() << "Screenshot requested";
-    // TODO: capture current framebuffer and save to file
+    emit requestScreenshot();
 }
 
 void ChimeraWindow::updateGuestTexture(uint32_t textureId, int width, int height) {
@@ -54,34 +53,46 @@ void ChimeraWindow::updateGuestTexture(uint32_t textureId, int width, int height
 }
 
 void ChimeraWindow::keyPressEvent(QKeyEvent *event) {
-    // TODO: forward to InputBridge → virtio-input
+    if (!event->isAutoRepeat())
+        input::InputBridge::instance().onKeyEvent(true,
+            event->nativeScanCode(), event->nativeVirtualKey());
     QQuickWindow::keyPressEvent(event);
 }
 
 void ChimeraWindow::keyReleaseEvent(QKeyEvent *event) {
-    // TODO: forward to InputBridge → virtio-input
+    if (!event->isAutoRepeat())
+        input::InputBridge::instance().onKeyEvent(false,
+            event->nativeScanCode(), event->nativeVirtualKey());
     QQuickWindow::keyReleaseEvent(event);
 }
 
 void ChimeraWindow::mousePressEvent(QMouseEvent *event) {
-    // TODO: forward to InputBridge → virtio-input (absolute coordinates)
+    input::InputBridge::instance().onMouseButton(
+        true, event->button(), event->position().x(), event->position().y());
     QQuickWindow::mousePressEvent(event);
 }
 
 void ChimeraWindow::mouseReleaseEvent(QMouseEvent *event) {
+    input::InputBridge::instance().onMouseButton(
+        false, event->button(), event->position().x(), event->position().y());
     QQuickWindow::mouseReleaseEvent(event);
 }
 
 void ChimeraWindow::mouseMoveEvent(QMouseEvent *event) {
+    input::InputBridge::instance().onMouseMove(
+        event->position().x(), event->position().y(), 0, 0);
     QQuickWindow::mouseMoveEvent(event);
 }
 
 void ChimeraWindow::wheelEvent(QWheelEvent *event) {
+    input::InputBridge::instance().onWheel(
+        event->angleDelta().x(), event->angleDelta().y());
     QQuickWindow::wheelEvent(event);
 }
 
 void ChimeraWindow::resizeEvent(QResizeEvent *event) {
-    // TODO: notify InstanceManager to resize guest framebuffer
+    input::InputBridge::instance().setDisplaySize(
+        event->size().width(), event->size().height());
     QQuickWindow::resizeEvent(event);
 }
 

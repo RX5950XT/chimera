@@ -4,10 +4,10 @@
 
 ## 當前狀態
 
-**完成度**: BlueStacks Parity Roadmap v3 P0–P4e + Session 2 補強 COMPLETE (2026-05-18)
+**完成度**: BlueStacks Parity Roadmap v3 P0–P4e + Session 2/3 補強 COMPLETE (2026-05-18)
 **生產引擎**: `emulator.exe` (Google QEMU+WHPX fork) — `--qemu-backend` / `--hcs-backend` 為 legacy R&D，保留不刪
 **下一步**: Phase 8 — gfxstream-capable QEMU 或 SwiftShader APEX → SurfaceFlinger stable → boot_completed=1 → ADB TCP
-**Tests**: 9/9 unit tests PASS；3 integration tests（需 emulator 運行中）
+**Tests**: 15/15 unit tests PASS；3 integration tests（需 emulator 運行中）
 
 ## 架構
 
@@ -20,7 +20,7 @@ Audio             src/host/audio/        WASAPI shared-mode
 Instance          src/host/instance/     VM lifecycle；ProcessLauncher；DeviceSpoofer；MemoryTrimmer
 Integration       src/host/integration/  ClipboardBridge (CF_UNICODETEXT)；LocationSimulator (geo fix)
 Utils             src/common/utils/      Logger；ThreadPool；FileUtils
-Tests             tests/unit/            9 Qt Test executables
+Tests             tests/unit/            15 Qt Test executables
                   tests/integration/     emulator-boot / input-inject / screencap (QSKIP guards)
 ```
 

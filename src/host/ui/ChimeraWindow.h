@@ -33,6 +33,8 @@ public:
 signals:
     void frameSizeChanged(int width, int height);
     void fullscreenChanged(bool isFullscreen);
+    void requestScreenshot();
+    void requestShowInputMapper();
 
 protected:
     void keyPressEvent(QKeyEvent *event) override;
