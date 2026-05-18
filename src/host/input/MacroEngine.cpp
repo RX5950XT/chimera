@@ -34,6 +34,7 @@ void MacroEngine::startRecording(const std::string &name) {
     m_recording = true;
     m_currentMacroName = name;
     m_events.clear();
+    m_recordingStart = std::chrono::steady_clock::now();
 }
 
 void MacroEngine::stopRecording() {

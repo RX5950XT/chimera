@@ -35,6 +35,10 @@ public:
     void stopRecording();
     bool isRecording() const;
     void recordEvent(const MacroEvent &event);
+    std::chrono::milliseconds recordingElapsed() const {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - m_recordingStart);
+    }
 
     // Playback
     void startPlayback(const std::string &name, int loopCount = 1);
@@ -55,6 +59,7 @@ private:
     std::atomic<bool> m_playing{false};
     std::string m_currentMacroName;
     std::vector<MacroEvent> m_events;
+    std::chrono::steady_clock::time_point m_recordingStart;
 
     std::thread m_playbackThread;
     std::mutex m_mutex;

@@ -13,6 +13,7 @@
 #include "QmlAndroidControls.h"
 #include "QmlInstanceManager.h"
 #include "QmlMacroEngine.h"
+#include "MacroEngine.h"
 #include "QmlInputMapper.h"
 #include "ScreenRecorder.h"
 #include "InstanceManager.h"
@@ -514,10 +515,29 @@ int main(int argc, char *argv[]) {
     auto *perfMonitor = new chimera::graphics::PerformanceMonitor(&app);
     engine.rootContext()->setContextProperty("PerfMonitor", perfMonitor);
 
-    // Wire InputBridge events → visible latency tracking
+    // Wire InputBridge events → visible latency tracking + macro recording
     chimera::input::InputBridge::instance().setEventCallback(
-        [perfMonitor](const chimera::input::InputBridge::Event &) {
+        [perfMonitor](const chimera::input::InputBridge::Event &ev) {
             perfMonitor->onInputEvent();
+
+            auto &macro = chimera::input::MacroEngine::instance();
+            if (!macro.isRecording()) return;
+
+            chimera::input::MacroEvent me;
+            me.timestamp = macro.recordingElapsed();
+            me.x = ev.x;
+            me.y = ev.y;
+            me.keyCode = ev.code;
+
+            using EvType = chimera::input::InputBridge::Event::Type;
+            switch (ev.type) {
+            case EvType::MouseButtonDown: me.type = chimera::input::MacroEvent::Tap;        break;
+            case EvType::MouseMove:       me.type = chimera::input::MacroEvent::Swipe;      break;
+            case EvType::KeyDown:         me.type = chimera::input::MacroEvent::KeyPress;   break;
+            case EvType::KeyUp:           me.type = chimera::input::MacroEvent::KeyRelease; break;
+            default: return;
+            }
+            macro.recordEvent(me);
         });
 
     bool emulatorStarted = false;
