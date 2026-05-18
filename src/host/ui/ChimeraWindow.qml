@@ -1094,6 +1094,13 @@ ApplicationWindow {
                             }
                         }
 
+                        DockButton {
+                            Layout.fillWidth: true
+                            visible: settingsPage.cfg.enableRoot === true
+                            text: qsTr("立即 adb root")
+                            onClicked: AndroidControls.adbRoot()
+                        }
+
                         Item { Layout.fillHeight: true }
 
                         Label {

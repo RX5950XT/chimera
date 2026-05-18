@@ -212,6 +212,12 @@ bool VirtualMachine::start() {
     args.push_back("-no-boot-anim");
     args.push_back("-no-audio");
     args.push_back("-no-metrics");
+
+    // Root mode: enable a writable /system partition (google_apis only).
+    // After boot, call "adb root" to switch adbd to root user.
+    if (m_config.enableRoot) {
+        args.push_back("-writable-system");
+    }
     args.push_back("-crash-report-mode");
     args.push_back("never");
 

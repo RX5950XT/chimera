@@ -33,6 +33,7 @@ struct VirtualMachineConfig {
     int vncPort = 5900;                  // QEMU VNC display port; unsupported by current emulator GPU modes
     bool enableVnc = false;
     bool headless = false;               // -no-window flag; false enables native window embedding
+    bool enableRoot = false;             // -writable-system (google_apis only; adb root post-boot)
     std::string deviceProfile;           // Device spoofing profile name
     std::string processPriority = "high";
 };

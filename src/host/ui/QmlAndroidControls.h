@@ -26,6 +26,9 @@ public:
     // APK installation (async; monitor installStatus property for result)
     Q_INVOKABLE void installApk(const QString &fileUrl);
 
+    // Switch adbd to root (google_apis AVDs only; requires adb root support)
+    Q_INVOKABLE void adbRoot();
+
     // Configure ADB binary + device serial (called from main.cpp after emulator starts)
     void setAdbConfig(const QString &adbExe, const QString &adbSerial);
 
@@ -37,8 +40,9 @@ signals:
 private:
     bool sendKey(int keyCode) const;
     void setInstallStatus(const QString &s);
+    void runAdbAsync(const QStringList &args, const QString &onSuccess, const QString &onFail);
 
-    QProcess *m_installProcess = nullptr;
+    QProcess *m_adbProcess = nullptr;
     QString   m_adbExe;
     QString   m_adbSerial;
     QString   m_installStatus;

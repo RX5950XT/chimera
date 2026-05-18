@@ -190,6 +190,7 @@ bool InstanceManager::createInstance(const InstanceConfig &config) {
     vmConfig.maxFps = config.maxFps;
     vmConfig.enableVsync = config.enableVsync;
     vmConfig.headless = config.headless;
+    vmConfig.enableRoot = config.enableRoot;
     vmConfig.processPriority = config.processPriority;
     vmConfig.qmpPort = config.qmpPort;
     vmConfig.deviceProfile = config.deviceProfile;
