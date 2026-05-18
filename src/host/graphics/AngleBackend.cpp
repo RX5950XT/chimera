@@ -1,7 +1,6 @@
 #include "AngleBackend.h"
 #include "EglLoader.h"
 #include <stdexcept>
-#include <iostream>
 #include <QDebug>
 
 namespace chimera::graphics {
@@ -16,19 +15,19 @@ bool AngleBackend::initialize(const Config &config) {
 
 #ifdef CHIMERA_HAS_ANGLE
     if (!egl().load()) {
-        std::cerr << "ANGLE: Failed to load libEGL.dll\n";
+        qWarning() << "ANGLE: Failed to load libEGL.dll";
         return false;
     }
 
     m_display = egl().eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (m_display == EGL_NO_DISPLAY) {
-        std::cerr << "ANGLE: eglGetDisplay failed\n";
+        qWarning() << "ANGLE: eglGetDisplay failed";
         return false;
     }
 
     EGLint major = 0, minor = 0;
     if (!egl().eglInitialize(m_display, &major, &minor)) {
-        std::cerr << "ANGLE: eglInitialize failed\n";
+        qWarning() << "ANGLE: eglInitialize failed";
         m_display = EGL_NO_DISPLAY;
         return false;
     }
@@ -46,7 +45,7 @@ bool AngleBackend::initialize(const Config &config) {
     EGLConfig cfg;
     EGLint numConfigs = 0;
     if (!egl().eglChooseConfig(m_display, attribs, &cfg, 1, &numConfigs) || numConfigs < 1) {
-        std::cerr << "ANGLE: eglChooseConfig failed\n";
+        qWarning() << "ANGLE: eglChooseConfig failed";
         egl().eglTerminate(m_display);
         m_display = EGL_NO_DISPLAY;
         return false;
@@ -59,18 +58,18 @@ bool AngleBackend::initialize(const Config &config) {
 
     m_context = egl().eglCreateContext(m_display, cfg, EGL_NO_CONTEXT, contextAttribs);
     if (m_context == EGL_NO_CONTEXT) {
-        std::cerr << "ANGLE: eglCreateContext failed\n";
+        qWarning() << "ANGLE: eglCreateContext failed";
         egl().eglTerminate(m_display);
         m_display = EGL_NO_DISPLAY;
         return false;
     }
 
     m_initialized = true;
-    std::cout << "ANGLE initialized: EGL " << major << "." << minor << "\n";
+    qDebug() << "ANGLE initialized: EGL" << major << "." << minor;
     return true;
 #else
     (void)config;
-    std::cerr << "ANGLE: headers not available, stubbed\n";
+    qWarning() << "ANGLE: headers not available, stubbed";
     m_initialized = false;
     return false;
 #endif

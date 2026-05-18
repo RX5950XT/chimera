@@ -2,8 +2,8 @@
 #include <fstream>
 #include <sstream>
 #include <filesystem>
-#include <iostream>
 #include <set>
+#include <QDebug>
 
 namespace chimera::instance {
 
@@ -199,7 +199,8 @@ bool DeviceSpoofer::applyProfile(const DeviceProfile &profile, const std::string
     auto buildProp = overlayDir / "build.prop";
     if (!modifyBuildProp(buildProp, overrides)) return false;
 
-    std::cout << "Device spoofing applied: " << profile.name << " to " << avdName << "\n";
+    qDebug() << "[DeviceSpoofer] Applied:" << QString::fromStdString(profile.name)
+             << "to" << QString::fromStdString(avdName);
     return true;
 }
 
