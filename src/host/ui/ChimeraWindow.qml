@@ -20,6 +20,7 @@ ApplicationWindow {
     color: theme.bg
 
     property bool overlayVisible: false
+    property bool perfHudVisible: false
     property string sidePage: "main"
     property string lastActionStatus: ""
     readonly property bool isFullscreen: visibility === Window.FullScreen
@@ -536,6 +537,51 @@ ApplicationWindow {
                         opacity: 0.82
                     }
 
+                    // Performance HUD overlay
+                    Rectangle {
+                        anchors.top: parent.top
+                        anchors.left: parent.left
+                        anchors.margins: 10
+                        visible: root.perfHudVisible && root.guestReady
+                        width: hudCol.implicitWidth + 20
+                        height: hudCol.implicitHeight + 16
+                        radius: 10
+                        color: "#e0050a0f"
+                        border.color: "#334a5560"
+                        border.width: 1
+                        z: 10
+
+                        Column {
+                            id: hudCol
+                            anchors.centerIn: parent
+                            spacing: 3
+
+                            Label {
+                                text: PerfMonitor.fps.toFixed(0) + " FPS"
+                                color: PerfMonitor.fps < 30 ? theme.danger
+                                     : (PerfMonitor.fps < 50 ? theme.warn : theme.accent)
+                                font.pixelSize: 16
+                                font.weight: Font.Black
+                                font.family: "Courier New"
+                            }
+                            Label {
+                                visible: !nativeDisplay.attached && PerfMonitor.visibleLatencyMs >= 0
+                                text: "Lat  " + PerfMonitor.visibleLatencyMs.toFixed(0) + " ms"
+                                color: PerfMonitor.visibleLatencyMs > 50 ? theme.warn : theme.text
+                                font.pixelSize: 12
+                                font.weight: Font.DemiBold
+                                font.family: "Courier New"
+                            }
+                            Label {
+                                text: "Drop " + PerfMonitor.droppedFrames
+                                color: PerfMonitor.droppedFrames > 10 ? theme.warn : theme.muted
+                                font.pixelSize: 12
+                                font.weight: Font.Medium
+                                font.family: "Courier New"
+                            }
+                        }
+                    }
+
                     // Loading placeholder shown until Android is ready
                     Column {
                         anchors.centerIn: parent
@@ -736,6 +782,21 @@ ApplicationWindow {
 
                         SectionLabel { text: qsTr("操作") }
 
+                        SideButton {
+                            Layout.fillWidth: true
+                            text: guestDisplay.mouseLocked ? qsTr("解鎖鼠標") : qsTr("鎖定鼠標 (FPS)")
+                            detail: qsTr("Alt+M")
+                            highlighted: guestDisplay.mouseLocked
+                            visible: !nativeDisplay.attached
+                            onClicked: guestDisplay.setMouseLocked(!guestDisplay.mouseLocked)
+                        }
+                        SideButton {
+                            Layout.fillWidth: true
+                            text: root.perfHudVisible ? qsTr("隱藏效能 HUD") : qsTr("效能 HUD")
+                            detail: qsTr("Ctrl+Shift+P")
+                            highlighted: root.perfHudVisible
+                            onClicked: root.perfHudVisible = !root.perfHudVisible
+                        }
                         SideButton {
                             Layout.fillWidth: true
                             text: overlayVisible ? qsTr("隱藏鍵位") : qsTr("鍵位配置")
@@ -1594,10 +1655,10 @@ ApplicationWindow {
 
                         Label {
                             Layout.fillWidth: true
-                            text: AndroidControls.isGpsSimulating()
-                                ? qsTr("🟢 路線模擬進行中")
-                                : qsTr("⚪ 路線模擬已停止")
-                            color: AndroidControls.isGpsSimulating() ? theme.accent : theme.muted
+                            text: AndroidControls.gpsSimulating
+                                ? qsTr("路線模擬進行中")
+                                : qsTr("路線模擬已停止")
+                            color: AndroidControls.gpsSimulating ? theme.accent : theme.muted
                             font.pixelSize: 12
                         }
 
@@ -2164,5 +2225,14 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+Shift+F6"
         onActivated: MacroEngine.stopPlayback()
+    }
+    Shortcut {
+        sequence: "Alt+M"
+        enabled: !nativeDisplay.attached
+        onActivated: guestDisplay.setMouseLocked(!guestDisplay.mouseLocked)
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+P"
+        onActivated: root.perfHudVisible = !root.perfHudVisible
     }
 }

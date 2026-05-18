@@ -825,8 +825,14 @@ int main(int argc, char *argv[]) {
     }
     if (!guestDisplay) {
         qWarning() << "GuestDisplay not found; frame capture will not be visible";
-    } else if (guestInputSize.isValid()) {
-        guestDisplay->setGuestSize(guestInputSize);
+    } else {
+        if (guestInputSize.isValid())
+            guestDisplay->setGuestSize(guestInputSize);
+        // Wire visible latency: framePainted → onFrameRendered (render thread → main thread)
+        QObject::connect(guestDisplay, &chimera::GuestDisplay::framePainted,
+                         perfMonitor, [perfMonitor]() {
+            perfMonitor->onFrameRendered();
+        }, Qt::QueuedConnection);
     }
 
     auto currentDisplaySize = std::make_shared<QSize>();

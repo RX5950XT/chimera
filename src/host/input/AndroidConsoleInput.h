@@ -69,6 +69,18 @@ public:
     bool sendPowerCapacity(int percent);
     bool sendPowerStatus(const std::string &status);  // charging / discharging / full
 
+    // Multi-touch injection via Linux MT evdev "event send" protocol (Type B).
+    // Each TouchPoint selects a slot; id=-1 releases that slot.
+    struct TouchPoint {
+        int slot;   // 0-based MT slot index
+        int id;     // tracking ID (≥0 = press/move, -1 = release)
+        int x, y;   // absolute guest coordinates (ignored when id=-1)
+    };
+    bool sendMultiTouch(const std::vector<TouchPoint> &points);
+
+    // Inject unicode text: sets clipboard then sends KEYCODE_PASTE (279).
+    bool sendText(const std::string &utf8text);
+
 signals:
     void stateChanged(State state);
 

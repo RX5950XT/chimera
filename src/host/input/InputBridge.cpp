@@ -88,7 +88,9 @@ InputBridge &InputBridge::instance() {
     return inst;
 }
 
-InputBridge::InputBridge() : m_worker([this]() { workerLoop(); }) {}
+InputBridge::InputBridge() : m_worker([this]() { workerLoop(); }) {
+    m_touchSlotIds.fill(-1);
+}
 
 InputBridge::~InputBridge() {
     shutdown();
@@ -315,6 +317,50 @@ void InputBridge::onWheel(int deltaX, int deltaY) {
     injectEvent(ev);
 }
 
+void InputBridge::onTouchPoint(int pointId, int x, int y, bool pressed) {
+    if (!m_forwarding) return;
+    if (!m_consoleInput || !m_consoleInput->isMouseReady()) return;
+
+    if (pressed) {
+        int slot = -1;
+        auto it = m_touchPointSlots.find(pointId);
+        if (it != m_touchPointSlots.end()) {
+            slot = it->second;
+        } else {
+            for (int i = 0; i < static_cast<int>(m_touchSlotIds.size()); ++i) {
+                if (m_touchSlotIds[i] < 0) { slot = i; break; }
+            }
+            if (slot < 0) return;
+            m_touchPointSlots[pointId] = slot;
+            m_touchSlotIds[slot] = pointId;
+        }
+        m_consoleInput->sendMultiTouch({{slot, pointId, x, y}});
+    } else {
+        auto it = m_touchPointSlots.find(pointId);
+        if (it == m_touchPointSlots.end()) return;
+        const int slot = it->second;
+        m_touchPointSlots.erase(it);
+        m_touchSlotIds[slot] = -1;
+        m_consoleInput->sendMultiTouch({{slot, -1, 0, 0}});
+    }
+}
+
+void InputBridge::onTextInput(const std::string &utf8text) {
+    if (!m_forwarding || utf8text.empty()) return;
+    if (m_consoleInput && m_consoleInput->isConnected()) {
+        m_consoleInput->sendText(utf8text);
+        return;
+    }
+    // ADB fallback: escape spaces for shell command
+    std::string escaped;
+    escaped.reserve(utf8text.size() + 2);
+    for (unsigned char c : utf8text) {
+        if (c == '\'') escaped += "'\\''";
+        else           escaped += static_cast<char>(c);
+    }
+    enqueueAdbCommand("input text '" + escaped + "'");
+}
+
 // Gamepad button index → Android keycode mapping
 static const std::unordered_map<int, int> s_gamepadBtnMap = {
     {0, 96},   // A → KEYCODE_BUTTON_A
@@ -381,9 +427,16 @@ void InputBridge::onGamepadAxis(int deviceId, int axis, float value) {
 }
 
 bool InputBridge::sendAndroidKeyCode(int androidKeyCode) {
-    if (!m_forwarding || m_adbPath.empty()) return false;
-    if (androidKeyCode <= 0 || androidKeyCode > 300) return false;
+    if (!m_forwarding) return false;
+    if (androidKeyCode <= 0) return false;
 
+    // Prefer console path (low latency) over ADB
+    if (hasConsoleKeyboard()) {
+        m_consoleInput->sendKeyEvent(androidKeyCode, true);
+        m_consoleInput->sendKeyEvent(androidKeyCode, false);
+        return true;
+    }
+    if (m_adbPath.empty()) return false;
     enqueueAdbCommand("input keyevent " + std::to_string(androidKeyCode));
     return true;
 }
@@ -432,8 +485,6 @@ void InputBridge::injectEvent(const Event &ev) {
                                 (ev.code == Qt::RightButton) ? 2 : 4;
         if (hasConsoleMouse()) {
             m_consoleInput->sendMouseEvent(ev.x, ev.y, consoleBtns);
-            qDebug() << "[InputBridge] inject path=Console type=mouse injLatency="
-                     << m_consoleInput->lastLatencyMs() << "ms";
         } else if (hasQmp()) {
             m_qmpInput->sendMouseButton(qtMouseButtonToQmp(ev.code), true, ev.x, ev.y);
         } else if (!m_adbPath.empty()) {
@@ -468,8 +519,6 @@ void InputBridge::injectEvent(const Event &ev) {
         const int androidKey = mapQtKeyToAndroid(ev.code);
         if (hasConsoleKeyboard() && androidKey >= 0) {
             m_consoleInput->sendKeyEvent(androidKey, true);
-            qDebug() << "[InputBridge] inject path=Console type=key code=" << androidKey
-                     << "injLatency=" << m_consoleInput->lastLatencyMs() << "ms";
         } else if (hasQmp()) {
             const int qemuKey = mapQtKeyToQemu(ev.code);
             if (qemuKey >= 0) m_qmpInput->sendKey(qemuKey, true);

@@ -284,4 +284,29 @@ bool AndroidConsoleInput::sendPowerStatus(const std::string &status) {
     return true;
 }
 
+bool AndroidConsoleInput::sendMultiTouch(const std::vector<TouchPoint> &points) {
+    if (!isMouseReady() || points.empty()) return false;
+    // Build "event send <type>:<code>:<value>..." command.
+    // EV_ABS=3: ABS_MT_SLOT=47, ABS_MT_TRACKING_ID=57, ABS_MT_POSITION_X=53, ABS_MT_POSITION_Y=54.
+    // EV_SYN=0: SYN_REPORT=0.
+    QString cmd = QStringLiteral("event send");
+    for (const auto &p : points) {
+        cmd += QStringLiteral(" 3:47:%1 3:57:%2").arg(p.slot).arg(p.id);
+        if (p.id >= 0)
+            cmd += QStringLiteral(" 3:53:%1 3:54:%2").arg(p.x).arg(p.y);
+    }
+    cmd += QStringLiteral(" 0:0:0");
+    sendLine(cmd);
+    return true;
+}
+
+bool AndroidConsoleInput::sendText(const std::string &utf8text) {
+    if (!isConnected() || utf8text.empty()) return false;
+    // Set clipboard then paste with KEYCODE_PASTE (279).
+    sendClipboardSet(utf8text);
+    sendLine(QStringLiteral("event keydown 279"));
+    sendLine(QStringLiteral("event keyup 279"));
+    return true;
+}
+
 } // namespace chimera::input

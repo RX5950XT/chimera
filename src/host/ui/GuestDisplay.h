@@ -3,6 +3,7 @@
 #include <QQuickPaintedItem>
 #include <QImage>
 #include <QSize>
+#include <QPointF>
 #include "CoordinateMapper.h"
 
 namespace chimera {
@@ -18,6 +19,7 @@ class GuestDisplay : public QQuickPaintedItem {
     Q_OBJECT
     Q_PROPERTY(QImage frame READ frame WRITE setFrame NOTIFY frameChanged)
     Q_PROPERTY(bool hasFrame READ hasFrame NOTIFY frameChanged)
+    Q_PROPERTY(bool mouseLocked READ isMouseLocked NOTIFY mouseLockChanged)
 
 public:
     explicit GuestDisplay(QQuickItem *parent = nullptr);
@@ -31,9 +33,13 @@ public:
     chimera::input::CoordinateMapper &coordinateMapper() { return m_mapper; }
 
     Q_INVOKABLE bool saveScreenshot(const QString &filePath) const;
+    Q_INVOKABLE void setMouseLocked(bool locked);
+    bool isMouseLocked() const { return m_mouseLocked; }
 
 signals:
     void frameChanged();
+    void framePainted();
+    void mouseLockChanged();
 
 protected:
     void paint(QPainter *painter) override;
@@ -43,14 +49,17 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
-
-protected:
+    void touchEvent(QTouchEvent *event) override;
+    void inputMethodEvent(QInputMethodEvent *event) override;
+    QVariant inputMethodQuery(Qt::InputMethodQuery query) const override;
     void geometryChange(const QRectF &newGeom, const QRectF &oldGeom) override;
 
 private:
     QImage m_frame;
     QSize  m_guestSize;
     chimera::input::CoordinateMapper m_mapper;
+    bool   m_mouseLocked = false;
+    QPointF m_virtualMouse;   // virtual cursor position in guest coordinates (FPS mode)
 };
 
 } // namespace chimera

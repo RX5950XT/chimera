@@ -224,4 +224,18 @@ Chimera 的等效路徑：Android Console `event` protocol on port 5554（繞過
 - ✅ **Gamepad Console 路徑**：`onGamepadButton()` 優先呼叫 `hasConsoleKeyboard()` + `sendKeyEvent()`，不再全走慢速 ADB
 - ✅ **Tests**：15/15 PASS（無迴歸）
 
-*Updated: 2026-05-19 — Session 4*
+---
+
+## Session 5 補強（2026-05-19）
+
+- ✅ **Multi-touch（Linux MT evdev Type-B）**：`AndroidConsoleInput::sendMultiTouch()` 透過 `event send 3:47:<slot> 3:57:<id> 3:53:<x> 3:54:<y> ... 0:0:0` 注入；`InputBridge` 用 `m_touchPointSlots` + `m_touchSlotIds` 追蹤最多 10 個 MT slot；`GuestDisplay::touchEvent()` 呼叫 `onTouchPoint()`
+- ✅ **IME 文字輸入**：`AndroidConsoleInput::sendText()` → `clipboard set <utf8>` + `event keydown/keyup 279`（KEYCODE_PASTE）；`InputBridge::onTextInput()` 呼叫 sendText，ADB fallback 用 `adb shell input text '<escaped>'`；`GuestDisplay::inputMethodEvent()` 轉交 `onTextInput()`
+- ✅ **FPS 鼠標鎖定**：`GuestDisplay::setMouseLocked()`：進入時 `Qt::BlankCursor` + 將物理游標 warp 至 widget center；`mouseMoveEvent()` 在 locked 模式計算 delta 累加到 `m_virtualMouse`，每幀 warp 回 center；Escape 解鎖；側邊欄 `SideButton` + `Alt+M` shortcut
+- ✅ **Visible latency wiring**：`GuestDisplay::paint()` 在 frame 畫完後 emit `framePainted()`；`main.cpp` 以 `Qt::QueuedConnection` 連接 → `PerfMonitor::onFrameRendered()`
+- ✅ **Performance HUD overlay**：`ChimeraWindow.qml` displayShell 左上角 semi-transparent overlay（z=10），顯示 FPS（顏色 warn/danger 分級）、Lat（>50ms warn）、Drop；SideButton "效能 HUD" + `Ctrl+Shift+P` shortcut
+- ✅ **Bug：setScreenBrightness 雙 runAdbAsync**：第二條 `adb` 指令被第一條仍在執行的 `m_adbProcess` 阻擋 → 改為兩個 chained one-shot `QProcess`
+- ✅ **Bug：GPS 模擬標籤不 reactive**：QML 用 `AndroidControls.isGpsSimulating()`（函式呼叫，不更新 binding）→ 加 `Q_PROPERTY(bool gpsSimulating ...)` + 改 QML 用 property binding
+- ✅ **Bug：sendAndroidKeyCode 永遠走 ADB**：Back/Home/Recents/Menu 即使 Console Ready 仍走慢速 ADB → 改為優先 `sendKeyEvent()` via Console
+- ✅ **Tests**：15/15 PASS（無迴歸）
+
+*Updated: 2026-05-19 — Session 5*

@@ -446,15 +446,25 @@ void QmlAndroidControls::resetScreenSize() {
 }
 
 void QmlAndroidControls::setScreenBrightness(int level) {
+    if (m_adbExe.isEmpty()) return;
     const int clamped = qBound(0, level, 255);
-    // Disable auto-brightness then set manual level
-    runAdbAsync({"-s", m_adbSerial, "shell", "settings", "put", "system",
-                 "screen_brightness_mode", "0"},
-                QString(), QString());
-    runAdbAsync({"-s", m_adbSerial, "shell", "settings", "put", "system",
-                 "screen_brightness", QString::number(clamped)},
-                tr("亮度已設為 %1").arg(clamped),
-                tr("無法設定亮度"));
+    // Chain: first disable auto-brightness, then set level (two independent one-shot processes).
+    auto *p1 = new QProcess(this);
+    auto *p2 = new QProcess(this);
+    connect(p1, &QProcess::finished, this, [this, p1, p2, clamped](int, QProcess::ExitStatus) {
+        p1->deleteLater();
+        connect(p2, &QProcess::finished, this, [this, p2, clamped](int exitCode, QProcess::ExitStatus) {
+            p2->deleteLater();
+            if (exitCode == 0)
+                setInstallStatus(tr("亮度已設為 %1").arg(clamped));
+            else
+                setInstallStatus(tr("無法設定亮度"));
+        });
+        p2->start(m_adbExe, {"-s", m_adbSerial, "shell", "settings", "put", "system",
+                              "screen_brightness", QString::number(clamped)});
+    });
+    p1->start(m_adbExe, {"-s", m_adbSerial, "shell", "settings", "put", "system",
+                          "screen_brightness_mode", "0"});
 }
 
 void QmlAndroidControls::setAirplaneMode(bool enabled) {

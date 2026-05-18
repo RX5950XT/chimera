@@ -16,6 +16,7 @@ class QmlAndroidControls : public QObject {
     Q_PROPERTY(QString     installStatus      READ installStatus      NOTIFY installStatusChanged)
     Q_PROPERTY(double      gpsLatitude        READ gpsLatitude        NOTIFY gpsChanged)
     Q_PROPERTY(double      gpsLongitude       READ gpsLongitude       NOTIFY gpsChanged)
+    Q_PROPERTY(bool        gpsSimulating      READ isGpsSimulating    NOTIFY gpsChanged)
     Q_PROPERTY(QStringList installedPackages  READ installedPackages  NOTIFY installedPackagesChanged)
     Q_PROPERTY(QStringList guestDownloads     READ guestDownloads     NOTIFY guestDownloadsChanged)
 

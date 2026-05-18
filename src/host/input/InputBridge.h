@@ -9,6 +9,8 @@
 #include <queue>
 #include <mutex>
 #include <condition_variable>
+#include <unordered_map>
+#include <array>
 
 namespace chimera::input {
 
@@ -66,6 +68,12 @@ public:
     void onGamepadButton(int deviceId, int button, bool pressed);
     void onGamepadAxis(int deviceId, int axis, float value);
 
+    // Multi-touch: called per touch point on press, move, or release.
+    void onTouchPoint(int pointId, int x, int y, bool pressed);
+
+    // Unicode text input (from IME or clipboard paste).
+    void onTextInput(const std::string &utf8text);
+
     // Android system actions such as Back/Home/Recents use Android keycodes
     // directly because QMP/Linux scan codes do not cover every semantic action.
     bool sendAndroidKeyCode(int androidKeyCode);
@@ -108,6 +116,10 @@ private:
     int m_displayWidth = 1920;
     int m_displayHeight = 1080;
     CoordinateMapper m_mapper;
+
+    // Multi-touch slot tracking: pointId → slot index, slot → current tracking ID
+    std::unordered_map<int, int> m_touchPointSlots;
+    std::array<int, 10> m_touchSlotIds;
 
     // Command queue for async ADB execution
     std::queue<std::string> m_queue;
