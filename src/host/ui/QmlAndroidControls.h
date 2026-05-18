@@ -67,6 +67,8 @@ public:
     // Runtime display controls (take effect immediately via ADB)
     Q_INVOKABLE void setScreenDensity(int dpi);   // adb shell wm density <dpi>
     Q_INVOKABLE void resetScreenDensity();         // adb shell wm density reset
+    Q_INVOKABLE void setScreenSize(int width, int height); // adb shell wm size <w>x<h>
+    Q_INVOKABLE void resetScreenSize();            // adb shell wm size reset
     Q_INVOKABLE void setScreenBrightness(int level); // 0–255
 
     // System controls
@@ -92,6 +94,7 @@ public:
 signals:
     void installStatusChanged(const QString &status);
     void gpsChanged();
+    void notificationRequested(const QString &title, const QString &message);
 
 private:
     bool sendKey(int keyCode) const;

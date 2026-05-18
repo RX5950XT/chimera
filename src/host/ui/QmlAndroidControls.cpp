@@ -62,9 +62,30 @@ void QmlAndroidControls::installApk(const QString &fileUrl) {
         setInstallStatus(tr("安裝失敗：路徑無效"));
         return;
     }
-    runAdbAsync({"-s", m_adbSerial, "install", "-r", localPath},
-                tr("APK 安裝成功"),
-                tr("安裝失敗"));
+    const QString apkName = QFileInfo(localPath).fileName();
+    if (m_adbExe.isEmpty()) { setInstallStatus(tr("ADB 尚未設定")); return; }
+    if (m_adbProcess) {
+        if (m_adbProcess->state() != QProcess::NotRunning) {
+            setInstallStatus(tr("操作中，請稍候…"));
+            return;
+        }
+        m_adbProcess->disconnect();
+    } else {
+        m_adbProcess = new QProcess(this);
+    }
+    connect(m_adbProcess, &QProcess::finished, this,
+            [this, apkName](int exitCode, QProcess::ExitStatus) {
+        if (exitCode == 0) {
+            setInstallStatus(tr("APK 安裝成功"));
+            emit notificationRequested(tr("Chimera"), tr("已安裝：") + apkName);
+        } else {
+            QString err = QString::fromUtf8(m_adbProcess->readAllStandardError()).trimmed().left(120);
+            if (err.isEmpty()) err = QString::fromUtf8(m_adbProcess->readAllStandardOutput()).trimmed().left(120);
+            setInstallStatus(tr("安裝失敗") + (err.isEmpty() ? QString{} : (QStringLiteral("：") + err)));
+        }
+    });
+    setInstallStatus(tr("安裝中…"));
+    m_adbProcess->start(m_adbExe, {"-s", m_adbSerial, "install", "-r", localPath});
 }
 
 void QmlAndroidControls::adbRoot() {
@@ -288,6 +309,20 @@ void QmlAndroidControls::resetScreenDensity() {
     runAdbAsync({"-s", m_adbSerial, "shell", "wm", "density", "reset"},
                 tr("螢幕密度已重置"),
                 tr("無法重置螢幕密度"));
+}
+
+void QmlAndroidControls::setScreenSize(int width, int height) {
+    if (width < 320 || height < 320) return;
+    runAdbAsync({"-s", m_adbSerial, "shell", "wm", "size",
+                 QString("%1x%2").arg(width).arg(height)},
+                tr("解析度已設為 %1×%2").arg(width).arg(height),
+                tr("無法設定解析度"));
+}
+
+void QmlAndroidControls::resetScreenSize() {
+    runAdbAsync({"-s", m_adbSerial, "shell", "wm", "size", "reset"},
+                tr("解析度已重置"),
+                tr("無法重置解析度"));
 }
 
 void QmlAndroidControls::setScreenBrightness(int level) {

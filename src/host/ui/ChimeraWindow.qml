@@ -78,6 +78,13 @@ ApplicationWindow {
         }
     }
 
+    Connections {
+        target: AndroidControls
+        function onNotificationRequested(title, message) {
+            trayIcon.showMessage(title, message)
+        }
+    }
+
     QtObject {
         id: theme
         readonly property color bg: "#0a0e12"
