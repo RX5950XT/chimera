@@ -95,22 +95,32 @@ void QmlAndroidControls::installObb(const QString &fileUrl, const QString &packa
     if (localPath.isEmpty()) { setInstallStatus(tr("OBB 路徑無效")); return; }
     if (packageName.isEmpty()) { setInstallStatus(tr("OBB 需指定 package 名稱")); return; }
     if (m_adbExe.isEmpty()) { setInstallStatus(tr("ADB 尚未設定")); return; }
-    if (m_adbProcess && m_adbProcess->state() != QProcess::NotRunning) {
-        setInstallStatus(tr("操作中，請稍候…")); return;
-    }
 
     const QString obbName   = QFileInfo(localPath).fileName();
     const QString obbDir    = "/sdcard/Android/obb/" + packageName;
     const QString guestPath = obbDir + "/" + obbName;
 
-    // mkdir -p first using a one-shot process, then push in the finished callback
+    // Use two independent one-shot processes (never touches m_adbProcess) to avoid
+    // contention with concurrent runAdbAsync calls and prevent silent push drop.
     auto *mkdirProc = new QProcess(this);
+    auto *pushProc  = new QProcess(this);
+
     connect(mkdirProc, &QProcess::finished, this,
-            [this, mkdirProc, localPath, guestPath, obbName](int, QProcess::ExitStatus) {
+            [this, mkdirProc, pushProc, localPath, guestPath, obbName](int, QProcess::ExitStatus) {
         mkdirProc->deleteLater();
-        runAdbAsync({"-s", m_adbSerial, "push", localPath, guestPath},
-                    tr("OBB 已安裝：") + obbName,
-                    tr("OBB 安裝失敗：") + obbName);
+        connect(pushProc, &QProcess::finished, this,
+                [this, pushProc, obbName](int exitCode, QProcess::ExitStatus) {
+            pushProc->deleteLater();
+            if (exitCode == 0) {
+                setInstallStatus(tr("OBB 已安裝：") + obbName);
+                emit notificationRequested(tr("Chimera"), tr("已安裝 OBB：") + obbName);
+            } else {
+                QString err = QString::fromUtf8(pushProc->readAllStandardError()).trimmed().left(120);
+                setInstallStatus(tr("OBB 安裝失敗：") + obbName +
+                    (err.isEmpty() ? QString{} : QStringLiteral("：") + err));
+            }
+        });
+        pushProc->start(m_adbExe, {"-s", m_adbSerial, "push", localPath, guestPath});
     });
     setInstallStatus(tr("OBB 安裝中…"));
     mkdirProc->start(m_adbExe, {"-s", m_adbSerial, "shell", "mkdir", "-p", obbDir});

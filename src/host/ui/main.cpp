@@ -7,6 +7,7 @@
 #include <QQmlContext>
 #include <QQuickStyle>
 #include <QSize>
+#include <QPointer>
 #include "ChimeraWindow.h"
 #include "GuestDisplay.h"
 #include "NativeEmulatorView.h"
@@ -516,9 +517,11 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("PerfMonitor", perfMonitor);
 
     // Wire InputBridge events → visible latency tracking + macro recording
+    // QPointer ensures no dangling access if perfMonitor is destroyed before InputBridge
+    QPointer<chimera::graphics::PerformanceMonitor> weakPerf(perfMonitor);
     chimera::input::InputBridge::instance().setEventCallback(
-        [perfMonitor](const chimera::input::InputBridge::Event &ev) {
-            perfMonitor->onInputEvent();
+        [weakPerf](const chimera::input::InputBridge::Event &ev) {
+            if (weakPerf) weakPerf->onInputEvent();
 
             auto &macro = chimera::input::MacroEngine::instance();
             if (!macro.isRecording()) return;
