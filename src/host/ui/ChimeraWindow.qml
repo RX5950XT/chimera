@@ -1997,4 +1997,31 @@ ApplicationWindow {
         sequence: "Ctrl+Shift+Tab"
         onActivated: root.runAndroidAction("recents", AndroidControls.recents())
     }
+    Shortcut {
+        sequence: "Ctrl+Shift+G"
+        onActivated: root.openSidePage("gps")
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+C"
+        onActivated: {
+            AndroidControls.syncClipboardToGuest()
+            lastActionStatus = qsTr("剪貼簿已同步")
+        }
+    }
+    // Macro record start/stop
+    Shortcut {
+        sequence: "Ctrl+Shift+F5"
+        onActivated: {
+            if (MacroEngine.recording) {
+                MacroEngine.stopRecording()
+                lastActionStatus = qsTr("巨集錄製已停止")
+            } else {
+                root.openSidePage("macro")
+            }
+        }
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+F6"
+        onActivated: MacroEngine.stopPlayback()
+    }
 }
