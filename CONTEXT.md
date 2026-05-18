@@ -212,4 +212,16 @@ Chimera 的等效路徑：Android Console `event` protocol on port 5554（繞過
 - ✅ **多開管理補強**：`InstanceManager.batchStart/batchStop/sortByName()` 現在有 QML 按鈕（全部啟動/全部停止/名稱排序）
 - ✅ **感應器/電池 Console 狀態回報**：原本 null 時靜默無效 → 現在回傳錯誤訊息 `installStatus`
 
-*Updated: 2026-05-18 — Session 3 (final)*
+---
+
+## Session 4 補強（2026-05-19）
+
+- ✅ **APK 安裝通知**：`installApk()` 成功後 emit `notificationRequested` signal；`ChimeraWindow.qml` 加 `Connections { target: AndroidControls }` → `trayIcon.showMessage()`
+- ✅ **螢幕尺寸預設**：Settings 頁加入 4 個常用尺寸（手機 9:16 / 9:19、平板 4:3、橫屏 16:9）+ 重置按鈕；`setScreenSize()` / `resetScreenSize()` via `adb shell wm size`
+- ✅ **App Manager 強化**：ListView delegate 新增「清除」（`pm clear`）和「卸載」（`adb uninstall`）按鈕；卸載時從本機清單同步移除
+- ✅ **截圖存 Downloads + 通知**：`takeScreenshot()` 從 `screenshots/` 相對路徑改為 `screenshotDir()`（Downloads）+ `trayIcon.showMessage()`
+- ✅ **OBB 擴充資料安裝**：`installObb(fileUrl, packageName)` → `mkdir -p /sdcard/Android/obb/<pkg>/` → `adb push`；獨立 one-shot QProcess 避免 m_adbProcess 衝突；QML 加「安裝 OBB」SideButton + 對話框
+- ✅ **Gamepad Console 路徑**：`onGamepadButton()` 優先呼叫 `hasConsoleKeyboard()` + `sendKeyEvent()`，不再全走慢速 ADB
+- ✅ **Tests**：15/15 PASS（無迴歸）
+
+*Updated: 2026-05-19 — Session 4*
