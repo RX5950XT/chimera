@@ -1017,6 +1017,21 @@ ApplicationWindow {
                             DockButton { text: qsTr("返回"); onClicked: root.openSidePage("main") }
                         }
 
+                        TextField {
+                            id: appsFilter
+                            Layout.fillWidth: true
+                            placeholderText: qsTr("搜尋應用程式…")
+                            color: theme.text
+                            placeholderTextColor: theme.muted
+                            font.pixelSize: 12
+                            leftPadding: 12; rightPadding: 12
+                            background: Rectangle {
+                                radius: 10; color: "#10161c"
+                                border.color: appsFilter.activeFocus ? theme.accent : theme.lineSoft
+                                Behavior on border.color { ColorAnimation { duration: 120 } }
+                            }
+                        }
+
                         DockButton {
                             Layout.fillWidth: true
                             text: qsTr("重新整理應用程式清單")
@@ -1033,7 +1048,7 @@ ApplicationWindow {
                             Layout.fillHeight: true
                             clip: true
                             spacing: 6
-                            model: appsPage.pkgs
+                            model: appsPage.pkgs.filter(p => appsFilter.text.length === 0 || p.toLowerCase().includes(appsFilter.text.toLowerCase()))
 
                             Label {
                                 anchors.centerIn: parent
