@@ -1062,6 +1062,28 @@ ApplicationWindow {
                             }
                         }
 
+                        SectionLabel { text: qsTr("螢幕方向") }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Repeater {
+                                model: [
+                                    {label: qsTr("0°"),   deg: 0},
+                                    {label: qsTr("90°"),  deg: 90},
+                                    {label: qsTr("180°"), deg: 180},
+                                    {label: qsTr("270°"), deg: 270}
+                                ]
+                                delegate: DockButton {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    text: modelData.label
+                                    onClicked: AndroidControls.setGuestRotation(modelData.deg)
+                                }
+                            }
+                        }
+
                         SectionLabel { text: qsTr("進階") }
 
                         RowLayout {

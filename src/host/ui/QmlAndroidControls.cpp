@@ -4,6 +4,7 @@
 #include "KeyCodes.h"
 #include <QProcess>
 #include <QUrl>
+#include <algorithm>
 
 namespace chimera {
 
@@ -60,6 +61,25 @@ void QmlAndroidControls::adbRoot() {
     runAdbAsync({"-s", m_adbSerial, "root"},
                 tr("ADB root 成功"),
                 tr("ADB root 失敗（需 google_apis AVD）"));
+}
+
+void QmlAndroidControls::setGuestRotation(int degrees) {
+    // Map to 0/90/180/270; default to 0 for any unrecognised value
+    const int valid[] = {0, 90, 180, 270};
+    const int deg = (degrees == 90 || degrees == 180 || degrees == 270) ? degrees : 0;
+    (void)valid;
+
+    // Update host-side coordinate mapper
+    input::InputBridge::instance().setRotation(deg);
+
+    // Tell Android to rotate its own UI (user_rotation: 0=0°, 1=90°, 2=180°, 3=270°)
+    if (!m_adbExe.isEmpty()) {
+        const int sysRot = deg / 90;  // 0→0, 90→1, 180→2, 270→3
+        runAdbAsync({"-s", m_adbSerial, "shell", "settings", "put", "system",
+                     "user_rotation", QString::number(sysRot)},
+                    tr("旋轉已套用（%1°）").arg(deg),
+                    tr("旋轉設定失敗"));
+    }
 }
 
 void QmlAndroidControls::runAdbAsync(const QStringList &args,

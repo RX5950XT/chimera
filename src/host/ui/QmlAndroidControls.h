@@ -29,6 +29,9 @@ public:
     // Switch adbd to root (google_apis AVDs only; requires adb root support)
     Q_INVOKABLE void adbRoot();
 
+    // Rotate the guest display and update coordinate mapping (degrees: 0, 90, 180, 270)
+    Q_INVOKABLE void setGuestRotation(int degrees);
+
     // Configure ADB binary + device serial (called from main.cpp after emulator starts)
     void setAdbConfig(const QString &adbExe, const QString &adbSerial);
 
