@@ -138,18 +138,36 @@ void QmlAndroidControls::setConsoleInput(input::AndroidConsoleInput *consoleInpu
 }
 
 void QmlAndroidControls::setSensor(const QString &sensorName, double x, double y, double z) {
-    if (m_consoleInput)
-        m_consoleInput->sendSensor(sensorName.toStdString(), x, y, z);
+    if (!m_consoleInput || !m_consoleInput->isConnected()) {
+        setInstallStatus(tr("Console 未連線，感應器注入無效"));
+        return;
+    }
+    if (m_consoleInput->sendSensor(sensorName.toStdString(), x, y, z))
+        setInstallStatus(tr("感應器已注入：") + sensorName);
+    else
+        setInstallStatus(tr("感應器注入失敗"));
 }
 
 void QmlAndroidControls::setBatteryLevel(int percent) {
-    if (m_consoleInput)
-        m_consoleInput->sendPowerCapacity(percent);
+    if (!m_consoleInput || !m_consoleInput->isConnected()) {
+        setInstallStatus(tr("Console 未連線，電池模擬無效"));
+        return;
+    }
+    if (m_consoleInput->sendPowerCapacity(percent))
+        setInstallStatus(tr("電池電量已設定：%1%").arg(percent));
+    else
+        setInstallStatus(tr("電池電量設定失敗"));
 }
 
 void QmlAndroidControls::setBatteryStatus(const QString &status) {
-    if (m_consoleInput)
-        m_consoleInput->sendPowerStatus(status.toStdString());
+    if (!m_consoleInput || !m_consoleInput->isConnected()) {
+        setInstallStatus(tr("Console 未連線，電池狀態無效"));
+        return;
+    }
+    if (m_consoleInput->sendPowerStatus(status.toStdString()))
+        setInstallStatus(tr("電池狀態已設定：") + status);
+    else
+        setInstallStatus(tr("電池狀態設定失敗"));
 }
 
 void QmlAndroidControls::pushFileToGuest(const QString &fileUrl) {

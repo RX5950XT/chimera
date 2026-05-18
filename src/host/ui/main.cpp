@@ -740,6 +740,13 @@ int main(int argc, char *argv[]) {
         });
         gpTimer->start(16); // ~60 Hz polling
 
+        // GPS route simulation: advance LocationSimulator at 1 Hz
+        auto *gpsRouteTimer = new QTimer(&app);
+        QObject::connect(gpsRouteTimer, &QTimer::timeout, []() {
+            chimera::integration::LocationSimulator::instance().update(1.0);
+        });
+        gpsRouteTimer->start(1000);
+
         grpcCaptureWidth = cfg.width > cfg.height ? 960 : 540;
         grpcCaptureHeight = 0; // Preserve guest aspect ratio.
     }

@@ -836,16 +836,44 @@ ApplicationWindow {
                                 Behavior on border.color { ColorAnimation { duration: 120 } }
                             }
                         }
-                        DockButton {
+                        RowLayout {
                             Layout.fillWidth: true
-                            text: qsTr("建立 Instance")
-                            highlighted: true
-                            onClicked: {
-                                if (inlineInstanceName.text.length > 0) {
-                                    InstanceManager.createInstance(inlineInstanceName.text, 4, 2048, 1280, 720)
-                                    inlineInstanceName.text = ""
+                            spacing: 7
+                            DockButton {
+                                Layout.fillWidth: true
+                                text: qsTr("建立 Instance")
+                                highlighted: true
+                                onClicked: {
+                                    if (inlineInstanceName.text.length > 0) {
+                                        InstanceManager.createInstance(inlineInstanceName.text, 4, 2048, 1280, 720)
+                                        inlineInstanceName.text = ""
+                                        inlineInstanceList.model = InstanceManager.listInstances()
+                                    }
+                                }
+                            }
+                            DockButton {
+                                Layout.fillWidth: true
+                                text: qsTr("名稱排序")
+                                onClicked: {
+                                    InstanceManager.sortByName()
                                     inlineInstanceList.model = InstanceManager.listInstances()
                                 }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 7
+                            DockButton {
+                                Layout.fillWidth: true
+                                text: qsTr("全部啟動")
+                                highlighted: true
+                                onClicked: InstanceManager.batchStart(InstanceManager.listInstances())
+                            }
+                            DockButton {
+                                Layout.fillWidth: true
+                                text: qsTr("全部停止")
+                                onClicked: InstanceManager.batchStop(InstanceManager.listInstances())
                             }
                         }
 
