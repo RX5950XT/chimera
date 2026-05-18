@@ -94,6 +94,9 @@ private:
     std::filesystem::path m_adbPath;
     int m_adbPort = 5555;
 
+    // Held mouse buttons bitmask (left=1, right=2, middle=4) — tracked for drag events
+    int m_heldMouseButtons = 0;
+
     // Android Console input (emulator.exe port 5554)
     class AndroidConsoleInput *m_consoleInput = nullptr;
     // QMP low-latency input (QEMU backend)

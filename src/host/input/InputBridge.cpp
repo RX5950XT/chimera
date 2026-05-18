@@ -285,11 +285,18 @@ void InputBridge::onMouseMove(int x, int y, int dx, int dy) {
     Event ev{};
     ev.type = Event::MouseMove;
     ev.x = x; ev.y = y;
+    ev.code = m_heldMouseButtons;  // carry drag state (0 = hover, 1 = left drag, etc.)
     injectEvent(ev);
 }
 
 void InputBridge::onMouseButton(bool press, int button, int x, int y) {
     if (!m_forwarding) return;
+    // Maintain held-button bitmask for drag events
+    const int consoleBit = (button == Qt::LeftButton) ? 1 :
+                           (button == Qt::RightButton) ? 2 : 4;
+    if (press) m_heldMouseButtons |=  consoleBit;
+    else       m_heldMouseButtons &= ~consoleBit;
+
     Event ev{};
     ev.type = press ? Event::MouseButtonDown : Event::MouseButtonUp;
     ev.code = button;
@@ -441,8 +448,9 @@ void InputBridge::injectEvent(const Event &ev) {
         break;
     }
     case Event::MouseMove: {
+        // ev.code carries held-button bitmask from onMouseButton; 0=hover, 1=left drag, etc.
         if (hasConsoleMouse()) {
-            m_consoleInput->sendMouseMove(ev.x, ev.y);
+            m_consoleInput->sendMouseEvent(ev.x, ev.y, ev.code);
         } else if (hasQmp()) {
             m_qmpInput->sendMouseMove(ev.x, ev.y);
         } else if (!m_adbPath.empty()) {

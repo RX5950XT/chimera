@@ -28,6 +28,14 @@ bool QmlAndroidControls::menu() {
     return sendKey(static_cast<int>(input::AndroidKeyCode::Menu));
 }
 
+bool QmlAndroidControls::volumeUp() {
+    return sendKey(static_cast<int>(input::AndroidKeyCode::VolumeUp));
+}
+
+bool QmlAndroidControls::volumeDown() {
+    return sendKey(static_cast<int>(input::AndroidKeyCode::VolumeDown));
+}
+
 bool QmlAndroidControls::sendKey(int keyCode) const {
     return input::InputBridge::instance().sendAndroidKeyCode(keyCode);
 }

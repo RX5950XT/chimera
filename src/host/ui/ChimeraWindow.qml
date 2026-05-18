@@ -622,6 +622,30 @@ ApplicationWindow {
                             }
                         }
 
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            NavButton {
+                                Layout.fillWidth: true
+                                text: "▲"
+                                detail: qsTr("音量+")
+                                onClicked: AndroidControls.volumeUp()
+                            }
+                            NavButton {
+                                Layout.fillWidth: true
+                                text: "▼"
+                                detail: qsTr("音量-")
+                                onClicked: AndroidControls.volumeDown()
+                            }
+                            NavButton {
+                                Layout.fillWidth: true
+                                text: qsTr("選單")
+                                detail: qsTr("Menu")
+                                onClicked: root.runAndroidAction("menu", AndroidControls.menu())
+                            }
+                        }
+
                         Rectangle {
                             Layout.fillWidth: true
                             Layout.topMargin: 2
@@ -1090,6 +1114,14 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+Shift+I"
         onActivated: apkFileDialog.open()
+    }
+    Shortcut {
+        sequence: "Ctrl+Up"
+        onActivated: AndroidControls.volumeUp()
+    }
+    Shortcut {
+        sequence: "Ctrl+Down"
+        onActivated: AndroidControls.volumeDown()
     }
     Shortcut {
         sequence: "Ctrl+Shift+,"

@@ -20,6 +20,8 @@ public:
     Q_INVOKABLE bool home();
     Q_INVOKABLE bool recents();
     Q_INVOKABLE bool menu();
+    Q_INVOKABLE bool volumeUp();
+    Q_INVOKABLE bool volumeDown();
 
     // APK installation (async; monitor installStatus property for result)
     Q_INVOKABLE void installApk(const QString &fileUrl);
