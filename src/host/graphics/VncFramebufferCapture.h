@@ -92,6 +92,8 @@ private:
     QImage m_framebuffer;
     bool m_waitingForRectPixels = false;
     bool m_updateInFlight = false;
+    int m_updateInFlightTicks = 0; // watchdog ticks since last request (500ms each)
+    bool m_resizedThisUpdate = false; // true if ExtDesktopSize/DesktopSize seen in current update
     int m_desiredWidth = 0;
     int m_desiredHeight = 0;
 };

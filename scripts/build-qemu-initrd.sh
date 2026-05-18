@@ -43,6 +43,72 @@ for tool in sh ash mount umount ls cat echo sleep mkdir mknod grep dmesg \
     ln -sf busybox "$INITRD_TREE/bin/$tool" 2>/dev/null || true
 done
 
+# fb-render: draw SMPTE color bars to /dev/fb0
+FB_RENDER_SRC="$WORK/fb-render.c"
+FB_RENDER_BIN="$INITRD_TREE/bin/fb-render"
+if [[ ! -f "$FB_RENDER_BIN" ]]; then
+    info "Building fb-render (SMPTE color bars)..."
+    cat > "$FB_RENDER_SRC" << 'FB_EOF'
+#include <fcntl.h>
+#include <linux/fb.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+static void draw_rect(uint32_t *fb, int stride, int x, int y, int w, int h, uint32_t color) {
+    for (int row = y; row < y + h; row++)
+        for (int col = x; col < x + w; col++)
+            fb[row * stride + col] = color;
+}
+
+int main(void) {
+    int fd = open("/dev/fb0", O_RDWR);
+    if (fd < 0) { perror("open /dev/fb0"); return 1; }
+    struct fb_var_screeninfo vinfo;
+    struct fb_fix_screeninfo finfo;
+    if (ioctl(fd, FBIOGET_VSCREENINFO, &vinfo) < 0 ||
+        ioctl(fd, FBIOGET_FSCREENINFO, &finfo) < 0) {
+        perror("ioctl"); close(fd); return 1;
+    }
+    int width  = vinfo.xres;
+    int height = vinfo.yres;
+    int stride = finfo.line_length / 4;
+    size_t size = finfo.smem_len;
+    printf("[fb-render] %dx%d 32bpp stride=%d\n", width, height, stride);
+    uint32_t *fb = mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+    if (fb == MAP_FAILED) { perror("mmap"); close(fd); return 1; }
+    /* SMPTE 8-bar pattern: white yellow cyan green magenta red blue black */
+    uint32_t bars[] = {
+        0x00FFFFFF, 0x00FFFF00, 0x0000FFFF, 0x0000FF00,
+        0x00FF00FF, 0x00FF0000, 0x000000FF, 0x00000000
+    };
+    int nbars = 8;
+    int bw = width / nbars;
+    for (int i = 0; i < nbars; i++)
+        draw_rect(fb, stride, i*bw, 0, bw, height * 2 / 3, bars[i]);
+    /* Bottom third: blue ramp */
+    for (int x = 0; x < width; x++) {
+        uint32_t c = (uint32_t)((x * 255) / width);
+        draw_rect(fb, stride, x, height * 2 / 3, 1, height / 3, c | (c << 16));
+    }
+    munmap(fb, size);
+    close(fd);
+    printf("[fb-render] color bars drawn to /dev/fb0 (%dx%d)\n", width, height);
+    return 0;
+}
+FB_EOF
+    if command -v gcc &>/dev/null; then
+        gcc -static -O2 -o "$FB_RENDER_BIN" "$FB_RENDER_SRC"
+    else
+        warn "No C compiler found; skipping fb-render"
+    fi
+    [[ -f "$FB_RENDER_BIN" ]] && info "fb-render built: $(ls -lh "$FB_RENDER_BIN" | awk '{print $5}')" || true
+fi
+
 # ── Step 2: init script ───────────────────────────────────────────────────────
 cat > "$INITRD_TREE/init" << 'INIT_EOF'
 #!/bin/sh
@@ -73,6 +139,13 @@ elif [ -e /dev/fb0 ]; then
     echo "[qemu-android] virtio-gpu: fbdev fallback OK"
 else
     echo "[qemu-android] WARNING: no virtio-gpu device found (check QEMU args)"
+fi
+
+# Phase 7: Draw test pattern to fb0 so VNC shows something before Android takes over
+if [ -e /dev/fb0 ] && [ -x /bin/fb-render ]; then
+    echo "[qemu-android] Drawing test pattern to /dev/fb0 (VNC validation)..."
+    /bin/fb-render 2>/dev/null || true
+    echo "[qemu-android] fb-render done"
 fi
 
 # virtio-scsi gives /dev/sda, sdb, sdc, sdd — same naming as HCS SCSI
@@ -130,18 +203,20 @@ mount -t tmpfs tmpfs /newroot/mnt    2>/dev/null || true
 # SELinux permissive
 [ -f /sys/fs/selinux/enforce ] && echo 0 > /sys/fs/selinux/enforce 2>/dev/null || true
 
-# Phase 6c: SwiftShader EGL + QEMU properties
+# Phase 7: QEMU virtio-gpu properties
 mkdir -p /newroot/data
 cat > /newroot/data/local.prop << 'PROP_EOF'
-ro.hardware.egl=swiftshader
 ro.kernel.qemu=1
 ro.kernel.qemu.gles=1
 androidboot.opengles.version=131072
-debug.sf.nobootanimation=1
-debug.hwui.renderer=skiagl
+persist.sys.screen_off_timeout=2147483647
+service.adb.tcp.port=5555
+persist.adb.tcp.port=5555
+ro.adb.secure=0
+ro.debuggable=1
 PROP_EOF
 chmod 644 /newroot/data/local.prop
-echo "[qemu-android] Phase 6c: SwiftShader/QEMU properties injected"
+echo "[qemu-android] Phase 7: QEMU properties injected"
 
 # Resolve init symlink
 INIT_LINK=$(readlink /newroot/init 2>/dev/null || echo "")

@@ -86,6 +86,7 @@ bool VncFramebufferCapture::start() {
     m_readBuffer.clear();
     m_updateInFlight = false;
     m_waitingForRectPixels = false;
+    m_resizedThisUpdate = false;
     m_running = true;
     m_state = State::Disconnected;
     m_socket->connectToHost(m_host, m_port);
@@ -299,6 +300,7 @@ void VncFramebufferCapture::sendFramebufferUpdateRequest(bool incremental) {
     msg[9] = static_cast<uint8_t>(m_fbHeight & 0xFF);
     m_socket->write(reinterpret_cast<const char*>(msg), 10);
     m_updateInFlight = true;
+    m_updateInFlightTicks = 0; // reset timeout counter
 }
 
 void VncFramebufferCapture::processFramebufferUpdate(QByteArray &buffer) {
@@ -309,6 +311,7 @@ void VncFramebufferCapture::processFramebufferUpdate(QByteArray &buffer) {
     buffer.remove(0, 4);
     m_rectanglesRemaining = numRects;
     m_waitingForRectPixels = false;
+    m_resizedThisUpdate = false;
     m_state = State::FramebufferUpdate;
     processRectangles(buffer);
 }
@@ -347,16 +350,26 @@ void VncFramebufferCapture::processRectangles(QByteArray &buffer) {
                     if (buffer.size() < payload) return;
                     buffer.remove(0, payload);
                 }
+                // Only treat as a resize when dimensions actually change.
+                // QEMU includes ExtDesktopSize in every FBU response (informational), so
+                // marking m_resizedThisUpdate unconditionally creates an infinite loop:
+                //   receive same-size ExtDesktopSize → send non-incremental → repeat.
+                const bool dimensionsChanged =
+                    (static_cast<int>(m_rectW) != m_fbWidth ||
+                     static_cast<int>(m_rectH) != m_fbHeight);
                 m_fbWidth  = m_rectW;
                 m_fbHeight = m_rectH;
-                m_framebuffer = QImage(m_fbWidth, m_fbHeight, QImage::Format_RGB32);
-                m_framebuffer.fill(Qt::black);
+                if (dimensionsChanged) {
+                    m_framebuffer = QImage(m_fbWidth, m_fbHeight, QImage::Format_RGB32);
+                    m_framebuffer.fill(Qt::black);
+                    m_resizedThisUpdate = true;
+                }
                 qDebug() << "VNC resize:" << m_fbWidth << "x" << m_fbHeight;
                 m_rectanglesRemaining--;
-                m_updateInFlight = false;
-                sendFramebufferUpdateRequest(false);
-                m_state = State::Ready;
-                return;
+                // Don't return early — QEMU can bundle more rects (e.g. Cursor) in the same
+                // FramebufferUpdate. An early return here causes the remaining rect header bytes
+                // to be mis-parsed as a new FramebufferUpdate message → protocol desync.
+                continue;
             }
 
             if (encSigned == ENCODING_CURSOR) {
@@ -406,18 +419,30 @@ void VncFramebufferCapture::processRectangles(QByteArray &buffer) {
         emit frameReady(m_framebuffer.copy());
         m_state = State::Ready;
         m_updateInFlight = false;
-        // Continuous-update: immediately request next incremental frame.
-        // QEMU holds the response until the guest renders something new.
-        sendFramebufferUpdateRequest(true);
+        const bool wasResize = m_resizedThisUpdate;
+        m_resizedThisUpdate = false;
+        // After a resize, send non-incremental so QEMU fills the new framebuffer dimensions.
+        // Otherwise, incremental keeps the continuous-update loop alive efficiently.
+        sendFramebufferUpdateRequest(!wasResize);
     }
 }
 
 void VncFramebufferCapture::requestFrameUpdate() {
-    // Stall watchdog: only fires if continuous-update pipeline got stuck.
-    if (m_state == State::Ready && !m_updateInFlight &&
-        m_socket->state() == QAbstractSocket::ConnectedState) {
-        qDebug() << "VNC: watchdog re-requesting frame";
+    if (m_state != State::Ready ||
+        m_socket->state() != QAbstractSocket::ConnectedState) return;
+
+    if (!m_updateInFlight) {
+        m_updateInFlightTicks = 0;
         sendFramebufferUpdateRequest(true);
+    } else if (++m_updateInFlightTicks >= 4) {
+        // 4 × 500 ms = 2 s without a response.
+        // QEMU virtio-gpu 2D holds VNC updates until the guest calls RESOURCE_FLUSH.
+        // Force a non-incremental re-request to break the deadlock; QEMU will respond
+        // with whatever is currently in the scanout buffer (even if all-black).
+        qDebug() << "VNC: watchdog forcing non-incremental re-request (no response for 2s)";
+        m_updateInFlight = false;
+        m_updateInFlightTicks = 0;
+        sendFramebufferUpdateRequest(false);
     }
 }
 

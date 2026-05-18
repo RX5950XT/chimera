@@ -12,10 +12,23 @@ namespace chimera::instance {
 
 struct QemuInstanceConfig {
     std::filesystem::path qemuBinary;
+
+    // android_x86 mode: single qcow2 disk + optional ISO
     std::filesystem::path diskImage;
-    std::filesystem::path cdromImage;   // optional ISO for Live CD / install
-    std::string bootDevice = "c";       // "c"=disk, "d"=cdrom
-    std::string vgaDevice  = "vmware";  // "vmware", "virtio", "std", etc.
+    std::filesystem::path cdromImage;
+    std::string bootDevice = "c";
+    std::string vgaDevice  = "vmware";
+
+    // cuttlefish mode: kernel direct-boot + virtio-scsi VHDX disks + virtio-gpu
+    std::filesystem::path kernelPath;
+    std::filesystem::path initrdPath;
+    std::string kernelCmdline;
+    std::vector<std::filesystem::path> scsiDisks;
+    std::vector<bool> scsiDiskReadOnly;
+
+    // "android_x86" or "cuttlefish"
+    std::string mode = "android_x86";
+
     std::string machineType = "q35";
     std::string accel = "whpx";
     int cpus = 4;
@@ -26,6 +39,17 @@ struct QemuInstanceConfig {
     bool enableAdb = true;
     std::string name;
     std::vector<std::string> extraArgs;
+
+    // Guest display resolution (informs VNC desired size and QMP coordinate scaling)
+    int displayWidth  = 1024;
+    int displayHeight = 768;
+
+    // Serial console log file (empty = no redirection)
+    std::filesystem::path serialLog;
+
+    // Auto-restart on clean exit (code 0) — handles Android first-boot reboot
+    bool autoRestart = true;
+    int  maxRestarts = 5;
 };
 
 /**
@@ -75,6 +99,8 @@ private:
 
     static constexpr int kStartupTimeoutMs = 30000;
     static constexpr int kHealthCheckIntervalMs = 2000;
+
+    int m_restartCount = 0;
 };
 
 } // namespace chimera::instance

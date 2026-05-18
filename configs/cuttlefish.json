@@ -1,0 +1,31 @@
+{
+  "qemu": {
+    "binary": "C:/Program Files/qemu/qemu-system-x86_64.exe",
+    "machine_type": "q35",
+    "accel": "whpx,kernel-irqchip=off",
+    "cpus": 4,
+    "ram_mb": 4096,
+    "mode": "cuttlefish",
+    "extra_args": ["-no-reboot"]
+  },
+  "kernel": {
+    "image": "out/android-kernel/bzImage",
+    "initrd": "out/cuttlefish/initrd-qemu.img",
+    "cmdline": "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 loglevel=8 ignore_loglevel panic=30 init=/init androidboot.selinux=permissive androidboot.hardware=cutf_cvm androidboot.lcd_density=240 androidboot.opengles.version=131072 androidboot.adb.tcp.port=5555"
+  },
+  "disks": [
+    { "path": "out/cuttlefish/system.vhdx",   "readonly": true  },
+    { "path": "out/cuttlefish/vendor.vhdx",   "readonly": true  },
+    { "path": "out/cuttlefish/userdata.qcow2", "readonly": false },
+    { "path": "out/cuttlefish/metadata.vhdx", "readonly": false }
+  ],
+  "ports": {
+    "vnc_base": 5901,
+    "qmp_base": 4445,
+    "adb_base": 5558
+  },
+  "display": {
+    "width": 1280,
+    "height": 720
+  }
+}

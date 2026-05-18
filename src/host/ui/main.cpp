@@ -230,6 +230,73 @@ static bool loadQemuConfig() {
     g_qemuConfig.name       = "chimera_dev";
     (void)vncBase;
 
+    if (j.contains("display")) {
+        const auto &disp = j.at("display");
+        g_qemuConfig.displayWidth  = disp.value("width",  1024);
+        g_qemuConfig.displayHeight = disp.value("height", 768);
+    }
+
+    g_qemuConfigLoaded = true;
+    return true;
+}
+
+static bool loadCuttlefishConfig() {
+    const auto cfgPath = g_projectRoot / "configs" / "cuttlefish.json";
+    if (!std::filesystem::exists(cfgPath)) {
+        qWarning() << "cuttlefish.json not found at" << QString::fromStdString(cfgPath.string());
+        return false;
+    }
+    std::ifstream f(cfgPath);
+    nlohmann::json j;
+    f >> j;
+
+    auto absPath = [](const std::string &s) -> std::filesystem::path {
+        if (s.empty()) return {};
+        std::filesystem::path p(s);
+        if (p.is_relative()) p = g_projectRoot / p;
+        return p;
+    };
+
+    const auto &qemu = j.at("qemu");
+    g_qemuConfig.qemuBinary  = absPath(qemu.at("binary").get<std::string>());
+    g_qemuConfig.machineType = qemu.value("machine_type", "q35");
+    g_qemuConfig.accel       = qemu.value("accel", "whpx,kernel-irqchip=off");
+    g_qemuConfig.cpus        = qemu.value("cpus", 4);
+    g_qemuConfig.ramMB       = qemu.value("ram_mb", 4096);
+    g_qemuConfig.mode        = qemu.value("mode", "cuttlefish");
+    if (qemu.contains("extra_args")) {
+        for (const auto &a : qemu.at("extra_args"))
+            g_qemuConfig.extraArgs.push_back(a.get<std::string>());
+    }
+
+    const auto &kernel = j.at("kernel");
+    g_qemuConfig.kernelPath   = absPath(kernel.at("image").get<std::string>());
+    if (kernel.contains("initrd"))
+        g_qemuConfig.initrdPath = absPath(kernel.at("initrd").get<std::string>());
+    g_qemuConfig.kernelCmdline = kernel.value("cmdline", "");
+
+    if (j.contains("disks")) {
+        for (const auto &d : j.at("disks")) {
+            g_qemuConfig.scsiDisks.push_back(absPath(d.at("path").get<std::string>()));
+            g_qemuConfig.scsiDiskReadOnly.push_back(d.value("readonly", false));
+        }
+    }
+
+    const auto &ports = j.at("ports");
+    const int vncBase = ports.value("vnc_base", 5901);
+    g_qemuConfig.vncDisplay = vncBase - 5900;   // :N → TCP 5900+N
+    g_qemuConfig.qmpPort    = ports.value("qmp_base", 4445);
+    g_qemuConfig.adbPort    = ports.value("adb_base", 5558);
+    g_qemuConfig.enableAdb  = true;
+    g_qemuConfig.name       = "cuttlefish_dev";
+    g_qemuConfig.serialLog  = g_projectRoot / "qemu-cuttlefish-serial.log";
+
+    if (j.contains("display")) {
+        const auto &disp = j.at("display");
+        g_qemuConfig.displayWidth  = disp.value("width",  1280);
+        g_qemuConfig.displayHeight = disp.value("height", 720);
+    }
+
     g_qemuConfigLoaded = true;
     return true;
 }
@@ -326,7 +393,8 @@ int main(int argc, char *argv[]) {
     // Only active when --hcs-backend flag is present.
     static FILE *g_logFile = nullptr;
     for (int i = 1; i < argc; ++i) {
-        if (strcmp(argv[i], "--hcs-backend") == 0 || strcmp(argv[i], "--qemu-backend") == 0) {
+        if (strcmp(argv[i], "--hcs-backend") == 0 || strcmp(argv[i], "--qemu-backend") == 0 ||
+            strcmp(argv[i], "--cuttlefish") == 0) {
             g_logFile = fopen("chimera-debug.log", "w");
             break;
         }
@@ -353,7 +421,9 @@ int main(int argc, char *argv[]) {
     const bool streamCapture = app.arguments().contains(QStringLiteral("--stream-capture"));
     const bool nativeDisplayEnabled = !streamCapture;
     // v2: stock QEMU + VNC display + real QMP input (Phase 1-3)
-    const bool qemuBackendMode = app.arguments().contains(QStringLiteral("--qemu-backend"));
+    const bool cuttlefishMode  = app.arguments().contains(QStringLiteral("--cuttlefish"));
+    const bool qemuBackendMode = cuttlefishMode ||
+                                 app.arguments().contains(QStringLiteral("--qemu-backend"));
     // Phase 5: Hyper-V HCS + GPU-PV backend
     const bool hcsBackendMode = app.arguments().contains(QStringLiteral("--hcs-backend"));
 
@@ -371,6 +441,13 @@ int main(int argc, char *argv[]) {
         } else {
             qDebug() << "HCS backend: kernel=" << g_hcsConfig.kernelPath
                      << "gpu=" << static_cast<int>(g_hcsConfig.gpuMode);
+        }
+    } else if (cuttlefishMode) {
+        if (!loadCuttlefishConfig()) {
+            qWarning() << "Failed to load cuttlefish.json. Cuttlefish backend will not start.";
+        } else {
+            qDebug() << "Cuttlefish backend: kernel="
+                     << QString::fromStdString(g_qemuConfig.kernelPath.string());
         }
     } else if (qemuBackendMode) {
         if (!loadQemuConfig()) {
@@ -507,7 +584,7 @@ int main(int argc, char *argv[]) {
             // QMP input on the real QMP socket (not the SDK telnet console)
             qmpInput = new chimera::input::QmpInput(&app);
             qmpInput->setAutoReconnect(true, 3000);
-            qmpInput->setDisplaySize(g_qemuConfig.ramMB > 0 ? 1024 : 1024, 768);
+            qmpInput->setDisplaySize(g_qemuConfig.displayWidth, g_qemuConfig.displayHeight);
             chimera::input::InputBridge::instance().setQmpInput(qmpInput);
             // Will connect once QEMU is ready; auto-reconnect handles the retry
             QTimer::singleShot(3000, &app, [qmpInput, qemuBackend]() {
@@ -517,8 +594,23 @@ int main(int argc, char *argv[]) {
                 else    qDebug() << "QMP not ready yet; auto-reconnect will retry";
             });
 
-            guestInputSize = QSize(1024, 768);
+            guestInputSize = QSize(g_qemuConfig.displayWidth, g_qemuConfig.displayHeight);
             emulatorStarted = true;
+
+            // Wake Android display: send a QMP mouse click 60s after QEMU starts.
+            // virtio-gpu 2D only flushes VNC when the guest calls RESOURCE_FLUSH;
+            // a mouse click wakes the display power manager so SurfaceFlinger resumes rendering.
+            if (cuttlefishMode) {
+                QTimer::singleShot(60000, &app, [qmpInput]() {
+                    if (qmpInput && qmpInput->isConnected()) {
+                        qDebug() << "VNC wakeup: sending QMP mouse click to wake Android display";
+                        qmpInput->sendMouseButton(0, true, 640, 360);
+                        QTimer::singleShot(100, qmpInput, [qmpInput]() {
+                            qmpInput->sendMouseButton(0, false, 640, 360);
+                        });
+                    }
+                });
+            }
         }
     }
 
@@ -650,7 +742,7 @@ int main(int argc, char *argv[]) {
         vncCapture = new chimera::graphics::VncFramebufferCapture(
             QStringLiteral("127.0.0.1"), qemuBackend->vncPort(), &app);
         vncCapture->setAutoReconnect(true, 2000);
-        vncCapture->setDesiredResolution(1280, 720);
+        vncCapture->setDesiredResolution(g_qemuConfig.displayWidth, g_qemuConfig.displayHeight);
         wireCapture(vncCapture);
 
         // Initial retry timer: start VNC connection attempts until QEMU's VNC server is ready

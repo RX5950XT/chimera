@@ -42,7 +42,7 @@ CMDLINE = (
 )
 
 SERIAL_PORT      = 4445
-ADB_PORT         = 5556   # ADB over TCP (hostfwd guest:5555 → host:5556)
+ADB_PORT         = 5580   # ADB over TCP (hostfwd guest:5555 → host:5580)
 BOOT_TIMEOUT_S   = 480
 SF_STABLE_WINDOW_S = 60   # seconds to watch for SurfaceFlinger crash after first start
 SF_HEURISTIC_S   = 120    # if QEMU alive this long after init, presume SF stable
