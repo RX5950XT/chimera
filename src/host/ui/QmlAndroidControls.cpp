@@ -298,6 +298,18 @@ void QmlAndroidControls::forceStopPackage(const QString &packageName) {
                 tr("停止失敗：") + packageName);
 }
 
+void QmlAndroidControls::uninstallPackage(const QString &packageName) {
+    runAdbAsync({"-s", m_adbSerial, "uninstall", packageName},
+                tr("已解除安裝：") + packageName,
+                tr("解除安裝失敗：") + packageName);
+}
+
+void QmlAndroidControls::clearPackageData(const QString &packageName) {
+    runAdbAsync({"-s", m_adbSerial, "shell", "pm", "clear", packageName},
+                tr("已清除資料：") + packageName,
+                tr("清除資料失敗：") + packageName);
+}
+
 void QmlAndroidControls::setScreenDensity(int dpi) {
     if (dpi < 72 || dpi > 640) return;
     runAdbAsync({"-s", m_adbSerial, "shell", "wm", "density", QString::number(dpi)},

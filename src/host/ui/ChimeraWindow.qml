@@ -1012,6 +1012,17 @@ ApplicationWindow {
                                         text: qsTr("停止")
                                         onClicked: AndroidControls.forceStopPackage(modelData)
                                     }
+                                    DockButton {
+                                        text: qsTr("清除")
+                                        onClicked: AndroidControls.clearPackageData(modelData)
+                                    }
+                                    DockButton {
+                                        text: qsTr("卸載")
+                                        onClicked: {
+                                            AndroidControls.uninstallPackage(modelData)
+                                            appsPage.pkgs = appsPage.pkgs.filter((_, i) => i !== index)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1650,6 +1661,43 @@ ApplicationWindow {
                                 onClicked: {
                                     AndroidControls.setAirplaneMode(false)
                                     lastActionStatus = qsTr("飛行模式已關閉")
+                                }
+                            }
+                        }
+
+                        SectionLabel { text: qsTr("螢幕尺寸") }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            Repeater {
+                                model: [
+                                    { label: "手機 9:16",  w: 720,  h: 1280 },
+                                    { label: "手機 9:19",  w: 1080, h: 2280 },
+                                    { label: "平板 4:3",   w: 1200, h: 900  },
+                                    { label: "橫屏 16:9",  w: 1280, h: 720  }
+                                ]
+                                delegate: DockButton {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    text: modelData.label
+                                    onClicked: {
+                                        AndroidControls.setScreenSize(modelData.w, modelData.h)
+                                        lastActionStatus = qsTr("解析度 %1×%2").arg(modelData.w).arg(modelData.h)
+                                    }
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            DockButton {
+                                Layout.fillWidth: true
+                                text: qsTr("重置尺寸")
+                                onClicked: {
+                                    AndroidControls.resetScreenSize()
+                                    lastActionStatus = qsTr("解析度已重置")
                                 }
                             }
                         }
