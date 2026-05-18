@@ -208,4 +208,8 @@ Chimera 的等效路徑：Android Console `event` protocol on port 5554（繞過
 | DeviceSpoofer junk dir | 對任意 AVD name 都建立 `overlay/system/` | `applyProfile` 只检查 `avdDir.empty()` | 改為檢查 `avdDir / "config.ini"` exists | 9bcc532 |
 | AudioBridge segfault | WASAPI test 結束時 crash | `CoUninitialize()` 在 COM 非本函式所初始化時被呼叫 | `m_coOwned` 旗標追蹤 | c08151f |
 
-*Updated: 2026-05-18 — Session 3 (continued)*
+- ✅ **GPS 路線模擬**：`QmlAndroidControls::startGpsRoute(waypoints, speedKmh)` → `LocationSimulator::loadRoute` + `startSimulation`；GPS 頁面加入台北→東京預設路線 + 停止按鈕；`main.cpp` 加入 1 Hz timer 驅動 `LocationSimulator::update()`
+- ✅ **多開管理補強**：`InstanceManager.batchStart/batchStop/sortByName()` 現在有 QML 按鈕（全部啟動/全部停止/名稱排序）
+- ✅ **感應器/電池 Console 狀態回報**：原本 null 時靜默無效 → 現在回傳錯誤訊息 `installStatus`
+
+*Updated: 2026-05-18 — Session 3 (final)*
