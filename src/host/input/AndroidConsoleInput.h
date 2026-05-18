@@ -61,6 +61,14 @@ public:
     bool sendGeoFix(double lon, double lat, double alt);
     bool sendClipboardSet(const std::string &utf8text);
 
+    // Sensor injection via "sensor set <name> <x>:<y>:<z>"
+    // Supported names: acceleration, gyroscope, magneticfield, orientation, proximity, light
+    bool sendSensor(const std::string &sensorName, double x, double y, double z);
+
+    // Power simulation: capacity 0-100, status = "charging|discharging|full|not-charging"
+    bool sendPowerCapacity(int percent);
+    bool sendPowerStatus(const std::string &status);  // charging / discharging / full
+
 signals:
     void stateChanged(State state);
 

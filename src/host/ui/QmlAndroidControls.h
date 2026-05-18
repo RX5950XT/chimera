@@ -5,6 +5,8 @@
 
 class QProcess;
 
+namespace chimera::input { class AndroidConsoleInput; }
+
 namespace chimera {
 
 class QmlAndroidControls : public QObject {
@@ -40,8 +42,19 @@ public:
     // Clipboard: push current Windows clipboard text to the guest Android
     Q_INVOKABLE void syncClipboardToGuest();
 
+    // Sensor simulation via Android Console protocol
+    // sensorName: "acceleration" | "gyroscope" | "magneticfield" | "orientation"
+    Q_INVOKABLE void setSensor(const QString &sensorName, double x, double y, double z);
+
+    // Battery simulation
+    Q_INVOKABLE void setBatteryLevel(int percent);             // 0–100
+    Q_INVOKABLE void setBatteryStatus(const QString &status);  // "charging" | "discharging" | "full"
+
     // Configure ADB binary + device serial (called from main.cpp after emulator starts)
     void setAdbConfig(const QString &adbExe, const QString &adbSerial);
+
+    // Wire Android Console input for sensor/battery commands
+    void setConsoleInput(input::AndroidConsoleInput *consoleInput);
 
     QString installStatus() const { return m_installStatus; }
     double  gpsLatitude()   const { return m_gpsLat; }
@@ -56,7 +69,8 @@ private:
     void setInstallStatus(const QString &s);
     void runAdbAsync(const QStringList &args, const QString &onSuccess, const QString &onFail);
 
-    QProcess *m_adbProcess = nullptr;
+    QProcess *m_adbProcess   = nullptr;
+    input::AndroidConsoleInput *m_consoleInput = nullptr;
     QString   m_adbExe;
     QString   m_adbSerial;
     QString   m_installStatus;

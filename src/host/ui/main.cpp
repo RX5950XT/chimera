@@ -716,11 +716,14 @@ int main(int argc, char *argv[]) {
                 });
             chimera::integration::ClipboardBridge::instance().initialize();
             qDebug() << "[main] ClipboardBridge wired via console";
+
+            // Wire console input to QmlAndroidControls for sensor/battery commands
+            qmlAndroidControls.setConsoleInput(consoleInput);
         } else {
             qDebug() << "[main] Console input disabled (CHIMERA_INPUT_BACKEND=" << inputBackend.c_str() << ")";
         }
 
-        qDebug() << "Guest audio disabled (-no-audio)";
+        qDebug() << "Guest audio:" << (g_runtimeCfg.adbSerial.empty() ? "unknown" : "configured");
 
         // Wire gamepad to input bridge
         auto &gp = chimera::input::GamepadManager::instance();

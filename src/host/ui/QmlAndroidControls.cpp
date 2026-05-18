@@ -4,6 +4,7 @@
 #include "KeyCodes.h"
 #include "LocationSimulator.h"
 #include "ClipboardBridge.h"
+#include "AndroidConsoleInput.h"
 #include <QProcess>
 #include <QUrl>
 #include <algorithm>
@@ -128,6 +129,25 @@ void QmlAndroidControls::setGpsLocation(double lat, double lon, double altMetres
         m_gpsLon = lon;
         emit gpsChanged();
     }
+}
+
+void QmlAndroidControls::setConsoleInput(input::AndroidConsoleInput *consoleInput) {
+    m_consoleInput = consoleInput;
+}
+
+void QmlAndroidControls::setSensor(const QString &sensorName, double x, double y, double z) {
+    if (m_consoleInput)
+        m_consoleInput->sendSensor(sensorName.toStdString(), x, y, z);
+}
+
+void QmlAndroidControls::setBatteryLevel(int percent) {
+    if (m_consoleInput)
+        m_consoleInput->sendPowerCapacity(percent);
+}
+
+void QmlAndroidControls::setBatteryStatus(const QString &status) {
+    if (m_consoleInput)
+        m_consoleInput->sendPowerStatus(status.toStdString());
 }
 
 void QmlAndroidControls::syncClipboardToGuest() {

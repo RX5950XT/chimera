@@ -258,8 +258,29 @@ bool AndroidConsoleInput::sendGeoFix(double lon, double lat, double alt) {
 
 bool AndroidConsoleInput::sendClipboardSet(const std::string &utf8text) {
     if (!isConnected()) return false;
-    // Android Console protocol: "clipboard set <text>" (single line, UTF-8)
     sendLine(QStringLiteral("clipboard set ") + QString::fromUtf8(utf8text.c_str()));
+    return true;
+}
+
+bool AndroidConsoleInput::sendSensor(const std::string &sensorName, double x, double y, double z) {
+    if (!isConnected()) return false;
+    sendLine(QStringLiteral("sensor set %1 %2:%3:%4")
+                 .arg(QString::fromStdString(sensorName))
+                 .arg(x, 0, 'f', 4)
+                 .arg(y, 0, 'f', 4)
+                 .arg(z, 0, 'f', 4));
+    return true;
+}
+
+bool AndroidConsoleInput::sendPowerCapacity(int percent) {
+    if (!isConnected()) return false;
+    sendLine(QStringLiteral("power capacity %1").arg(std::clamp(percent, 0, 100)));
+    return true;
+}
+
+bool AndroidConsoleInput::sendPowerStatus(const std::string &status) {
+    if (!isConnected()) return false;
+    sendLine(QStringLiteral("power status %1").arg(QString::fromStdString(status)));
     return true;
 }
 

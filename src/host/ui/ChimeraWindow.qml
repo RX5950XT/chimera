@@ -708,6 +708,12 @@ ApplicationWindow {
                         }
                         SideButton {
                             Layout.fillWidth: true
+                            text: qsTr("感應器 / 電池")
+                            detail: qsTr("陀螺儀 / 加速度")
+                            onClicked: root.openSidePage("sensor")
+                        }
+                        SideButton {
+                            Layout.fillWidth: true
                             text: qsTr("設定")
                             detail: qsTr("Ctrl+Shift+,")
                             onClicked: root.openSidePage("settings")
@@ -995,6 +1001,116 @@ ApplicationWindow {
                             visible: MacroEngine.playing
                             onClicked: MacroEngine.stopPlayback()
                         }
+                    }
+
+                    // ---- Sensor / Battery page -------------------------------
+                    ColumnLayout {
+                        id: sensorPage
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        visible: sidePage === "sensor"
+                        opacity: visible ? 1 : 0
+                        spacing: 10
+                        Behavior on opacity { NumberAnimation { duration: 170; easing.type: Easing.OutCubic } }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            SectionLabel { text: qsTr("感應器 / 電池"); Layout.fillWidth: true }
+                            DockButton { text: qsTr("返回"); onClicked: root.openSidePage("main") }
+                        }
+
+                        SectionLabel { text: qsTr("加速度計（m/s²）") }
+                        Label { text: qsTr("水平 / 豎直持機"); color: theme.muted; font.pixelSize: 11; Layout.fillWidth: true }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Repeater {
+                                model: [
+                                    { label: qsTr("水平"), x: 0,    y: 9.8,  z: 0 },
+                                    { label: qsTr("直立"), x: 0,    y: 0,    z: 9.8 },
+                                    { label: qsTr("左傾"), x: -9.8, y: 0,    z: 0 },
+                                    { label: qsTr("右傾"), x: 9.8,  y: 0,    z: 0 }
+                                ]
+                                delegate: DockButton {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    text: modelData.label
+                                    onClicked: {
+                                        AndroidControls.setSensor("acceleration", modelData.x, modelData.y, modelData.z)
+                                        lastActionStatus = qsTr("加速度：") + modelData.label
+                                    }
+                                }
+                            }
+                        }
+
+                        SectionLabel { text: qsTr("陀螺儀（rad/s）") }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Repeater {
+                                model: [
+                                    { label: qsTr("歸零"),   x: 0,   y: 0,   z: 0 },
+                                    { label: qsTr("左轉"),   x: 0,   y: 1.5, z: 0 },
+                                    { label: qsTr("右轉"),   x: 0,   y: -1.5,z: 0 },
+                                    { label: qsTr("向前"),   x: 1.5, y: 0,   z: 0 }
+                                ]
+                                delegate: DockButton {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    text: modelData.label
+                                    onClicked: {
+                                        AndroidControls.setSensor("gyroscope", modelData.x, modelData.y, modelData.z)
+                                        lastActionStatus = qsTr("陀螺儀：") + modelData.label
+                                    }
+                                }
+                            }
+                        }
+
+                        SectionLabel { text: qsTr("電池") }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Repeater {
+                                model: [
+                                    { label: "100%", val: 100 },
+                                    { label: "80%",  val: 80  },
+                                    { label: "50%",  val: 50  },
+                                    { label: "20%",  val: 20  }
+                                ]
+                                delegate: DockButton {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    text: modelData.label
+                                    onClicked: {
+                                        AndroidControls.setBatteryLevel(modelData.val)
+                                        lastActionStatus = qsTr("電池：") + modelData.label
+                                    }
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            DockButton {
+                                Layout.fillWidth: true
+                                text: qsTr("充電中")
+                                onClicked: {
+                                    AndroidControls.setBatteryStatus("charging")
+                                    lastActionStatus = qsTr("電池狀態：充電中")
+                                }
+                            }
+                            DockButton {
+                                Layout.fillWidth: true
+                                text: qsTr("放電")
+                                onClicked: {
+                                    AndroidControls.setBatteryStatus("discharging")
+                                    lastActionStatus = qsTr("電池狀態：放電")
+                                }
+                            }
+                        }
+
+                        Item { Layout.fillHeight: true }
                     }
 
                     // ---- GPS page --------------------------------------------
