@@ -751,6 +751,12 @@ ApplicationWindow {
                         }
                         SideButton {
                             Layout.fillWidth: true
+                            text: qsTr("應用程式")
+                            detail: qsTr("App 管理")
+                            onClicked: root.openSidePage("apps")
+                        }
+                        SideButton {
+                            Layout.fillWidth: true
                             text: qsTr("多開管理")
                             detail: qsTr("Ctrl+Shift+8")
                             onClicked: root.openSidePage("multi")
@@ -917,6 +923,87 @@ ApplicationWindow {
                                     DockButton {
                                         text: qsTr("刪除")
                                         onClicked: InputMapper.removeMapping(index)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ---- Apps page -------------------------------------------
+                    ColumnLayout {
+                        id: appsPage
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        visible: sidePage === "apps"
+                        opacity: visible ? 1 : 0
+                        spacing: 10
+                        Behavior on opacity { NumberAnimation { duration: 170; easing.type: Easing.OutCubic } }
+
+                        property var pkgs: []
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            SectionLabel { text: qsTr("應用程式"); Layout.fillWidth: true }
+                            DockButton { text: qsTr("返回"); onClicked: root.openSidePage("main") }
+                        }
+
+                        DockButton {
+                            Layout.fillWidth: true
+                            text: qsTr("重新整理應用程式清單")
+                            highlighted: true
+                            onClicked: {
+                                appsPage.pkgs = AndroidControls.listInstalledPackages()
+                                lastActionStatus = qsTr("已取得 %1 個應用程式").arg(appsPage.pkgs.length)
+                            }
+                        }
+
+                        ListView {
+                            id: appsList
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            clip: true
+                            spacing: 6
+                            model: appsPage.pkgs
+
+                            Label {
+                                anchors.centerIn: parent
+                                visible: appsList.count === 0
+                                text: qsTr("按「重新整理」取得已安裝的應用程式清單")
+                                color: theme.muted
+                                horizontalAlignment: Text.AlignHCenter
+                                font.pixelSize: 12
+                                wrapMode: Text.WordWrap
+                                width: appsList.width - 24
+                            }
+
+                            delegate: Rectangle {
+                                required property string modelData
+                                required property int index
+                                width: appsList.width
+                                height: 44
+                                radius: 10
+                                color: theme.card
+                                border.color: theme.lineSoft
+
+                                RowLayout {
+                                    anchors { fill: parent; leftMargin: 12; rightMargin: 8; topMargin: 6; bottomMargin: 6 }
+                                    spacing: 8
+
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: modelData
+                                        color: theme.text
+                                        font.pixelSize: 11
+                                        elide: Text.ElideRight
+                                    }
+                                    DockButton {
+                                        text: qsTr("啟動")
+                                        highlighted: true
+                                        onClicked: AndroidControls.launchPackage(modelData)
+                                    }
+                                    DockButton {
+                                        text: qsTr("停止")
+                                        onClicked: AndroidControls.forceStopPackage(modelData)
                                     }
                                 }
                             }

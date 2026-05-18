@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 
 class QProcess;
 
@@ -70,6 +71,11 @@ public:
 
     // System controls
     Q_INVOKABLE void setAirplaneMode(bool enabled);
+
+    // App management
+    Q_INVOKABLE QStringList listInstalledPackages();  // user-installed packages (3rd-party)
+    Q_INVOKABLE void launchPackage(const QString &packageName);
+    Q_INVOKABLE void forceStopPackage(const QString &packageName);
 
     // Configure ADB binary + device serial (called from main.cpp after emulator starts)
     void setAdbConfig(const QString &adbExe, const QString &adbSerial);

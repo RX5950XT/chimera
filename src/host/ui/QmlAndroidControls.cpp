@@ -247,6 +247,36 @@ void QmlAndroidControls::pullFileFromGuest(const QString &guestFilename) {
         setInstallStatus(tr("拉取失敗，請確認 ADB 連線"));
 }
 
+QStringList QmlAndroidControls::listInstalledPackages() {
+    if (m_adbExe.isEmpty() || m_adbSerial.isEmpty()) return {};
+    QProcess proc;
+    proc.setProgram(m_adbExe);
+    proc.setArguments({"-s", m_adbSerial, "shell", "pm", "list", "packages", "-3"});
+    proc.start();
+    if (!proc.waitForFinished(5000)) { proc.kill(); return {}; }
+    QStringList packages;
+    const QString output = QString::fromUtf8(proc.readAllStandardOutput());
+    for (const QString &line : output.split(QLatin1Char('\n'))) {
+        const QString pkg = line.trimmed();
+        if (pkg.startsWith(QLatin1String("package:")))
+            packages.append(pkg.mid(8)); // strip "package:" prefix
+    }
+    return packages;
+}
+
+void QmlAndroidControls::launchPackage(const QString &packageName) {
+    runAdbAsync({"-s", m_adbSerial, "shell", "monkey",
+                 "-p", packageName, "-c", "android.intent.category.LAUNCHER", "1"},
+                tr("已啟動：") + packageName,
+                tr("啟動失敗：") + packageName);
+}
+
+void QmlAndroidControls::forceStopPackage(const QString &packageName) {
+    runAdbAsync({"-s", m_adbSerial, "shell", "am", "force-stop", packageName},
+                tr("已強制停止：") + packageName,
+                tr("停止失敗：") + packageName);
+}
+
 void QmlAndroidControls::setScreenDensity(int dpi) {
     if (dpi < 72 || dpi > 640) return;
     runAdbAsync({"-s", m_adbSerial, "shell", "wm", "density", QString::number(dpi)},
