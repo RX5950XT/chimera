@@ -514,6 +514,12 @@ int main(int argc, char *argv[]) {
     auto *perfMonitor = new chimera::graphics::PerformanceMonitor(&app);
     engine.rootContext()->setContextProperty("PerfMonitor", perfMonitor);
 
+    // Wire InputBridge events → visible latency tracking
+    chimera::input::InputBridge::instance().setEventCallback(
+        [perfMonitor](const chimera::input::InputBridge::Event &) {
+            perfMonitor->onInputEvent();
+        });
+
     bool emulatorStarted = false;
     int grpcCaptureWidth = 960;
     int grpcCaptureHeight = 0;
