@@ -146,9 +146,14 @@ bool InputBridge::hasHvSocket() const {
 void InputBridge::setDisplaySize(int width, int height) {
     if (width > 0) m_displayWidth = width;
     if (height > 0) m_displayHeight = height;
+    m_mapper.setGuestSize(m_displayWidth, m_displayHeight);
     if (m_qmpInput) {
         m_qmpInput->setDisplaySize(m_displayWidth, m_displayHeight);
     }
+}
+
+void InputBridge::setRotation(int degrees) {
+    m_mapper.setRotation(degrees);
 }
 
 void InputBridge::workerLoop() {
@@ -386,9 +391,8 @@ void InputBridge::injectEvent(const Event &ev) {
             m_hvSocketTransport->sendMouseButton(ev.code, false);
             break;
         case Event::MouseMove: {
-            const int hvX = m_displayWidth  > 0 ? (ev.x * 32767) / m_displayWidth  : 0;
-            const int hvY = m_displayHeight > 0 ? (ev.y * 32767) / m_displayHeight : 0;
-            m_hvSocketTransport->sendMouseMove(hvX, hvY);
+            const QPoint hv = m_mapper.guestToHvSocket(QPoint(ev.x, ev.y));
+            m_hvSocketTransport->sendMouseMove(hv.x(), hv.y());
             break;
         }
         case Event::KeyDown: {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "CoordinateMapper.h"
 #include <cstdint>
 #include <string>
 #include <functional>
@@ -52,6 +53,9 @@ public:
     bool hasHvSocket() const;
 
     void setDisplaySize(int width, int height);
+    void setRotation(int degrees);
+
+    CoordinateMapper &coordinateMapper() { return m_mapper; }
 
     // Host-facing methods (called from Qt event handlers)
     void onKeyEvent(bool press, int nativeScanCode, int nativeVirtualKey);
@@ -98,6 +102,7 @@ private:
     class HvSocketTransport *m_hvSocketTransport = nullptr;
     int m_displayWidth = 1920;
     int m_displayHeight = 1080;
+    CoordinateMapper m_mapper;
 
     // Command queue for async ADB execution
     std::queue<std::string> m_queue;

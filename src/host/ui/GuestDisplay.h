@@ -3,6 +3,7 @@
 #include <QQuickPaintedItem>
 #include <QImage>
 #include <QSize>
+#include "CoordinateMapper.h"
 
 namespace chimera {
 
@@ -25,6 +26,9 @@ public:
     void setFrame(const QImage &img);
     bool hasFrame() const;
     void setGuestSize(const QSize &size);
+    void setRotation(int degrees);
+
+    chimera::input::CoordinateMapper &coordinateMapper() { return m_mapper; }
 
     Q_INVOKABLE bool saveScreenshot(const QString &filePath) const;
 
@@ -40,11 +44,13 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
 
+protected:
+    void geometryChange(const QRectF &newGeom, const QRectF &oldGeom) override;
+
 private:
     QImage m_frame;
-    QSize m_guestSize;
-    QRectF displayRect() const;
-    bool mapToGuest(const QPointF &pos, QPointF &guestPos) const;
+    QSize  m_guestSize;
+    chimera::input::CoordinateMapper m_mapper;
 };
 
 } // namespace chimera
