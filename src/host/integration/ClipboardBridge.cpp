@@ -51,8 +51,10 @@ void ClipboardBridge::setHostText(const std::string &utf8text) {
         if (p) {
             memcpy(p, wide.c_str(), byteSize);
             GlobalUnlock(hMem);
+            SetClipboardData(CF_UNICODETEXT, hMem);
+        } else {
+            GlobalFree(hMem);
         }
-        SetClipboardData(CF_UNICODETEXT, hMem);
     }
     CloseClipboard();
 }

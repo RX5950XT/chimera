@@ -2,8 +2,7 @@
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
-#include <functiondiscoverykeys_devpkey.h>
-#include <iostream>
+#include <cstdio>
 #include <cstring>
 
 #pragma comment(lib, "ole32.lib")
@@ -21,7 +20,7 @@ bool AudioBridge::initialize(const Config &config) {
 
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
-        std::cerr << "AudioBridge: CoInitializeEx failed " << hr << "\n";
+        fprintf(stderr, "AudioBridge: CoInitializeEx failed 0x%08lx\n", static_cast<unsigned long>(hr));
         return false;
     }
     // S_OK means we own this COM init; RPC_E_CHANGED_MODE means someone else does
@@ -62,22 +61,28 @@ void AudioBridge::shutdown() {
 }
 
 bool AudioBridge::initRenderDevice() {
+    auto cleanup = [this]() {
+        if (m_pRenderClient) { m_pRenderClient->Release(); m_pRenderClient = nullptr; }
+        if (m_pAudioClient) { m_pAudioClient->Release(); m_pAudioClient = nullptr; }
+        if (m_pDevice) { m_pDevice->Release(); m_pDevice = nullptr; }
+        if (m_pEnumerator) { m_pEnumerator->Release(); m_pEnumerator = nullptr; }
+    };
+
     HRESULT hr = CoCreateInstance(
         __uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
         __uuidof(IMMDeviceEnumerator), (void**)&m_pEnumerator);
     if (FAILED(hr)) return false;
 
     hr = m_pEnumerator->GetDefaultAudioEndpoint(eRender, eConsole, &m_pDevice);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) { cleanup(); return false; }
 
     hr = m_pDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&m_pAudioClient);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) { cleanup(); return false; }
 
     WAVEFORMATEX *pwfx = nullptr;
     hr = m_pAudioClient->GetMixFormat(&pwfx);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) { cleanup(); return false; }
 
-    // Try to match requested format, otherwise use mix format
     pwfx->wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
     pwfx->nChannels = static_cast<WORD>(m_config.channels);
     pwfx->nSamplesPerSec = static_cast<DWORD>(m_config.sampleRate);
@@ -93,31 +98,38 @@ bool AudioBridge::initRenderDevice() {
         pwfx,
         nullptr);
     CoTaskMemFree(pwfx);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) { cleanup(); return false; }
 
     hr = m_pAudioClient->GetBufferSize(&m_bufferFrameCount);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) { cleanup(); return false; }
 
     hr = m_pAudioClient->GetService(__uuidof(IAudioRenderClient), (void**)&m_pRenderClient);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) { cleanup(); return false; }
 
     hr = m_pAudioClient->Start();
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) { cleanup(); return false; }
 
     return true;
 }
 
 bool AudioBridge::initCaptureDevice() {
     if (!m_pEnumerator) return false;
+
+    auto cleanup = [this]() {
+        if (m_pCaptureReader) { m_pCaptureReader->Release(); m_pCaptureReader = nullptr; }
+        if (m_pCaptureClient) { m_pCaptureClient->Release(); m_pCaptureClient = nullptr; }
+        if (m_pCaptureDevice) { m_pCaptureDevice->Release(); m_pCaptureDevice = nullptr; }
+    };
+
     HRESULT hr = m_pEnumerator->GetDefaultAudioEndpoint(eCapture, eConsole, &m_pCaptureDevice);
     if (FAILED(hr)) return false;
 
     hr = m_pCaptureDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&m_pCaptureClient);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) { cleanup(); return false; }
 
     WAVEFORMATEX *pwfx = nullptr;
     hr = m_pCaptureClient->GetMixFormat(&pwfx);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) { cleanup(); return false; }
 
     hr = m_pCaptureClient->Initialize(
         AUDCLNT_SHAREMODE_SHARED,
@@ -127,13 +139,13 @@ bool AudioBridge::initCaptureDevice() {
         pwfx,
         nullptr);
     CoTaskMemFree(pwfx);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) { cleanup(); return false; }
 
     hr = m_pCaptureClient->GetService(__uuidof(IAudioCaptureClient), (void**)&m_pCaptureReader);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) { cleanup(); return false; }
 
     hr = m_pCaptureClient->Start();
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) { cleanup(); return false; }
 
     return true;
 }

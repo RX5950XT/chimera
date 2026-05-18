@@ -27,6 +27,8 @@ public:
     // Lifecycle
     Q_INVOKABLE bool startInstance(const QString &name);
     Q_INVOKABLE bool stopInstance(const QString &name);
+    Q_INVOKABLE bool pauseInstance(const QString &name);
+    Q_INVOKABLE bool resumeInstance(const QString &name);
     Q_INVOKABLE int  getInstanceState(const QString &name) const;
 
     // Batch operations

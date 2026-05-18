@@ -55,7 +55,7 @@ private:
     bool initCaptureDevice();
     void drainQueueToWasapi(UINT32 numFramesAvailable);
 
-    bool m_running = false;
+    std::atomic<bool> m_running{false};
     std::atomic<bool> m_initialized{false};
     bool m_coOwned = false;  // true only if we called CoInitializeEx successfully
     Config m_config;

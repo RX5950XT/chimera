@@ -5,6 +5,8 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Window
 import QtQuick.Dialogs
+import Qt.labs.settings 1.0
+import Qt.labs.platform as LabsPlatform
 import Chimera.UI 1.0
 
 ApplicationWindow {
@@ -23,6 +25,58 @@ ApplicationWindow {
     readonly property bool isFullscreen: visibility === Window.FullScreen
     readonly property bool guestReady: nativeDisplay.attached || guestDisplay.hasFrame
     readonly property bool isRecording: ScreenRecorder.recording || nativeDisplay.recording
+
+    onVisibilityChanged: {
+        // Eco mode: lower emulator priority when minimized, restore when visible
+        AndroidControls.setEcoMode(visibility === Window.Minimized || visibility === Window.Hidden)
+    }
+
+    // Persist window geometry across sessions
+    Settings {
+        id: appSettings
+        category: "MainWindow"
+        property int windowX: -1
+        property int windowY: -1
+        property int windowWidth: 1360
+        property int windowHeight: 820
+    }
+
+    Component.onCompleted: {
+        if (appSettings.windowX >= 0) root.x = appSettings.windowX
+        if (appSettings.windowY >= 0) root.y = appSettings.windowY
+        root.width  = appSettings.windowWidth
+        root.height = appSettings.windowHeight
+    }
+    onXChanged:      appSettings.windowX      = root.x
+    onYChanged:      appSettings.windowY      = root.y
+    onWidthChanged:  appSettings.windowWidth  = root.width
+    onHeightChanged: appSettings.windowHeight = root.height
+
+    // System tray icon — click to restore, right-click menu
+    LabsPlatform.SystemTrayIcon {
+        id: trayIcon
+        visible: true
+        tooltip: qsTr("Chimera 模擬器")
+        onActivated: function(reason) {
+            if (reason === LabsPlatform.SystemTrayIcon.DoubleClick
+                    || reason === LabsPlatform.SystemTrayIcon.Trigger) {
+                root.show()
+                root.raise()
+                root.requestActivate()
+            }
+        }
+        menu: LabsPlatform.Menu {
+            LabsPlatform.MenuItem {
+                text: qsTr("顯示")
+                onTriggered: { root.show(); root.raise(); root.requestActivate() }
+            }
+            LabsPlatform.MenuSeparator {}
+            LabsPlatform.MenuItem {
+                text: qsTr("結束 Chimera")
+                onTriggered: Qt.quit()
+            }
+        }
+    }
 
     QtObject {
         id: theme
@@ -689,6 +743,12 @@ ApplicationWindow {
                         }
                         SideButton {
                             Layout.fillWidth: true
+                            text: qsTr("拉取檔案")
+                            detail: qsTr("Downloads ←")
+                            onClicked: pullFileDialog.open()
+                        }
+                        SideButton {
+                            Layout.fillWidth: true
                             text: qsTr("多開管理")
                             detail: qsTr("Ctrl+Shift+8")
                             onClicked: root.openSidePage("multi")
@@ -909,6 +969,8 @@ ApplicationWindow {
                                         spacing: 7
                                         DockButton { Layout.fillWidth: true; text: qsTr("啟動"); highlighted: true; onClicked: InstanceManager.startInstance(modelData) }
                                         DockButton { Layout.fillWidth: true; text: qsTr("停止"); onClicked: InstanceManager.stopInstance(modelData) }
+                                        DockButton { Layout.fillWidth: true; text: qsTr("暫停"); onClicked: InstanceManager.pauseInstance(modelData) }
+                                        DockButton { Layout.fillWidth: true; text: qsTr("繼續"); onClicked: InstanceManager.resumeInstance(modelData) }
                                     }
                                     RowLayout {
                                         Layout.fillWidth: true
@@ -1474,6 +1536,28 @@ ApplicationWindow {
         title: qsTr("選擇要推送到 Android 的檔案")
         nameFilters: [qsTr("所有檔案 (*)")]
         onAccepted: AndroidControls.pushFileToGuest(selectedFile.toString())
+    }
+
+    // Pull file from /sdcard/Download/ — user types guest filename
+    Dialog {
+        id: pullFileDialog
+        title: qsTr("從 Android 拉取檔案")
+        modal: true
+        anchors.centerIn: parent
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        onAccepted: {
+            if (pullFileNameInput.text.trim() !== "")
+                AndroidControls.pullFileFromGuest(pullFileNameInput.text.trim())
+        }
+        Column {
+            spacing: 8
+            Label { text: qsTr("/sdcard/Download/ 中的檔名：") }
+            TextField {
+                id: pullFileNameInput
+                width: 320
+                placeholderText: "e.g. screenshot.png"
+            }
+        }
     }
 
     Shortcut {

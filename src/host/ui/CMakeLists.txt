@@ -7,7 +7,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Quick QuickControls2 OpenGL Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Quick QuickControls2 OpenGL Network LabsPlatform LabsSettings)
 
 qt_add_executable(chimera-ui
     main.cpp
@@ -43,6 +43,8 @@ target_link_libraries(chimera-ui PRIVATE
     Qt6::QuickControls2
     Qt6::OpenGL
     Qt6::Network
+    Qt6::LabsPlatform
+    Qt6::LabsSettings
     chimera-config
     chimera-input
     chimera-graphics

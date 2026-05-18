@@ -57,9 +57,16 @@ public:
 
     // File sharing: host → /sdcard/Download/ via ADB push
     Q_INVOKABLE void pushFileToGuest(const QString &fileUrl);
+    // File sharing: /sdcard/Download/<guestFilename> → host dir (empty = Downloads)
+    Q_INVOKABLE void pullFileFromGuest(const QString &guestFilename);
+
+    // Eco mode: lower emulator process priority when minimized (saves CPU)
+    Q_INVOKABLE void setEcoMode(bool enabled);
 
     // Configure ADB binary + device serial (called from main.cpp after emulator starts)
     void setAdbConfig(const QString &adbExe, const QString &adbSerial);
+    // Wire emulator PID for eco mode
+    void setEmulatorPid(uint32_t pid);
 
     // Wire Android Console input for sensor/battery commands
     void setConsoleInput(input::AndroidConsoleInput *consoleInput);
@@ -84,6 +91,7 @@ private:
     QString   m_installStatus;
     double    m_gpsLat = 0.0;
     double    m_gpsLon = 0.0;
+    uint32_t  m_emulatorPid = 0;
 };
 
 } // namespace chimera

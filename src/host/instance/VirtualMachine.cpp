@@ -302,12 +302,25 @@ bool VirtualMachine::stop() {
 }
 
 bool VirtualMachine::pause() {
-    // QEMU savevm / loadvm
-    return false;
+    if (!m_processHandle || m_state != VMState::Running) return false;
+    typedef LONG (NTAPI *NtSuspendProcess_t)(HANDLE);
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    auto fn = ntdll ? reinterpret_cast<NtSuspendProcess_t>(GetProcAddress(ntdll, "NtSuspendProcess")) : nullptr;
+    if (!fn || fn(static_cast<HANDLE>(m_processHandle)) != 0) return false;
+    m_state = VMState::Paused;
+    if (m_callback) m_callback(m_state);
+    return true;
 }
 
 bool VirtualMachine::resume() {
-    return false;
+    if (!m_processHandle || m_state != VMState::Paused) return false;
+    typedef LONG (NTAPI *NtResumeProcess_t)(HANDLE);
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    auto fn = ntdll ? reinterpret_cast<NtResumeProcess_t>(GetProcAddress(ntdll, "NtResumeProcess")) : nullptr;
+    if (!fn || fn(static_cast<HANDLE>(m_processHandle)) != 0) return false;
+    m_state = VMState::Running;
+    if (m_callback) m_callback(m_state);
+    return true;
 }
 
 uint32_t VirtualMachine::processId() const {

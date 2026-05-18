@@ -44,6 +44,14 @@ bool QmlInstanceManager::stopInstance(const QString &name) {
     return chimera::instance::InstanceManager::instance().stopInstance(name.toStdString());
 }
 
+bool QmlInstanceManager::pauseInstance(const QString &name) {
+    return chimera::instance::InstanceManager::instance().pauseInstance(name.toStdString());
+}
+
+bool QmlInstanceManager::resumeInstance(const QString &name) {
+    return chimera::instance::InstanceManager::instance().resumeInstance(name.toStdString());
+}
+
 int QmlInstanceManager::getInstanceState(const QString &name) const {
     return static_cast<int>(
         chimera::instance::InstanceManager::instance().getInstanceState(name.toStdString()));

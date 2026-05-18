@@ -110,7 +110,27 @@ bool GamepadManager::isConnected(int deviceId) const {
 GamepadState GamepadManager::getState(int deviceId) const {
     GamepadState gs;
     gs.deviceId = deviceId;
-    gs.connected = false;
+    XINPUT_STATE state{};
+    if (XInputGetState(deviceId, &state) != ERROR_SUCCESS) {
+        gs.connected = false;
+        return gs;
+    }
+    gs.connected = true;
+    gs.leftStickX  = state.Gamepad.sThumbLX  / 32767.0f;
+    gs.leftStickY  = state.Gamepad.sThumbLY  / 32767.0f;
+    gs.rightStickX = state.Gamepad.sThumbRX  / 32767.0f;
+    gs.rightStickY = state.Gamepad.sThumbRY  / 32767.0f;
+    gs.leftTrigger  = state.Gamepad.bLeftTrigger  / 255.0f;
+    gs.rightTrigger = state.Gamepad.bRightTrigger / 255.0f;
+    gs.buttons.resize(16);
+    auto mapBtn = [&](WORD mask, size_t idx) { gs.buttons[idx] = (state.Gamepad.wButtons & mask) != 0; };
+    mapBtn(XINPUT_GAMEPAD_A, 0);           mapBtn(XINPUT_GAMEPAD_B, 1);
+    mapBtn(XINPUT_GAMEPAD_X, 2);           mapBtn(XINPUT_GAMEPAD_Y, 3);
+    mapBtn(XINPUT_GAMEPAD_DPAD_UP, 4);     mapBtn(XINPUT_GAMEPAD_DPAD_DOWN, 5);
+    mapBtn(XINPUT_GAMEPAD_DPAD_LEFT, 6);   mapBtn(XINPUT_GAMEPAD_DPAD_RIGHT, 7);
+    mapBtn(XINPUT_GAMEPAD_LEFT_SHOULDER, 8); mapBtn(XINPUT_GAMEPAD_RIGHT_SHOULDER, 9);
+    mapBtn(XINPUT_GAMEPAD_LEFT_THUMB, 10);  mapBtn(XINPUT_GAMEPAD_RIGHT_THUMB, 11);
+    mapBtn(XINPUT_GAMEPAD_START, 12);       mapBtn(XINPUT_GAMEPAD_BACK, 13);
     return gs;
 }
 

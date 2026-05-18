@@ -4,6 +4,7 @@
 #include <vector>
 #include <chrono>
 #include <filesystem>
+#include <atomic>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -50,8 +51,8 @@ private:
     MacroEngine() = default;
     void playbackLoop(int loopCount);
 
-    bool m_recording = false;
-    bool m_playing = false;
+    std::atomic<bool> m_recording{false};
+    std::atomic<bool> m_playing{false};
     std::string m_currentMacroName;
     std::vector<MacroEvent> m_events;
 

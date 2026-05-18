@@ -777,6 +777,7 @@ int main(int argc, char *argv[]) {
         const uint32_t emulatorPid = chimera::instance::InstanceManager::instance()
                                          .emulatorProcessId(g_instanceName);
         if (emulatorPid != 0) {
+            qmlAndroidControls.setEmulatorPid(emulatorPid);
             for (auto *obj : roots) {
                 auto *nativeView = obj->findChild<chimera::NativeEmulatorView *>("nativeDisplay");
                 if (nativeView) {

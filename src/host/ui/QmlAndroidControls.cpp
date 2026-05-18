@@ -9,7 +9,12 @@
 #include <QProcess>
 #include <QUrl>
 #include <QFileInfo>
+#include <QStandardPaths>
 #include <algorithm>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 namespace chimera {
 
@@ -225,6 +230,33 @@ void QmlAndroidControls::setInstallStatus(const QString &s) {
         m_installStatus = s;
         emit installStatusChanged(m_installStatus);
     }
+}
+
+void QmlAndroidControls::setEmulatorPid(uint32_t pid) {
+    m_emulatorPid = pid;
+}
+
+void QmlAndroidControls::pullFileFromGuest(const QString &guestFilename) {
+    if (guestFilename.isEmpty()) return;
+    const QString destDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    const bool ok = storage::SharedFolder::instance().pullFromGuest(
+        guestFilename.toStdString(), destDir.toStdString());
+    if (ok)
+        setInstallStatus(tr("已拉取：") + guestFilename + tr(" → ") + destDir);
+    else
+        setInstallStatus(tr("拉取失敗，請確認 ADB 連線"));
+}
+
+void QmlAndroidControls::setEcoMode(bool enabled) {
+#ifdef _WIN32
+    if (m_emulatorPid == 0) return;
+    HANDLE hProc = OpenProcess(PROCESS_SET_INFORMATION, FALSE, m_emulatorPid);
+    if (!hProc) return;
+    SetPriorityClass(hProc, enabled ? BELOW_NORMAL_PRIORITY_CLASS : HIGH_PRIORITY_CLASS);
+    CloseHandle(hProc);
+#else
+    Q_UNUSED(enabled)
+#endif
 }
 
 } // namespace chimera
