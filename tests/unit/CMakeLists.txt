@@ -8,6 +8,14 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Network Test)
 
 enable_testing()
 
+# Helper binary: prints argv[1..] to stdout (used by test-process-launcher)
+add_executable(echo_args ${CMAKE_CURRENT_SOURCE_DIR}/../helpers/echo_args.cpp)
+set_target_properties(echo_args PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY         ${CMAKE_BINARY_DIR}
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/Release
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG   ${CMAKE_BINARY_DIR}/Debug
+)
+
 function(add_chimera_test name src)
     add_executable(${name} ${src})
     target_link_libraries(${name} PRIVATE
@@ -30,3 +38,5 @@ add_chimera_test(test-instance-manager test_instance_manager.cpp)
 add_chimera_test(test-graphics-framebuffer test_graphics_framebuffer.cpp chimera-graphics)
 add_chimera_test(test-adb-framebuffer-capture test_adb_framebuffer_capture.cpp chimera-graphics)
 add_chimera_test(test-qmp-input test_qmp_input.cpp)
+add_chimera_test(test-process-launcher test_process_launcher.cpp)
+add_dependencies(test-process-launcher echo_args)

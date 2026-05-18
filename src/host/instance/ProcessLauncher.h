@@ -31,6 +31,10 @@ public:
     static int waitForExit(HANDLE hProcess, int timeoutMs);
     static void setProcessTreePriority(HANDLE hProcess, DWORD priorityClass);
     static void setProcessTreePriorityById(DWORD rootPid, DWORD priorityClass);
+
+    // Exposed for testing — implements CommandLineToArgvW round-trip quoting rules
+    static std::wstring quoteArg(const std::wstring &arg);
+    static std::wstring utf8ToWide(const std::string &utf8);
 };
 
 } // namespace chimera::instance
