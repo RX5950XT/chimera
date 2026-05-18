@@ -256,4 +256,11 @@ bool AndroidConsoleInput::sendGeoFix(double lon, double lat, double alt) {
     return true;
 }
 
+bool AndroidConsoleInput::sendClipboardSet(const std::string &utf8text) {
+    if (!isConnected()) return false;
+    // Android Console protocol: "clipboard set <text>" (single line, UTF-8)
+    sendLine(QStringLiteral("clipboard set ") + QString::fromUtf8(utf8text.c_str()));
+    return true;
+}
+
 } // namespace chimera::input

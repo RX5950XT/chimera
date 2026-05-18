@@ -5,6 +5,7 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include <QString>
+#include <string>
 
 namespace chimera::input {
 
@@ -58,6 +59,7 @@ public:
     bool sendMouseMove(int x, int y);
     bool sendKeyEvent(int androidKeyCode, bool down);
     bool sendGeoFix(double lon, double lat, double alt);
+    bool sendClipboardSet(const std::string &utf8text);
 
 signals:
     void stateChanged(State state);

@@ -32,6 +32,7 @@
 #include "HvSocketTransport.h"
 #include "HvSocketFramebufferCapture.h"
 #include "LocationSimulator.h"
+#include "ClipboardBridge.h"
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <filesystem>
@@ -681,6 +682,14 @@ int main(int argc, char *argv[]) {
                     consoleInput->sendGeoFix(lon, lat, alt);
                 });
             qDebug() << "[main] LocationSimulator geo fix wired via console";
+
+            // Wire ClipboardBridge host→guest via console clipboard set
+            chimera::integration::ClipboardBridge::instance().setGuestSink(
+                [consoleInput](const std::string &utf8text) {
+                    consoleInput->sendClipboardSet(utf8text);
+                });
+            chimera::integration::ClipboardBridge::instance().initialize();
+            qDebug() << "[main] ClipboardBridge wired via console";
         } else {
             qDebug() << "[main] Console input disabled (CHIMERA_INPUT_BACKEND=" << inputBackend.c_str() << ")";
         }
