@@ -7,12 +7,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(OpenGL REQUIRED)
 
 add_library(chimera-graphics STATIC
-    GraphicsBridge.cpp
-    GraphicsBridge.h
     Framebuffer.cpp
     Framebuffer.h
-    Renderer.cpp
-    Renderer.h
     AngleBackend.cpp
     AngleBackend.h
     EglLoader.h

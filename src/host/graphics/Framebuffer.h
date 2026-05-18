@@ -23,14 +23,14 @@ public:
     // Producer (guest renderer) writes to back buffer
     void writeBackBuffer(const std::vector<uint8_t> &pixels, uint32_t width, uint32_t height);
 
-    // Consumer (host UI) reads from front buffer
-    const Buffer &readFrontBuffer() const;
+    // Consumer (host UI) — returns a snapshot copy under lock (no dangling reference)
+    Buffer readFrontBuffer() const;
 
     // Swap buffers (called at frame boundary)
     void swap();
 
-    uint32_t width() const { return m_front.width; }
-    uint32_t height() const { return m_front.height; }
+    uint32_t width() const;
+    uint32_t height() const;
 
 private:
     Buffer m_front;
