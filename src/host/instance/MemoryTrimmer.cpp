@@ -120,7 +120,7 @@ bool MemoryTrimmer::fetchMemoryStats(qint64 &totalKB, qint64 &availableKB) {
         adb = std::string(androidHome) + "\\platform-tools\\adb.exe";
     }
 
-    auto result = ProcessLauncher::runSync(adb, {"shell", "cat", "/proc/meminfo"});
+    auto result = ProcessLauncher::runSync(adb, {"-s", m_adbSerial, "shell", "cat", "/proc/meminfo"});
     if (result.exitCode != 0 || result.stdoutText.empty()) {
         return false;
     }
@@ -186,13 +186,13 @@ bool MemoryTrimmer::dropCaches() {
 
     // Level 1: drop pagecache (safe, no root usually needed for emulator)
     auto result = ProcessLauncher::runSync(adb, {
-        "shell", "su", "-c", "echo 1 > /proc/sys/vm/drop_caches"
+        "-s", m_adbSerial, "shell", "su", "-c", "echo 1 > /proc/sys/vm/drop_caches"
     });
 
     if (result.exitCode != 0) {
         // Fallback without su (works on some emulator images with root shell)
         result = ProcessLauncher::runSync(adb, {
-            "shell", "echo 1 > /proc/sys/vm/drop_caches"
+            "-s", m_adbSerial, "shell", "echo 1 > /proc/sys/vm/drop_caches"
         });
     }
 

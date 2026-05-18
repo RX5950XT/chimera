@@ -595,7 +595,9 @@ ApplicationWindow {
                                 RowLayout {
                                     spacing: 5
                                     Label {
-                                        text: nativeDisplay.attached ? "60" : PerfMonitor.fps.toFixed(0)
+                                        text: nativeDisplay.attached
+                                            ? InstanceManager.instanceFullConfig("chimera_dev").maxFps.toString()
+                                            : PerfMonitor.fps.toFixed(0)
                                         color: theme.accent
                                         font.pixelSize: 34
                                         font.weight: Font.Black
@@ -837,29 +839,88 @@ ApplicationWindow {
                             DockButton { text: qsTr("返回"); onClicked: root.openSidePage("main") }
                         }
 
-                        Label {
+                        RowLayout {
                             Layout.fillWidth: true
-                            text: nativeDisplay.attached
-                                  ? qsTr("Native 顯示不能疊 QML 圖層，這裡改用側欄管理。既有快捷鍵仍會送進 Android。")
-                                  : qsTr("串流顯示可直接在畫面上編輯鍵位。")
-                            color: theme.muted
-                            wrapMode: Text.WordWrap
-                            font.pixelSize: 11
-                            lineHeight: 1.3
+                            spacing: 7
+                            SideButton {
+                                Layout.fillWidth: true
+                                text: overlayVisible ? qsTr("關閉疊層") : qsTr("開啟疊層")
+                                detail: qsTr("Overlay")
+                                enabled: !nativeDisplay.attached
+                                highlighted: overlayVisible
+                                onClicked: overlayVisible = !overlayVisible
+                            }
+                            SideButton {
+                                Layout.fillWidth: true
+                                text: qsTr("清除所有")
+                                onClicked: {
+                                    InputMapper.clearMappings()
+                                    lastActionStatus = qsTr("已清除所有鍵位")
+                                }
+                            }
                         }
 
-                        SideButton { Layout.fillWidth: true; text: qsTr("WASD 移動"); detail: qsTr("預設") }
-                        SideButton { Layout.fillWidth: true; text: qsTr("1 / 2 / 3 技能"); detail: qsTr("預設") }
-                        SideButton {
-                            Layout.fillWidth: true
-                            text: overlayVisible ? qsTr("關閉畫面疊層") : qsTr("開啟畫面疊層")
-                            detail: nativeDisplay.attached ? qsTr("串流限定") : qsTr("Overlay")
-                            enabled: !nativeDisplay.attached
-                            highlighted: overlayVisible
-                            onClicked: overlayVisible = !overlayVisible
-                        }
+                        SectionLabel { text: qsTr("目前鍵位綁定") }
 
-                        Item { Layout.fillHeight: true }
+                        ListView {
+                            id: mappingsList
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            clip: true
+                            spacing: 6
+                            model: InputMapper.mappings
+
+                            Label {
+                                anchors.centerIn: parent
+                                visible: mappingsList.count === 0
+                                text: qsTr("尚無鍵位綁定\n請載入遊戲配置檔")
+                                color: theme.muted
+                                horizontalAlignment: Text.AlignHCenter
+                                font.pixelSize: 12
+                                lineHeight: 1.4
+                            }
+
+                            delegate: Rectangle {
+                                required property var modelData
+                                required property int index
+                                width: mappingsList.width
+                                height: 44
+                                radius: 10
+                                color: theme.card
+                                border.color: theme.lineSoft
+
+                                RowLayout {
+                                    anchors { fill: parent; leftMargin: 12; rightMargin: 8; topMargin: 6; bottomMargin: 6 }
+                                    spacing: 8
+
+                                    Rectangle {
+                                        width: 32; height: 24; radius: 6
+                                        color: theme.accent
+                                        Label {
+                                            anchors.centerIn: parent
+                                            text: modelData.key || "?"
+                                            color: "white"
+                                            font.pixelSize: 11
+                                            font.weight: Font.Bold
+                                        }
+                                    }
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: modelData.guidance.length > 0 ? modelData.guidance
+                                            : qsTr("%1 @ (%2, %3)").arg(modelData.type)
+                                                 .arg(modelData.x.toFixed(1))
+                                                 .arg(modelData.y.toFixed(1))
+                                        color: theme.text
+                                        font.pixelSize: 12
+                                        elide: Text.ElideRight
+                                    }
+                                    DockButton {
+                                        text: qsTr("刪除")
+                                        onClicked: InputMapper.removeMapping(index)
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // ---- Multi-instance page ---------------------------------
@@ -1448,6 +1509,78 @@ ApplicationWindow {
                                             : qsTr("已關閉裝置偽裝（下次啟動生效）")
                                     }
                                 }
+                            }
+                        }
+
+                        SectionLabel { text: qsTr("螢幕密度 (DPI)") }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            Repeater {
+                                model: [160, 240, 320, 480]
+                                delegate: DockButton {
+                                    required property int modelData
+                                    Layout.fillWidth: true
+                                    text: modelData
+                                    onClicked: {
+                                        AndroidControls.setScreenDensity(modelData)
+                                        lastActionStatus = qsTr("DPI 已設為 ") + modelData
+                                    }
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            DockButton {
+                                Layout.fillWidth: true
+                                text: qsTr("重置 DPI")
+                                onClicked: {
+                                    AndroidControls.resetScreenDensity()
+                                    lastActionStatus = qsTr("螢幕密度已重置")
+                                }
+                            }
+                            DockButton {
+                                Layout.fillWidth: true
+                                text: qsTr("飛行模式 開")
+                                onClicked: {
+                                    AndroidControls.setAirplaneMode(true)
+                                    lastActionStatus = qsTr("飛行模式已開啟")
+                                }
+                            }
+                            DockButton {
+                                Layout.fillWidth: true
+                                text: qsTr("飛行模式 關")
+                                onClicked: {
+                                    AndroidControls.setAirplaneMode(false)
+                                    lastActionStatus = qsTr("飛行模式已關閉")
+                                }
+                            }
+                        }
+
+                        SectionLabel { text: qsTr("亮度") }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            Label {
+                                text: qsTr("暗")
+                                color: theme.muted
+                                font.pixelSize: 11
+                            }
+                            Slider {
+                                id: brightnessSlider
+                                Layout.fillWidth: true
+                                from: 0; to: 255; value: 128
+                                stepSize: 1
+                                onMoved: AndroidControls.setScreenBrightness(Math.round(value))
+                            }
+                            Label {
+                                text: qsTr("亮")
+                                color: theme.muted
+                                font.pixelSize: 11
                             }
                         }
 

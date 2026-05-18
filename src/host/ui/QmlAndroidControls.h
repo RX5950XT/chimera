@@ -63,6 +63,14 @@ public:
     // Eco mode: lower emulator process priority when minimized (saves CPU)
     Q_INVOKABLE void setEcoMode(bool enabled);
 
+    // Runtime display controls (take effect immediately via ADB)
+    Q_INVOKABLE void setScreenDensity(int dpi);   // adb shell wm density <dpi>
+    Q_INVOKABLE void resetScreenDensity();         // adb shell wm density reset
+    Q_INVOKABLE void setScreenBrightness(int level); // 0–255
+
+    // System controls
+    Q_INVOKABLE void setAirplaneMode(bool enabled);
+
     // Configure ADB binary + device serial (called from main.cpp after emulator starts)
     void setAdbConfig(const QString &adbExe, const QString &adbSerial);
     // Wire emulator PID for eco mode

@@ -23,6 +23,8 @@ qt_add_executable(chimera-ui
     QmlInstanceManager.h
     QmlMacroEngine.cpp
     QmlMacroEngine.h
+    QmlInputMapper.cpp
+    QmlInputMapper.h
     ScreenRecorder.cpp
     ScreenRecorder.h
     ChimeraWindow.qml

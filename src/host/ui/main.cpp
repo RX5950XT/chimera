@@ -13,6 +13,7 @@
 #include "QmlAndroidControls.h"
 #include "QmlInstanceManager.h"
 #include "QmlMacroEngine.h"
+#include "QmlInputMapper.h"
 #include "ScreenRecorder.h"
 #include "InstanceManager.h"
 #include "ConfigManager.h"
@@ -500,6 +501,10 @@ int main(int argc, char *argv[]) {
     // Expose macro engine to QML
     chimera::QmlMacroEngine qmlMacroEngine;
     engine.rootContext()->setContextProperty("MacroEngine", &qmlMacroEngine);
+
+    // Expose input mapper to QML
+    chimera::QmlInputMapper qmlInputMapper;
+    engine.rootContext()->setContextProperty("InputMapper", &qmlInputMapper);
 
     // Screen recorder
     chimera::ScreenRecorder screenRecorder;

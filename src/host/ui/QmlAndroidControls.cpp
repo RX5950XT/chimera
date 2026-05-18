@@ -247,6 +247,39 @@ void QmlAndroidControls::pullFileFromGuest(const QString &guestFilename) {
         setInstallStatus(tr("拉取失敗，請確認 ADB 連線"));
 }
 
+void QmlAndroidControls::setScreenDensity(int dpi) {
+    if (dpi < 72 || dpi > 640) return;
+    runAdbAsync({"-s", m_adbSerial, "shell", "wm", "density", QString::number(dpi)},
+                tr("螢幕密度已設為 %1 DPI").arg(dpi),
+                tr("無法設定螢幕密度"));
+}
+
+void QmlAndroidControls::resetScreenDensity() {
+    runAdbAsync({"-s", m_adbSerial, "shell", "wm", "density", "reset"},
+                tr("螢幕密度已重置"),
+                tr("無法重置螢幕密度"));
+}
+
+void QmlAndroidControls::setScreenBrightness(int level) {
+    const int clamped = qBound(0, level, 255);
+    // Disable auto-brightness then set manual level
+    runAdbAsync({"-s", m_adbSerial, "shell", "settings", "put", "system",
+                 "screen_brightness_mode", "0"},
+                QString(), QString());
+    runAdbAsync({"-s", m_adbSerial, "shell", "settings", "put", "system",
+                 "screen_brightness", QString::number(clamped)},
+                tr("亮度已設為 %1").arg(clamped),
+                tr("無法設定亮度"));
+}
+
+void QmlAndroidControls::setAirplaneMode(bool enabled) {
+    const QString val = enabled ? "enable" : "disable";
+    runAdbAsync({"-s", m_adbSerial, "shell", "cmd", "connectivity",
+                 "airplane-mode", val},
+                enabled ? tr("飛行模式已開啟") : tr("飛行模式已關閉"),
+                tr("無法切換飛行模式"));
+}
+
 void QmlAndroidControls::setEcoMode(bool enabled) {
 #ifdef _WIN32
     if (m_emulatorPid == 0) return;
