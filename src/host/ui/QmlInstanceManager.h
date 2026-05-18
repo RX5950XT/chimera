@@ -45,6 +45,12 @@ public:
     // Per-instance runtime config (ports)
     Q_INVOKABLE QVariantMap instanceRuntimeConfig(const QString &name) const;
 
+    // Full instance config (cpus, ramMB, width, height, maxFps, dpi, graphicsEngine, graphicsRenderer)
+    Q_INVOKABLE QVariantMap instanceFullConfig(const QString &name) const;
+
+    // Update FPS cap for an existing instance (takes effect on next start)
+    Q_INVOKABLE bool updateInstanceFps(const QString &name, int maxFps);
+
     // State enum for QML
     enum class VMState {
         Stopped = 0,

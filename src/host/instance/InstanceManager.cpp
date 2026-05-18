@@ -466,6 +466,18 @@ void InstanceManager::setGridPosition(const std::string &name, int row, int col)
     }
 }
 
+bool InstanceManager::setMaxFps(const std::string &name, int maxFps) {
+    if (!isValidInstanceName(name) || maxFps <= 0) return false;
+    for (auto &cfg : d->savedConfigs) {
+        if (cfg.name == name) {
+            cfg.maxFps = maxFps;
+            saveInstances();
+            return true;
+        }
+    }
+    return false;
+}
+
 void InstanceManager::sortByName() {
     std::sort(d->savedConfigs.begin(), d->savedConfigs.end(),
               [](const InstanceConfig &a, const InstanceConfig &b) {

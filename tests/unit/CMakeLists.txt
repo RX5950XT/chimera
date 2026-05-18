@@ -40,3 +40,5 @@ add_chimera_test(test-adb-framebuffer-capture test_adb_framebuffer_capture.cpp c
 add_chimera_test(test-qmp-input test_qmp_input.cpp)
 add_chimera_test(test-process-launcher test_process_launcher.cpp)
 add_dependencies(test-process-launcher echo_args)
+add_chimera_test(test-android-console-input test_android_console_input.cpp)
+add_chimera_test(test-coordinate-mapper test_coordinate_mapper.cpp)

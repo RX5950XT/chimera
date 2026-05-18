@@ -91,6 +91,29 @@ void QmlInstanceManager::sortByName() {
     chimera::instance::InstanceManager::instance().sortByName();
 }
 
+QVariantMap QmlInstanceManager::instanceFullConfig(const QString &name) const {
+    const auto cfg = chimera::instance::InstanceManager::instance().getInstanceConfig(
+        name.toStdString());
+    QVariantMap m;
+    m[QStringLiteral("name")]             = QString::fromStdString(cfg.name);
+    m[QStringLiteral("cpus")]             = cfg.cpus;
+    m[QStringLiteral("ramMB")]            = cfg.ramMB;
+    m[QStringLiteral("width")]            = cfg.width;
+    m[QStringLiteral("height")]           = cfg.height;
+    m[QStringLiteral("dpi")]              = cfg.dpi;
+    m[QStringLiteral("maxFps")]           = cfg.maxFps;
+    m[QStringLiteral("graphicsEngine")]   = QString::fromStdString(cfg.graphicsEngine);
+    m[QStringLiteral("graphicsRenderer")] = QString::fromStdString(cfg.graphicsRenderer);
+    m[QStringLiteral("enableVsync")]      = cfg.enableVsync;
+    m[QStringLiteral("headless")]         = cfg.headless;
+    return m;
+}
+
+bool QmlInstanceManager::updateInstanceFps(const QString &name, int maxFps) {
+    return chimera::instance::InstanceManager::instance().setMaxFps(
+        name.toStdString(), maxFps);
+}
+
 QVariantMap QmlInstanceManager::instanceRuntimeConfig(const QString &name) const {
     const auto rc = chimera::instance::InstanceManager::instance().getRuntimeConfig(
         name.toStdString());

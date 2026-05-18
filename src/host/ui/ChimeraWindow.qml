@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Window
+import QtQuick.Dialogs
 import Chimera.UI 1.0
 
 ApplicationWindow {
@@ -652,6 +653,12 @@ ApplicationWindow {
                         }
                         SideButton {
                             Layout.fillWidth: true
+                            text: qsTr("安裝 APK")
+                            detail: qsTr("Ctrl+Shift+I")
+                            onClicked: apkFileDialog.open()
+                        }
+                        SideButton {
+                            Layout.fillWidth: true
                             text: qsTr("多開管理")
                             detail: qsTr("Ctrl+Shift+8")
                             onClicked: root.openSidePage("multi")
@@ -663,8 +670,26 @@ ApplicationWindow {
                             highlighted: MacroEngine.recording || MacroEngine.playing
                             onClicked: root.openSidePage("macro")
                         }
+                        SideButton {
+                            Layout.fillWidth: true
+                            text: qsTr("設定")
+                            detail: qsTr("Ctrl+Shift+,")
+                            onClicked: root.openSidePage("settings")
+                        }
 
                         Item { Layout.fillHeight: true }
+
+                        Label {
+                            Layout.fillWidth: true
+                            visible: AndroidControls.installStatus.length > 0
+                            text: AndroidControls.installStatus
+                            color: AndroidControls.installStatus.indexOf(qsTr("失敗")) >= 0 ? theme.danger
+                                 : (AndroidControls.installStatus.indexOf(qsTr("成功")) >= 0 ? theme.accent
+                                 : theme.warn)
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: 11
+                            font.weight: Font.Medium
+                        }
 
                         Label {
                             Layout.fillWidth: true
@@ -935,9 +960,106 @@ ApplicationWindow {
                             onClicked: MacroEngine.stopPlayback()
                         }
                     }
+
+                    // ---- Settings page ---------------------------------------
+                    ColumnLayout {
+                        id: settingsPage
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        visible: sidePage === "settings"
+                        opacity: visible ? 1 : 0
+                        spacing: 10
+                        Behavior on opacity { NumberAnimation { duration: 170; easing.type: Easing.OutCubic } }
+
+                        property var cfg: visible ? InstanceManager.instanceFullConfig("chimera_dev") : ({})
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            SectionLabel { text: qsTr("設定"); Layout.fillWidth: true }
+                            DockButton { text: qsTr("返回"); onClicked: root.openSidePage("main") }
+                        }
+
+                        // Info card
+                        Rectangle {
+                            Layout.fillWidth: true
+                            height: infoCol.implicitHeight + 22
+                            radius: 12
+                            color: theme.card
+                            border.color: theme.lineSoft
+
+                            ColumnLayout {
+                                id: infoCol
+                                anchors { left: parent.left; right: parent.right; top: parent.top }
+                                anchors.margins: 11
+                                spacing: 6
+
+                                Label {
+                                    text: settingsPage.cfg.width + " × " + settingsPage.cfg.height
+                                          + " · " + settingsPage.cfg.dpi + " DPI"
+                                    color: theme.text
+                                    font.pixelSize: 13
+                                    font.weight: Font.DemiBold
+                                }
+                                Label {
+                                    text: settingsPage.cfg.cpus + " CPU · "
+                                          + settingsPage.cfg.ramMB + " MB RAM"
+                                    color: theme.muted
+                                    font.pixelSize: 11
+                                }
+                                Label {
+                                    text: qsTr("引擎：") + (settingsPage.cfg.graphicsEngine || "angle")
+                                          + " / " + (settingsPage.cfg.graphicsRenderer || "host")
+                                    color: theme.muted
+                                    font.pixelSize: 11
+                                }
+                            }
+                        }
+
+                        SectionLabel { text: qsTr("FPS 上限") }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Repeater {
+                                model: [30, 60, 90, 120]
+                                delegate: DockButton {
+                                    required property int modelData
+                                    Layout.fillWidth: true
+                                    text: modelData + " FPS"
+                                    highlighted: settingsPage.cfg.maxFps === modelData
+                                    onClicked: {
+                                        if (InstanceManager.updateInstanceFps("chimera_dev", modelData)) {
+                                            settingsPage.cfg = InstanceManager.instanceFullConfig("chimera_dev")
+                                            lastActionStatus = qsTr("FPS 已設為 ") + modelData + qsTr("（下次啟動生效）")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Item { Layout.fillHeight: true }
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: qsTr("CPU / RAM 變更需重新建立 Instance")
+                            color: theme.muted
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: 11
+                            lineHeight: 1.3
+                        }
+                    }
                 }
             }
         }
+    }
+
+    // APK file picker
+    FileDialog {
+        id: apkFileDialog
+        title: qsTr("選擇 APK 檔案")
+        nameFilters: [qsTr("APK 檔案 (*.apk)"), qsTr("所有檔案 (*)")]
+        onAccepted: AndroidControls.installApk(selectedFile.toString())
     }
 
     Shortcut {
@@ -964,6 +1086,14 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+Shift+7"
         onActivated: root.openSidePage("macro")
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+I"
+        onActivated: apkFileDialog.open()
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+,"
+        onActivated: root.openSidePage("settings")
     }
     Shortcut {
         sequence: "Ctrl+Shift+8"

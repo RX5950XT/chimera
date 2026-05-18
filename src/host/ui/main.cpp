@@ -667,6 +667,11 @@ int main(int argc, char *argv[]) {
         // Wire SharedFolder ADB config for v1 push/pull
         chimera::storage::SharedFolder::instance().setAdbConfig(g_adbPath, g_runtimeCfg.adbSerial);
 
+        // Wire ADB config to AndroidControls for APK installation
+        qmlAndroidControls.setAdbConfig(
+            QString::fromStdString(g_adbPath.string()),
+            QString::fromStdString(g_runtimeCfg.adbSerial));
+
         // Android Console input on port 5554 (telnet protocol, NOT JSON QMP).
         // InputBridge priority: HvSocket > Console > QMP > ADB.
         // CHIMERA_INPUT_BACKEND=adb disables Console (force-fallback).

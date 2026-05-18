@@ -70,6 +70,9 @@ public:
     // Sort the internal instance list by name
     void sortByName();
 
+    // Update max FPS for a saved instance (takes effect on next start)
+    bool setMaxFps(const std::string &name, int maxFps);
+
     // Callbacks
     using StateCallback = std::function<void(const std::string &name, VMState state)>;
     void setStateCallback(StateCallback cb);
