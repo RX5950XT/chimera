@@ -156,26 +156,23 @@ bool MemoryTrimmer::sendTrimCommand(int level) {
         adb = std::string(androidHome) + "\\platform-tools\\adb.exe";
     }
 
-    // Map our level to Android ComponentCallbacks2 constants
-    // RUNNING_MODERATE=5, RUNNING_LOW=10, RUNNING_CRITICAL=15, UI_HIDDEN=20, COMPLETE=80
-    int androidLevel = 5;
+    // Map our pressure level to Android memory-factor names (Android 12+).
+    // "am memory-factor set <FACTOR>" triggers system-wide LRU reclamation without
+    // needing a specific managed process PID.
+    std::string factor;
     switch (level) {
-        case PressureModerate: androidLevel = 5; break;
-        case PressureLow: androidLevel = 10; break;
-        case PressureCritical: androidLevel = 15; break;
-        default: androidLevel = 5; break;
+        case PressureModerate: factor = "MODERATE"; break;
+        case PressureLow:      factor = "LOW";      break;
+        case PressureCritical: factor = "CRITICAL"; break;
+        default:               factor = "MODERATE"; break;
     }
 
-    // Send trim to system_server (framework level)
     auto result = ProcessLauncher::runSync(adb, {
-        "shell", "am", "send-trim-memory", "--user", "0", "-a", "android.intent.action.MAIN",
-        std::to_string(androidLevel)
+        "-s", "emulator-5554", "shell", "am", "memory-factor", "set", factor
     });
 
-    // The above adb syntax might not be perfect; fallback to simpler drop caches
-    // We just care that we attempted; log result
     if (result.exitCode != 0) {
-        qDebug() << "[MemoryTrimmer] send-trim-memory failed:" << QString::fromStdString(result.stderrText);
+        qDebug() << "[MemoryTrimmer] memory-factor set failed:" << QString::fromStdString(result.stderrText);
     }
     return result.exitCode == 0;
 }
