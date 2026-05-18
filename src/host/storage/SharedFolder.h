@@ -7,9 +7,10 @@
 namespace chimera::storage {
 
 /**
- * @brief Manages host-guest shared folders (9pfs / VirtIO-FS).
+ * @brief Host↔Guest file sharing.
  *
- * Mounts host directories into the guest Android filesystem.
+ * v1: ADB-based Downloads sync (see docs/adr/ADR-001-shared-folder.md).
+ * QEMU backend: -virtfs mounts via toQemuArgs().
  */
 class SharedFolder {
 public:
@@ -22,16 +23,30 @@ public:
 
     static SharedFolder &instance();
 
+    // QEMU backend mounts
     bool addMount(const Mount &mount);
     void removeMount(const std::string &tag);
     std::vector<Mount> listMounts() const;
+    std::vector<std::string> toQemuArgs() const;  // generates -virtfs args
 
-    // Generate QEMU -virtfs command line arguments
-    std::vector<std::string> toQemuArgs() const;
+    // v1 ADB-based sync (emulator.exe backend)
+    // Must call setAdbConfig() before using push/pull.
+    void setAdbConfig(const std::filesystem::path &adbExe, const std::string &serial);
+
+    // Host → Guest: adb push <hostFile> /sdcard/Download/<filename>
+    // Returns true on success (exit code 0).
+    bool pushToGuest(const std::filesystem::path &hostFile) const;
+
+    // Guest → Host: adb pull /sdcard/Download/<guestFilename> <hostDir>
+    // Returns true on success.
+    bool pullFromGuest(const std::string &guestFilename,
+                       const std::filesystem::path &hostDir) const;
 
 private:
     SharedFolder() = default;
     std::vector<Mount> m_mounts;
+    std::filesystem::path m_adbExe;
+    std::string m_adbSerial;
 };
 
 } // namespace chimera::storage

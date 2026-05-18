@@ -15,4 +15,5 @@ target_include_directories(chimera-storage PUBLIC
 
 target_link_libraries(chimera-storage PRIVATE
     Qt6::Core
+    chimera-instance
 )

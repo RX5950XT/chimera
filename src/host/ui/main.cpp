@@ -33,6 +33,7 @@
 #include "HvSocketFramebufferCapture.h"
 #include "LocationSimulator.h"
 #include "ClipboardBridge.h"
+#include "SharedFolder.h"
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <filesystem>
@@ -662,6 +663,9 @@ int main(int argc, char *argv[]) {
         // Configure input bridge for ADB forwarding (fallback)
         chimera::input::InputBridge::instance().setAdbConfig(g_adbPath, g_runtimeCfg.adbPort);
         chimera::input::InputBridge::instance().setDisplaySize(cfg.width, cfg.height);
+
+        // Wire SharedFolder ADB config for v1 push/pull
+        chimera::storage::SharedFolder::instance().setAdbConfig(g_adbPath, g_runtimeCfg.adbSerial);
 
         // Android Console input on port 5554 (telnet protocol, NOT JSON QMP).
         // InputBridge priority: HvSocket > Console > QMP > ADB.
