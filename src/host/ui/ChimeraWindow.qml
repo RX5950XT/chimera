@@ -750,7 +750,7 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             text: qsTr("安裝 OBB")
                             detail: qsTr("→ /obb/<pkg>/")
-                            onClicked: obbInstallDialog.open()
+                            onClicked: obbFileDialog.open()
                         }
                         SideButton {
                             Layout.fillWidth: true
@@ -1891,30 +1891,37 @@ ApplicationWindow {
         onAccepted: AndroidControls.pushFileToGuest(selectedFile.toString())
     }
 
-    // OBB expansion file install
+    // OBB expansion file install — pick file then enter package name
+    FileDialog {
+        id: obbFileDialog
+        title: qsTr("選擇 OBB 檔案")
+        nameFilters: [qsTr("OBB 擴充資料 (*.obb)"), qsTr("所有檔案 (*)")]
+        onAccepted: {
+            obbSelectedPath.text = selectedFile.toString()
+            obbInstallDialog.open()
+        }
+    }
+
     Dialog {
         id: obbInstallDialog
-        title: qsTr("安裝 OBB 擴充資料")
+        title: qsTr("安裝 OBB — 輸入 Package 名稱")
         modal: true
         anchors.centerIn: parent
         standardButtons: Dialog.Ok | Dialog.Cancel
-        onOpened: obbFilePath.text = ""
         onAccepted: {
-            if (obbFilePath.text.trim() !== "" && obbPackageName.text.trim() !== "")
-                AndroidControls.installObb(obbFilePath.text.trim(), obbPackageName.text.trim())
+            const pkg = obbPackageName.text.trim()
+            if (pkg.length > 0)
+                AndroidControls.installObb(obbSelectedPath.text, pkg)
         }
         Column {
             spacing: 8
             width: 340
-            Label { text: qsTr("OBB 本機路徑（如 C:/Downloads/main.obb）："); color: theme.text; font.pixelSize: 12 }
-            TextField {
-                id: obbFilePath
-                width: parent.width
-                placeholderText: "C:/Users/xxx/Downloads/main.123456.com.example.obb"
-                color: theme.text
-                placeholderTextColor: theme.muted
-                font.pixelSize: 12
-                background: Rectangle { radius: 8; color: "#10161c"; border.color: theme.lineSoft }
+            Label {
+                text: qsTr("OBB 檔案：") + (obbSelectedPath.text.length > 0
+                    ? obbSelectedPath.text.replace(/.*[/\\]/, "")
+                    : qsTr("（未選擇）"))
+                color: theme.muted; font.pixelSize: 11
+                width: parent.width; wrapMode: Text.WordWrap
             }
             Label { text: qsTr("目標 Package 名稱（如 com.example.game）："); color: theme.text; font.pixelSize: 12 }
             TextField {
@@ -1928,6 +1935,8 @@ ApplicationWindow {
             }
         }
     }
+    // Invisible storage for the selected OBB path
+    TextField { id: obbSelectedPath; visible: false }
 
     // Pull file from /sdcard/Download/ — user types guest filename
     Dialog {
