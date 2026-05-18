@@ -2433,4 +2433,13 @@ ApplicationWindow {
         sequence: "Ctrl+Shift+6"
         onActivated: Qt.openUrlExternally(Qt.url("file:///" + AndroidControls.downloadDir().replace(/\\/g, "/")))
     }
+    Shortcut {
+        sequence: "Ctrl+Shift+F"
+        onActivated: {
+            // Toggle eco mode manually (normally triggered by minimize; this is the BlueStacks parity shortcut)
+            root.visibility = root.visibility === Window.Minimized
+                ? Window.Windowed
+                : Window.Minimized
+        }
+    }
 }
