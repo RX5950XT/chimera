@@ -1092,8 +1092,7 @@ ApplicationWindow {
 
                             DockButton {
                                 Layout.fillWidth: true
-                                text: qsTr("Eco 省電")
-                                detail: qsTr("30 FPS")
+                                text: qsTr("Eco 30FPS")
                                 highlighted: settingsPage.cfg.maxFps === 30
                                 onClicked: {
                                     if (InstanceManager.updateInstanceFps("chimera_dev", 30)) {
