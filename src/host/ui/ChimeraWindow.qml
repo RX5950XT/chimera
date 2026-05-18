@@ -723,6 +723,48 @@ ApplicationWindow {
                         spacing: 10
                         Behavior on opacity { NumberAnimation { duration: 170; easing.type: Easing.OutCubic } }
 
+                        // Pinned Apps — visible only when at least one app is pinned
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            visible: AndroidControls.pinnedApps.length > 0
+
+                            SectionLabel { text: qsTr("常用應用程式") }
+
+                            Repeater {
+                                model: AndroidControls.pinnedApps
+                                delegate: RowLayout {
+                                    required property string modelData
+                                    Layout.fillWidth: true
+                                    spacing: 6
+
+                                    DockButton {
+                                        Layout.fillWidth: true
+                                        text: modelData.includes(".")
+                                            ? modelData.substring(modelData.lastIndexOf(".") + 1)
+                                            : modelData
+                                        highlighted: true
+                                        onClicked: {
+                                            AndroidControls.launchPackage(modelData)
+                                            lastActionStatus = qsTr("已啟動：") + modelData
+                                        }
+                                    }
+                                    DockButton {
+                                        text: "×"
+                                        implicitWidth: 32
+                                        onClicked: AndroidControls.unpinApp(modelData)
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.bottomMargin: 2
+                                Layout.preferredHeight: 1
+                                color: theme.lineSoft
+                            }
+                        }
+
                         SectionLabel { text: qsTr("ANDROID 導航") }
 
                         RowLayout {
@@ -1156,6 +1198,14 @@ ApplicationWindow {
                                         elide: Text.ElideRight
                                     }
                                     DockButton {
+                                        text: AndroidControls.pinnedApps.includes(modelData)
+                                            ? qsTr("已釘") : qsTr("釘選")
+                                        highlighted: AndroidControls.pinnedApps.includes(modelData)
+                                        onClicked: AndroidControls.pinnedApps.includes(modelData)
+                                            ? AndroidControls.unpinApp(modelData)
+                                            : AndroidControls.pinApp(modelData)
+                                    }
+                                    DockButton {
                                         text: qsTr("啟動")
                                         highlighted: true
                                         onClicked: AndroidControls.launchPackage(modelData)
@@ -1171,6 +1221,7 @@ ApplicationWindow {
                                     DockButton {
                                         text: qsTr("卸載")
                                         onClicked: {
+                                            AndroidControls.unpinApp(modelData)
                                             AndroidControls.uninstallPackage(modelData)
                                             Qt.callLater(() => AndroidControls.refreshInstalledPackages())
                                         }
@@ -1560,6 +1611,13 @@ ApplicationWindow {
                             }
                         }
 
+                        SectionLabel { text: qsTr("手勢模擬") }
+                        DockButton {
+                            Layout.fillWidth: true
+                            text: qsTr("震動裝置")
+                            onClicked: AndroidControls.shakeDevice()
+                        }
+
                         Item { Layout.fillHeight: true }
                     }
 
@@ -1911,6 +1969,99 @@ ApplicationWindow {
                                 text: qsTr("亮")
                                 color: theme.muted
                                 font.pixelSize: 11
+                            }
+                        }
+
+                        SectionLabel { text: qsTr("網路 Proxy") }
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            height: proxyCol.implicitHeight + 20
+                            radius: 11
+                            color: theme.card
+                            border.color: AndroidControls.proxyEnabled ? "#2f6b51" : theme.lineSoft
+
+                            ColumnLayout {
+                                id: proxyCol
+                                anchors { left: parent.left; right: parent.right; top: parent.top; margins: 10 }
+                                spacing: 6
+
+                                Label {
+                                    text: AndroidControls.proxyEnabled
+                                        ? qsTr("目前：%1:%2").arg(AndroidControls.proxyHost).arg(AndroidControls.proxyPort)
+                                        : qsTr("未設定")
+                                    color: AndroidControls.proxyEnabled ? theme.accent : theme.muted
+                                    font.pixelSize: 11
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 6
+                                    TextField {
+                                        id: proxyHostField
+                                        Layout.fillWidth: true
+                                        placeholderText: qsTr("主機 / IP")
+                                        text: AndroidControls.proxyHost
+                                        color: theme.text
+                                        placeholderTextColor: theme.muted
+                                        font.pixelSize: 12
+                                        leftPadding: 8; rightPadding: 8
+                                        background: Rectangle {
+                                            radius: 7; color: "#10161c"
+                                            border.color: parent.activeFocus ? theme.accent : theme.lineSoft
+                                        }
+                                    }
+                                    TextField {
+                                        id: proxyPortField
+                                        implicitWidth: 70
+                                        placeholderText: "8080"
+                                        text: AndroidControls.proxyPort > 0 ? AndroidControls.proxyPort.toString() : ""
+                                        color: theme.text
+                                        placeholderTextColor: theme.muted
+                                        font.pixelSize: 12
+                                        leftPadding: 8; rightPadding: 8
+                                        validator: IntValidator { bottom: 1; top: 65535 }
+                                        background: Rectangle {
+                                            radius: 7; color: "#10161c"
+                                            border.color: parent.activeFocus ? theme.accent : theme.lineSoft
+                                        }
+                                    }
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 6
+                                    DockButton {
+                                        Layout.fillWidth: true
+                                        text: qsTr("套用 Proxy")
+                                        highlighted: true
+                                        onClicked: AndroidControls.setNetworkProxy(
+                                            proxyHostField.text, parseInt(proxyPortField.text) || 0)
+                                    }
+                                    DockButton {
+                                        Layout.fillWidth: true
+                                        text: qsTr("清除 Proxy")
+                                        enabled: AndroidControls.proxyEnabled
+                                        onClicked: AndroidControls.clearNetworkProxy()
+                                    }
+                                }
+                            }
+                        }
+
+                        SectionLabel { text: qsTr("網速模擬（Console）") }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Repeater {
+                                model: ["full", "lte", "hsdpa", "umts", "edge", "gprs"]
+                                delegate: DockButton {
+                                    required property string modelData
+                                    Layout.fillWidth: true
+                                    text: modelData.toUpperCase()
+                                    onClicked: {
+                                        AndroidControls.setNetworkSpeed(modelData)
+                                        lastActionStatus = qsTr("網速：") + modelData.toUpperCase()
+                                    }
+                                }
                             }
                         }
 

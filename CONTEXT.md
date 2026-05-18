@@ -238,4 +238,14 @@ Chimera 的等效路徑：Android Console `event` protocol on port 5554（繞過
 - ✅ **Bug：sendAndroidKeyCode 永遠走 ADB**：Back/Home/Recents/Menu 即使 Console Ready 仍走慢速 ADB → 改為優先 `sendKeyEvent()` via Console
 - ✅ **Tests**：15/15 PASS（無迴歸）
 
-*Updated: 2026-05-19 — Session 5*
+---
+
+## Session 6 補強（2026-05-19）
+
+- ✅ **Pinned Apps 釘選常用應用**：`pinApp(pkg)` / `unpinApp(pkg)` 持久化至 `QSettings("chimera/pinnedApps")`；主側邊欄頂部「常用應用程式」section（有釘選時顯示）；App Manager 每個 item 加入「釘選/已釘」toggle；卸載時自動 unpinApp
+- ✅ **Network Proxy 設定**：`setNetworkProxy(host, port)` → 三段 chained QProcess 設定 `global_http_proxy_host` / `global_http_proxy_port` / `http_proxy`；`clearNetworkProxy()` 刪除設定；`proxyEnabled` / `proxyHost` / `proxyPort` Q_PROPERTY reactive；Settings 頁面加入 proxy host/port 欄位 + Apply/Clear 按鈕
+- ✅ **Network Speed 模擬**：`AndroidConsoleInput::sendNetworkSpeed(profile)` → `network speed <profile>` telnet 指令；`setNetworkSpeed(profile)` → Settings 頁 6 個按鈕（FULL/LTE/HSDPA/UMTS/EDGE/GPRS）
+- ✅ **Shake 震動模擬**：3 段快速加速度脈衝（±15 m/s²，80ms 間隔）→ Console sensor injection；Sensor/Battery 頁「震動裝置」按鈕
+- ✅ **Tests**：15/15 PASS（無迴歸）
+
+*Updated: 2026-05-19 — Session 6*

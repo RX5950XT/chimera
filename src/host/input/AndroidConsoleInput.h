@@ -81,6 +81,9 @@ public:
     // Inject unicode text: sets clipboard then sends KEYCODE_PASTE (279).
     bool sendText(const std::string &utf8text);
 
+    // Network speed simulation: speedProfile = "full"|"lte"|"hsdpa"|"umts"|"edge"|"gprs"
+    bool sendNetworkSpeed(const std::string &speedProfile);
+
 signals:
     void stateChanged(State state);
 

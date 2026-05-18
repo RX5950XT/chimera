@@ -11,6 +11,8 @@
 #include <QFile>
 #include <QDateTime>
 #include <QStandardPaths>
+#include <QSettings>
+#include <QTimer>
 #include <algorithm>
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -22,6 +24,8 @@ namespace chimera {
 QmlAndroidControls::QmlAndroidControls(QObject *parent)
     : QObject(parent)
 {
+    QSettings s;
+    m_pinnedApps = s.value(QStringLiteral("chimera/pinnedApps")).toStringList();
 }
 
 bool QmlAndroidControls::back() {
@@ -473,6 +477,106 @@ void QmlAndroidControls::setAirplaneMode(bool enabled) {
                  "airplane-mode", val},
                 enabled ? tr("飛行模式已開啟") : tr("飛行模式已關閉"),
                 tr("無法切換飛行模式"));
+}
+
+void QmlAndroidControls::setNetworkProxy(const QString &host, int port) {
+    if (host.trimmed().isEmpty() || port <= 0 || port > 65535) {
+        setInstallStatus(tr("Proxy 設定無效（需要主機名稱與 1-65535 的連接埠）"));
+        return;
+    }
+    if (m_adbExe.isEmpty()) { setInstallStatus(tr("ADB 尚未設定")); return; }
+    const QString portStr  = QString::number(port);
+    const QString combined = host.trimmed() + ":" + portStr;
+    // Three chained one-shot processes: set host → set port → set http_proxy shorthand
+    auto *p1 = new QProcess(this);
+    auto *p2 = new QProcess(this);
+    auto *p3 = new QProcess(this);
+    connect(p1, &QProcess::finished, this, [this,p1,p2,p3,host,port,portStr,combined](int,QProcess::ExitStatus){
+        p1->deleteLater();
+        connect(p2, &QProcess::finished, this, [this,p2,p3,host,port,combined](int,QProcess::ExitStatus){
+            p2->deleteLater();
+            connect(p3, &QProcess::finished, this, [this,p3,host,port](int code,QProcess::ExitStatus){
+                p3->deleteLater();
+                if (code == 0) {
+                    m_proxyEnabled = true;
+                    m_proxyHost    = host.trimmed();
+                    m_proxyPort    = port;
+                    emit proxyChanged();
+                    setInstallStatus(tr("Proxy 已設定：%1:%2").arg(m_proxyHost).arg(port));
+                } else {
+                    setInstallStatus(tr("Proxy 設定失敗"));
+                }
+            });
+            p3->start(m_adbExe, {"-s", m_adbSerial, "shell", "settings", "put", "global",
+                                 "http_proxy", combined});
+        });
+        p2->start(m_adbExe, {"-s", m_adbSerial, "shell", "settings", "put", "global",
+                             "global_http_proxy_port", portStr});
+    });
+    p1->start(m_adbExe, {"-s", m_adbSerial, "shell", "settings", "put", "global",
+                         "global_http_proxy_host", host.trimmed()});
+}
+
+void QmlAndroidControls::clearNetworkProxy() {
+    if (m_adbExe.isEmpty()) { setInstallStatus(tr("ADB 尚未設定")); return; }
+    auto *p1 = new QProcess(this);
+    auto *p2 = new QProcess(this);
+    connect(p1, &QProcess::finished, this, [this,p1,p2](int,QProcess::ExitStatus){
+        p1->deleteLater();
+        connect(p2, &QProcess::finished, this, [this,p2](int code,QProcess::ExitStatus){
+            p2->deleteLater();
+            if (code == 0) {
+                m_proxyEnabled = false;
+                m_proxyHost.clear();
+                m_proxyPort = 0;
+                emit proxyChanged();
+                setInstallStatus(tr("Proxy 已清除"));
+            } else {
+                setInstallStatus(tr("Proxy 清除失敗"));
+            }
+        });
+        p2->start(m_adbExe, {"-s", m_adbSerial, "shell", "settings", "delete", "global", "http_proxy"});
+    });
+    p1->start(m_adbExe, {"-s", m_adbSerial, "shell", "settings", "delete", "global", "global_http_proxy_host"});
+}
+
+void QmlAndroidControls::setNetworkSpeed(const QString &profile) {
+    if (!m_consoleInput || !m_consoleInput->isConnected()) {
+        setInstallStatus(tr("Console 未連線，無法設定網速"));
+        return;
+    }
+    if (m_consoleInput->sendNetworkSpeed(profile.toStdString()))
+        setInstallStatus(tr("網速已設定：") + profile);
+    else
+        setInstallStatus(tr("網速設定失敗"));
+}
+
+void QmlAndroidControls::shakeDevice() {
+    if (!m_consoleInput || !m_consoleInput->isConnected()) {
+        setInstallStatus(tr("Console 未連線，無法震動"));
+        return;
+    }
+    // 3 rapid left-right acceleration pulses then return to normal gravity
+    m_consoleInput->sendSensor("acceleration",  15.0, 0.0, 9.8);
+    QTimer::singleShot( 80, this, [this](){ if (m_consoleInput) m_consoleInput->sendSensor("acceleration", -15.0, 0.0, 9.8); });
+    QTimer::singleShot(160, this, [this](){ if (m_consoleInput) m_consoleInput->sendSensor("acceleration",  15.0, 0.0, 9.8); });
+    QTimer::singleShot(240, this, [this](){ if (m_consoleInput) m_consoleInput->sendSensor("acceleration",   0.0, 9.8, 0.0); });
+    setInstallStatus(tr("震動模擬已發送"));
+}
+
+void QmlAndroidControls::pinApp(const QString &packageName) {
+    if (packageName.isEmpty() || m_pinnedApps.contains(packageName)) return;
+    m_pinnedApps.prepend(packageName);
+    QSettings s;
+    s.setValue(QStringLiteral("chimera/pinnedApps"), m_pinnedApps);
+    emit pinnedAppsChanged();
+}
+
+void QmlAndroidControls::unpinApp(const QString &packageName) {
+    if (!m_pinnedApps.removeAll(packageName)) return;
+    QSettings s;
+    s.setValue(QStringLiteral("chimera/pinnedApps"), m_pinnedApps);
+    emit pinnedAppsChanged();
 }
 
 void QmlAndroidControls::setEcoMode(bool enabled) {

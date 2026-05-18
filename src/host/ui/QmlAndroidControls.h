@@ -19,6 +19,10 @@ class QmlAndroidControls : public QObject {
     Q_PROPERTY(bool        gpsSimulating      READ isGpsSimulating    NOTIFY gpsChanged)
     Q_PROPERTY(QStringList installedPackages  READ installedPackages  NOTIFY installedPackagesChanged)
     Q_PROPERTY(QStringList guestDownloads     READ guestDownloads     NOTIFY guestDownloadsChanged)
+    Q_PROPERTY(QStringList pinnedApps         READ pinnedApps         NOTIFY pinnedAppsChanged)
+    Q_PROPERTY(bool        proxyEnabled       READ proxyEnabled       NOTIFY proxyChanged)
+    Q_PROPERTY(QString     proxyHost          READ proxyHost          NOTIFY proxyChanged)
+    Q_PROPERTY(int         proxyPort          READ proxyPort          NOTIFY proxyChanged)
 
 public:
     explicit QmlAndroidControls(QObject *parent = nullptr);
@@ -83,6 +87,21 @@ public:
     // System controls
     Q_INVOKABLE void setAirplaneMode(bool enabled);
 
+    // Network proxy (takes effect immediately via ADB global settings)
+    Q_INVOKABLE void setNetworkProxy(const QString &host, int port);
+    Q_INVOKABLE void clearNetworkProxy();
+
+    // Network speed throttle via Android Console (emulator only)
+    // profile: "full" | "lte" | "hsdpa" | "umts" | "edge" | "gprs"
+    Q_INVOKABLE void setNetworkSpeed(const QString &profile);
+
+    // Simulate device shake (3 rapid acceleration pulses)
+    Q_INVOKABLE void shakeDevice();
+
+    // Pinned apps: persist across sessions; quick-launch from sidebar
+    Q_INVOKABLE void pinApp(const QString &packageName);
+    Q_INVOKABLE void unpinApp(const QString &packageName);
+
     // App management (async; monitor installedPackages property for result)
     Q_INVOKABLE void refreshInstalledPackages();
     Q_INVOKABLE QStringList listInstalledPackages();  // synchronous fallback (deprecated)
@@ -112,6 +131,10 @@ public:
     double      gpsLongitude()      const { return m_gpsLon; }
     QStringList installedPackages() const { return m_installedPackages; }
     QStringList guestDownloads()    const { return m_guestDownloads; }
+    QStringList pinnedApps()        const { return m_pinnedApps; }
+    bool        proxyEnabled()      const { return m_proxyEnabled; }
+    QString     proxyHost()         const { return m_proxyHost; }
+    int         proxyPort()         const { return m_proxyPort; }
 
 signals:
     void installStatusChanged(const QString &status);
@@ -119,6 +142,8 @@ signals:
     void notificationRequested(const QString &title, const QString &message);
     void installedPackagesChanged();
     void guestDownloadsChanged();
+    void pinnedAppsChanged();
+    void proxyChanged();
 
 private:
     bool sendKey(int keyCode) const;
@@ -135,6 +160,10 @@ private:
     uint32_t    m_emulatorPid = 0;
     QStringList m_installedPackages;
     QStringList m_guestDownloads;
+    QStringList m_pinnedApps;
+    bool        m_proxyEnabled = false;
+    QString     m_proxyHost;
+    int         m_proxyPort = 0;
 };
 
 } // namespace chimera

@@ -309,4 +309,10 @@ bool AndroidConsoleInput::sendText(const std::string &utf8text) {
     return true;
 }
 
+bool AndroidConsoleInput::sendNetworkSpeed(const std::string &speedProfile) {
+    if (!isConnected() || speedProfile.empty()) return false;
+    sendLine(QStringLiteral("network speed ") + QString::fromStdString(speedProfile));
+    return true;
+}
+
 } // namespace chimera::input
