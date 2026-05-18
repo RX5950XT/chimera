@@ -24,9 +24,12 @@ bool AudioBridge::initialize(const Config &config) {
         std::cerr << "AudioBridge: CoInitializeEx failed " << hr << "\n";
         return false;
     }
+    // S_OK means we own this COM init; RPC_E_CHANGED_MODE means someone else does
+    m_coOwned = (hr == S_OK);
 
     if (!initRenderDevice()) {
-        CoUninitialize();
+        if (m_coOwned) CoUninitialize();
+        m_coOwned = false;
         return false;
     }
 
@@ -51,7 +54,10 @@ void AudioBridge::shutdown() {
     if (m_pCaptureClient) { m_pCaptureClient->Release(); m_pCaptureClient = nullptr; }
     if (m_pCaptureDevice) { m_pCaptureDevice->Release(); m_pCaptureDevice = nullptr; }
 
-    CoUninitialize();
+    if (m_coOwned) {
+        CoUninitialize();
+        m_coOwned = false;
+    }
     m_initialized = false;
 }
 

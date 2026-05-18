@@ -46,3 +46,5 @@ add_chimera_test(test-clipboard-bridge test_clipboard_bridge.cpp chimera-integra
 add_chimera_test(test-location-simulator test_location_simulator.cpp chimera-integration)
 add_chimera_test(test-device-spoofer test_device_spoofer.cpp chimera-instance)
 add_chimera_test(test-macro-engine test_macro_engine.cpp chimera-input)
+add_chimera_test(test-gamepad-manager test_gamepad_manager.cpp chimera-input)
+add_chimera_test(test-audio-bridge test_audio_bridge.cpp chimera-audio)
