@@ -648,6 +648,22 @@ ApplicationWindow {
                                         font.weight: Font.DemiBold
                                     }
                                 }
+
+                                ColumnLayout {
+                                    spacing: 0
+                                    visible: !nativeDisplay.attached && PerfMonitor.visibleLatencyMs >= 0
+                                    Label {
+                                        text: qsTr("延遲")
+                                        color: theme.muted
+                                        font.pixelSize: 10
+                                    }
+                                    Label {
+                                        text: PerfMonitor.visibleLatencyMs.toFixed(0) + "ms"
+                                        color: PerfMonitor.visibleLatencyMs > 50 ? theme.warn : theme.text
+                                        font.pixelSize: 12
+                                        font.weight: Font.DemiBold
+                                    }
+                                }
                             }
                         }
                     }
