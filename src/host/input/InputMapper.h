@@ -32,6 +32,7 @@ public:
 
     const std::vector<InputMapping> &getMappings() const { return m_mappings; }
     void addMapping(const InputMapping &mapping);
+    void insertMapping(size_t index, const InputMapping &mapping);
     void removeMapping(size_t index);
     void clearMappings();
 

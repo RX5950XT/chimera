@@ -83,6 +83,14 @@ void InputMapper::addMapping(const InputMapping &mapping) {
     m_mappings.push_back(mapping);
 }
 
+void InputMapper::insertMapping(size_t index, const InputMapping &mapping) {
+    if (index >= m_mappings.size()) {
+        m_mappings.push_back(mapping);
+    } else {
+        m_mappings.insert(m_mappings.begin() + static_cast<std::ptrdiff_t>(index), mapping);
+    }
+}
+
 void InputMapper::removeMapping(size_t index) {
     if (index < m_mappings.size()) {
         m_mappings.erase(m_mappings.begin() + index);

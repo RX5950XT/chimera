@@ -2,19 +2,12 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
+import Chimera.UI 1.0
 
 Item {
     id: overlay
 
     property bool editing: false
-
-    ListModel {
-        id: controlsModel
-        ListElement { type: "tap"; px: 74; py: 78; key: "1"; label: "技能 1" }
-        ListElement { type: "tap"; px: 82; py: 78; key: "2"; label: "技能 2" }
-        ListElement { type: "tap"; px: 90; py: 78; key: "3"; label: "技能 3" }
-        ListElement { type: "dpad"; px: 12; py: 62; key: "WASD"; label: "移動" }
-    }
 
     Rectangle {
         anchors.fill: parent
@@ -26,27 +19,28 @@ Item {
     }
 
     Repeater {
-        model: controlsModel
+        model: InputMapper.mappings
 
         delegate: Rectangle {
             id: bubble
-            required property string type
-            required property real px
-            required property real py
-            required property string key
-            required property string label
+            required property var modelData
+            required property int index
 
-            x: parent.width * (px / 100.0)
-            y: parent.height * (py / 100.0)
-            width: type === "dpad" ? 124 : 56
-            height: type === "dpad" ? 124 : 56
-            radius: type === "dpad" ? 16 : width / 2
+            readonly property bool isDpad: modelData.type === "dpad"
+            readonly property string keyLabel: modelData.key || "?"
+            readonly property string textLabel: modelData.guidance || modelData.type
+
+            x: overlay.width  * (modelData.x / 100.0) - width  / 2
+            y: overlay.height * (modelData.y / 100.0) - height / 2
+            width:  isDpad ? 120 : 54
+            height: isDpad ? 120 : 54
+            radius: isDpad ? 16 : width / 2
             border.color: "#eef4f1"
             border.width: 1.5
             scale: dragArea.pressed ? 1.08 : 1.0
 
             Behavior on scale { NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
-            Behavior on color { ColorAnimation { duration: 160 } }
+            Behavior on color  { ColorAnimation  { duration: 160 } }
 
             gradient: Gradient {
                 GradientStop { position: 0.0; color: overlay.editing ? "#e83ddc97" : "#bb3ddc97" }
@@ -59,18 +53,21 @@ Item {
 
                 Label {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: bubble.key
+                    text: bubble.keyLabel
                     color: "#06100d"
-                    font.pixelSize: bubble.type === "dpad" ? 18 : 16
+                    font.pixelSize: bubble.isDpad ? 18 : 15
                     font.weight: Font.Black
                 }
                 Label {
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: bubble.label
+                    text: bubble.textLabel
                     color: "#10211b"
-                    font.pixelSize: 10
+                    font.pixelSize: 9
                     font.weight: Font.DemiBold
-                    visible: bubble.type === "dpad"
+                    visible: text.length > 0
+                    elide: Text.ElideRight
+                    width: bubble.width - 8
+                    horizontalAlignment: Text.AlignHCenter
                 }
             }
 
@@ -82,10 +79,28 @@ Item {
                 drag.target: parent
                 drag.minimumX: 0
                 drag.minimumY: 0
-                drag.maximumX: overlay.width - parent.width
+                drag.maximumX: overlay.width  - parent.width
                 drag.maximumY: overlay.height - parent.height
+                onReleased: {
+                    if (overlay.editing) {
+                        const cx = (bubble.x + bubble.width  / 2) / overlay.width  * 100.0
+                        const cy = (bubble.y + bubble.height / 2) / overlay.height * 100.0
+                        InputMapper.updateMappingPosition(bubble.index, cx, cy)
+                    }
+                }
             }
         }
+    }
+
+    // Empty state hint
+    Label {
+        anchors.centerIn: parent
+        visible: InputMapper.mappings.length === 0
+        text: qsTr("尚無鍵位\n請在右側面板載入配置方案")
+        color: "#ccffffff"
+        horizontalAlignment: Text.AlignHCenter
+        font.pixelSize: 13
+        lineHeight: 1.5
     }
 
     Button {

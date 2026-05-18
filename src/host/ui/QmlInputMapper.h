@@ -31,6 +31,7 @@ public:
                                    const QString &label = {});
     Q_INVOKABLE void removeMapping(int index);
     Q_INVOKABLE void clearMappings();
+    Q_INVOKABLE void updateMappingPosition(int index, double xPct, double yPct);
 
 signals:
     void mappingsChanged();

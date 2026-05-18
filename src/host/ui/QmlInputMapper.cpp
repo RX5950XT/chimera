@@ -71,4 +71,16 @@ void QmlInputMapper::clearMappings() {
     emit mappingsChanged();
 }
 
+void QmlInputMapper::updateMappingPosition(int index, double xPct, double yPct) {
+    auto &mapper = input::InputMapper::instance();
+    const auto &mappings = mapper.getMappings();
+    if (index < 0 || static_cast<size_t>(index) >= mappings.size()) return;
+    input::InputMapping m = mappings[static_cast<size_t>(index)];
+    m.x = static_cast<float>(xPct);
+    m.y = static_cast<float>(yPct);
+    mapper.removeMapping(static_cast<size_t>(index));
+    mapper.insertMapping(static_cast<size_t>(index), m);
+    emit mappingsChanged();
+}
+
 } // namespace chimera
