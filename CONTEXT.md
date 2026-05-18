@@ -175,7 +175,17 @@ Chimera 的等效路徑：Android Console `event` protocol on port 5554（繞過
 | MAX_SAMPLES symbol | build error | Header 定義 `kMaxSamples`，.cpp 用 `MAX_SAMPLES` | 統一用 `kMaxSamples` | Session 2 |
 | CoordinateMapper center test | 期望 (640,360) 但得到 (639,359) | `gx = nx * (m_guestW - 1)`，center 0.5 * 1279 = 639.5 → 639 | 修正測試期望值 | Session 2 |
 | MemoryTrimmer | trim 無效 | `am memory-factor set CRITICAL` 語法；正確是 `send-trim-memory` | 修正 ADB 指令 | 0143503 |
+| DockButton `detail` property | `QQmlApplicationEngine failed to load component`，整個視窗黑屏無法開啟 | `DockButton` 沒有 `detail` property，Session 2 誤用（只有 `SideButton`/`NavButton` 有）| 移除 `detail`，把 "30 FPS" 文字合併到 `text` | 66d15d2 |
 
 ---
 
-*Updated: 2026-05-18 — Session 2 complete*
+## Session 3 補強（2026-05-18）
+
+- ✅ **QML crash fix**：`DockButton` 誤用 `detail` property → app 完全無法開啟 → 移除該行，build 通過
+- ✅ **First-boot setup**：`applyGuestFirstBootSetup()` 在每次 `boot_completed=1` 後自動執行：
+  - `device_provisioned=1` + `user_setup_complete=1` → 跳過 Android 設定精靈
+  - `setup_wizard_has_run=1` → 抑制「完成設定」通知
+  - `stay_on_while_plugged_in=3` → 螢幕永不關閉（充電中 = 模擬器永遠在充電）
+  - 預設 IME 設為 Gboard
+
+*Updated: 2026-05-18 — Session 3*
