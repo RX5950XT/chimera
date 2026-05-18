@@ -51,6 +51,9 @@ public:
     // Update FPS cap for an existing instance (takes effect on next start)
     Q_INVOKABLE bool updateInstanceFps(const QString &name, int maxFps);
 
+    // Toggle root mode (takes effect on next start)
+    Q_INVOKABLE bool setEnableRoot(const QString &name, bool enabled);
+
     // State enum for QML
     enum class VMState {
         Stopped = 0,

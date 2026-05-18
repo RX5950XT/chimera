@@ -73,6 +73,9 @@ public:
     // Update max FPS for a saved instance (takes effect on next start)
     bool setMaxFps(const std::string &name, int maxFps);
 
+    // Toggle root mode for a saved instance (takes effect on next start)
+    bool setEnableRoot(const std::string &name, bool enabled);
+
     // Callbacks
     using StateCallback = std::function<void(const std::string &name, VMState state)>;
     void setStateCallback(StateCallback cb);

@@ -478,6 +478,18 @@ bool InstanceManager::setMaxFps(const std::string &name, int maxFps) {
     return false;
 }
 
+bool InstanceManager::setEnableRoot(const std::string &name, bool enabled) {
+    if (!isValidInstanceName(name)) return false;
+    for (auto &cfg : d->savedConfigs) {
+        if (cfg.name == name) {
+            cfg.enableRoot = enabled;
+            saveInstances();
+            return true;
+        }
+    }
+    return false;
+}
+
 void InstanceManager::sortByName() {
     std::sort(d->savedConfigs.begin(), d->savedConfigs.end(),
               [](const InstanceConfig &a, const InstanceConfig &b) {

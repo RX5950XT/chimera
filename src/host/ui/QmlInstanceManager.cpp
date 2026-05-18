@@ -105,6 +105,7 @@ QVariantMap QmlInstanceManager::instanceFullConfig(const QString &name) const {
     m[QStringLiteral("graphicsEngine")]   = QString::fromStdString(cfg.graphicsEngine);
     m[QStringLiteral("graphicsRenderer")] = QString::fromStdString(cfg.graphicsRenderer);
     m[QStringLiteral("enableVsync")]      = cfg.enableVsync;
+    m[QStringLiteral("enableRoot")]       = cfg.enableRoot;
     m[QStringLiteral("headless")]         = cfg.headless;
     return m;
 }
@@ -112,6 +113,11 @@ QVariantMap QmlInstanceManager::instanceFullConfig(const QString &name) const {
 bool QmlInstanceManager::updateInstanceFps(const QString &name, int maxFps) {
     return chimera::instance::InstanceManager::instance().setMaxFps(
         name.toStdString(), maxFps);
+}
+
+bool QmlInstanceManager::setEnableRoot(const QString &name, bool enabled) {
+    return chimera::instance::InstanceManager::instance().setEnableRoot(
+        name.toStdString(), enabled);
 }
 
 QVariantMap QmlInstanceManager::instanceRuntimeConfig(const QString &name) const {

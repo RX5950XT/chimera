@@ -1062,11 +1062,43 @@ ApplicationWindow {
                             }
                         }
 
+                        SectionLabel { text: qsTr("進階") }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            DockButton {
+                                Layout.fillWidth: true
+                                text: qsTr("Eco 省電")
+                                detail: qsTr("30 FPS")
+                                highlighted: settingsPage.cfg.maxFps === 30
+                                onClicked: {
+                                    if (InstanceManager.updateInstanceFps("chimera_dev", 30)) {
+                                        settingsPage.cfg = InstanceManager.instanceFullConfig("chimera_dev")
+                                        lastActionStatus = qsTr("Eco 模式已啟用（30 FPS）")
+                                    }
+                                }
+                            }
+                            DockButton {
+                                Layout.fillWidth: true
+                                text: settingsPage.cfg.enableRoot ? qsTr("Root 開") : qsTr("Root 關")
+                                highlighted: settingsPage.cfg.enableRoot === true
+                                onClicked: {
+                                    const cur = settingsPage.cfg.enableRoot === true
+                                    if (InstanceManager.setEnableRoot("chimera_dev", !cur)) {
+                                        settingsPage.cfg = InstanceManager.instanceFullConfig("chimera_dev")
+                                        lastActionStatus = qsTr("Root ") + (!cur ? qsTr("已啟用") : qsTr("已停用")) + qsTr("（下次啟動生效）")
+                                    }
+                                }
+                            }
+                        }
+
                         Item { Layout.fillHeight: true }
 
                         Label {
                             Layout.fillWidth: true
-                            text: qsTr("CPU / RAM 變更需重新建立 Instance")
+                            text: qsTr("CPU / RAM / Root 變更需重啟 Instance")
                             color: theme.muted
                             wrapMode: Text.WordWrap
                             font.pixelSize: 11
