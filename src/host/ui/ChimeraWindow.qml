@@ -881,6 +881,61 @@ ApplicationWindow {
                             }
                         }
 
+                        SectionLabel { text: qsTr("載入 / 儲存方案") }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 7
+                            ComboBox {
+                                id: schemeCombo
+                                Layout.fillWidth: true
+                                model: InputMapper.listSchemes()
+                                displayText: currentIndex >= 0 ? currentText : qsTr("選擇方案…")
+                                font.pixelSize: 12
+                                contentItem: Text {
+                                    leftPadding: 12
+                                    text: schemeCombo.displayText
+                                    font: schemeCombo.font
+                                    color: theme.text
+                                    verticalAlignment: Text.AlignVCenter
+                                    elide: Text.ElideRight
+                                }
+                                background: Rectangle {
+                                    radius: 9
+                                    color: theme.panelSoft
+                                    border.color: schemeCombo.down ? theme.accent : theme.line
+                                    Behavior on border.color { ColorAnimation { duration: 120 } }
+                                }
+                                popup: Popup {
+                                    y: schemeCombo.height
+                                    width: schemeCombo.width
+                                    padding: 4
+                                    contentItem: ListView {
+                                        implicitHeight: contentHeight
+                                        model: schemeCombo.delegateModel
+                                        clip: true
+                                    }
+                                    background: Rectangle { radius: 9; color: theme.panel; border.color: theme.line }
+                                }
+                            }
+                            DockButton {
+                                text: qsTr("載入")
+                                enabled: schemeCombo.currentIndex >= 0
+                                onClicked: {
+                                    if (InputMapper.loadScheme(schemeCombo.currentText))
+                                        lastActionStatus = qsTr("已載入：") + schemeCombo.currentText
+                                }
+                            }
+                            DockButton {
+                                text: qsTr("儲存")
+                                enabled: schemeCombo.currentIndex >= 0
+                                onClicked: {
+                                    if (InputMapper.saveScheme(schemeCombo.currentText))
+                                        lastActionStatus = qsTr("已儲存：") + schemeCombo.currentText
+                                }
+                            }
+                        }
+
                         SectionLabel { text: qsTr("目前鍵位綁定") }
 
                         ListView {
