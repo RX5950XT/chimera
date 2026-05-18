@@ -178,7 +178,7 @@ bool DeviceSpoofer::modifyBuildProp(const std::filesystem::path &buildPropPath,
 
 bool DeviceSpoofer::applyProfile(const DeviceProfile &profile, const std::string &avdName) {
     auto avdDir = getAvdDirectory(avdName);
-    if (avdDir.empty()) return false;
+    if (avdDir.empty() || !std::filesystem::exists(avdDir / "config.ini")) return false;
 
     // Create overlay directory for build.prop modifications
     auto overlayDir = avdDir / "overlay" / "system";
