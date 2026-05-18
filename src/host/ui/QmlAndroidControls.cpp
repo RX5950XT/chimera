@@ -186,6 +186,35 @@ void QmlAndroidControls::pushFileToGuest(const QString &fileUrl) {
     }
 }
 
+void QmlAndroidControls::startGpsRoute(const QVariantList &waypoints, double speedKmh) {
+    std::vector<integration::GeoPoint> route;
+    route.reserve(static_cast<size_t>(waypoints.size()));
+    for (const QVariant &pt : waypoints) {
+        const QVariantList ll = pt.toList();
+        if (ll.size() < 2) continue;
+        route.push_back({ll[0].toDouble(), ll[1].toDouble(), ll.size() > 2 ? ll[2].toDouble() : 0.0});
+    }
+    if (route.size() < 2) {
+        setInstallStatus(tr("路線模擬需至少 2 個航點"));
+        return;
+    }
+    const double speedMps = speedKmh / 3.6;
+    integration::LocationSimulator::instance().loadRoute(route);
+    integration::LocationSimulator::instance().startSimulation(speedMps);
+    setInstallStatus(tr("GPS 路線模擬已啟動（%1 km/h）").arg(static_cast<int>(speedKmh)));
+    emit gpsChanged();
+}
+
+void QmlAndroidControls::stopGpsRoute() {
+    integration::LocationSimulator::instance().stopSimulation();
+    setInstallStatus(tr("GPS 路線模擬已停止"));
+    emit gpsChanged();
+}
+
+bool QmlAndroidControls::isGpsSimulating() const {
+    return integration::LocationSimulator::instance().isSimulating();
+}
+
 void QmlAndroidControls::syncClipboardToGuest() {
     integration::ClipboardBridge::instance().syncHostToGuest();
     setInstallStatus(tr("剪貼簿已同步至 Android"));

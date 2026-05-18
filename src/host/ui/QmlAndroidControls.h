@@ -39,6 +39,11 @@ public:
     // Set GPS location in the guest (lat, lon in decimal degrees, alt in metres)
     Q_INVOKABLE void setGpsLocation(double lat, double lon, double altMetres = 0.0);
 
+    // GPS route simulation: waypoints as [[lat,lon], ...], speedKmh in km/h
+    Q_INVOKABLE void startGpsRoute(const QVariantList &waypoints, double speedKmh = 30.0);
+    Q_INVOKABLE void stopGpsRoute();
+    Q_INVOKABLE bool isGpsSimulating() const;
+
     // Clipboard: push current Windows clipboard text to the guest Android
     Q_INVOKABLE void syncClipboardToGuest();
 

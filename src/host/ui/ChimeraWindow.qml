@@ -1234,6 +1234,39 @@ ApplicationWindow {
                             }
                         }
 
+                        // Route simulation
+                        SectionLabel { text: qsTr("路線模擬"); Layout.fillWidth: true }
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: AndroidControls.isGpsSimulating()
+                                ? qsTr("🟢 路線模擬進行中")
+                                : qsTr("⚪ 路線模擬已停止")
+                            color: AndroidControls.isGpsSimulating() ? theme.accent : theme.muted
+                            font.pixelSize: 12
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 7
+                            DockButton {
+                                Layout.fillWidth: true
+                                text: qsTr("台北→東京 路線")
+                                highlighted: true
+                                onClicked: {
+                                    AndroidControls.startGpsRoute(
+                                        [[25.033, 121.565], [25.5, 123.5], [26.5, 127.0],
+                                         [30.0, 132.0], [33.0, 135.0], [35.676, 139.650]],
+                                        800.0)
+                                }
+                            }
+                            DockButton {
+                                Layout.fillWidth: true
+                                text: qsTr("停止路線")
+                                onClicked: AndroidControls.stopGpsRoute()
+                            }
+                        }
+
                         Item { Layout.fillHeight: true }
                     }
 
