@@ -20,6 +20,7 @@ class GuestDisplay : public QQuickPaintedItem {
     Q_PROPERTY(QImage frame READ frame WRITE setFrame NOTIFY frameChanged)
     Q_PROPERTY(bool hasFrame READ hasFrame NOTIFY frameChanged)
     Q_PROPERTY(bool mouseLocked READ isMouseLocked NOTIFY mouseLockChanged)
+    Q_PROPERTY(int cursorMode READ cursorMode WRITE setCursorMode NOTIFY cursorModeChanged)
 
 public:
     explicit GuestDisplay(QQuickItem *parent = nullptr);
@@ -36,10 +37,15 @@ public:
     Q_INVOKABLE void setMouseLocked(bool locked);
     bool isMouseLocked() const { return m_mouseLocked; }
 
+    // cursorMode: 0=default arrow, 1=crosshair (game aim mode)
+    Q_INVOKABLE void setCursorMode(int mode);
+    int cursorMode() const { return m_cursorMode; }
+
 signals:
     void frameChanged();
     void framePainted();
     void mouseLockChanged();
+    void cursorModeChanged();
 
 protected:
     void paint(QPainter *painter) override;
@@ -60,6 +66,7 @@ private:
     chimera::input::CoordinateMapper m_mapper;
     bool   m_mouseLocked = false;
     QPointF m_virtualMouse;   // virtual cursor position in guest coordinates (FPS mode)
+    int    m_cursorMode = 0;  // 0=arrow, 1=crosshair
 };
 
 } // namespace chimera

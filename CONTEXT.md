@@ -248,4 +248,11 @@ Chimera 的等效路徑：Android Console `event` protocol on port 5554（繞過
 - ✅ **Shake 震動模擬**：3 段快速加速度脈衝（±15 m/s²，80ms 間隔）→ Console sensor injection；Sensor/Battery 頁「震動裝置」按鈕
 - ✅ **Tests**：15/15 PASS（無迴歸）
 
-*Updated: 2026-05-19 — Session 6*
+---
+
+## Session 7 補強（2026-05-19）
+
+- ✅ **Custom Cursor / 十字準心游標**：`GuestDisplay::setCursorMode(int mode)`（0=標準箭頭，1=十字準心）→ `QQuickItem::setCursor(Qt::CrossCursor)` / `unsetCursor()`；與 FPS mouse lock 正確互動（lock 時 BlankCursor 優先，解鎖後根據 `m_cursorMode` 恢復）；`cursorMode` Q_PROPERTY reactive；側邊欄「游標：十字準心 / 標準」SideButton
+- ✅ **Tests**：15/15 PASS（無迴歸）
+
+*Updated: 2026-05-19 — Session 7*

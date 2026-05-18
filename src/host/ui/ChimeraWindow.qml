@@ -834,6 +834,14 @@ ApplicationWindow {
                         }
                         SideButton {
                             Layout.fillWidth: true
+                            text: guestDisplay.cursorMode === 1 ? qsTr("游標：十字準心") : qsTr("游標：標準")
+                            detail: qsTr("FPS / MOBA")
+                            highlighted: guestDisplay.cursorMode === 1
+                            visible: !nativeDisplay.attached
+                            onClicked: guestDisplay.setCursorMode(guestDisplay.cursorMode === 1 ? 0 : 1)
+                        }
+                        SideButton {
+                            Layout.fillWidth: true
                             text: root.perfHudVisible ? qsTr("隱藏效能 HUD") : qsTr("效能 HUD")
                             detail: qsTr("Ctrl+Shift+P")
                             highlighted: root.perfHudVisible

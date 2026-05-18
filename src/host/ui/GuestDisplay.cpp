@@ -80,8 +80,21 @@ void GuestDisplay::setMouseLocked(bool locked) {
         }
     } else {
         QGuiApplication::restoreOverrideCursor();
+        // Restore item cursor based on current cursor mode
+        if (m_cursorMode == 1) setCursor(Qt::CrossCursor);
+        else unsetCursor();
     }
     emit mouseLockChanged();
+}
+
+void GuestDisplay::setCursorMode(int mode) {
+    if (m_cursorMode == mode) return;
+    m_cursorMode = mode;
+    if (!m_mouseLocked) {
+        if (mode == 1) setCursor(Qt::CrossCursor);
+        else unsetCursor();
+    }
+    emit cursorModeChanged();
 }
 
 void GuestDisplay::paint(QPainter *painter) {
