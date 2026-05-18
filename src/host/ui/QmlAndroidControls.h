@@ -77,6 +77,15 @@ public:
     // Eco mode: lower emulator process priority when minimized (saves CPU)
     Q_INVOKABLE void setEcoMode(bool enabled);
 
+    // Mute/unmute guest audio via KEYCODE_VOLUME_MUTE (164)
+    Q_INVOKABLE bool toggleMute();
+
+    // Manual memory trim: sends RUNNING_CRITICAL trim to all packages
+    Q_INVOKABLE void trimMemory();
+
+    // Returns host Downloads folder path for opening in Explorer
+    Q_INVOKABLE QString downloadDir() const;
+
     // Runtime display controls (take effect immediately via ADB)
     Q_INVOKABLE void setScreenDensity(int dpi);   // adb shell wm density <dpi>
     Q_INVOKABLE void resetScreenDensity();         // adb shell wm density reset

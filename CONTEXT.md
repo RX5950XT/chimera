@@ -255,4 +255,16 @@ Chimera 的等效路徑：Android Console `event` protocol on port 5554（繞過
 - ✅ **Custom Cursor / 十字準心游標**：`GuestDisplay::setCursorMode(int mode)`（0=標準箭頭，1=十字準心）→ `QQuickItem::setCursor(Qt::CrossCursor)` / `unsetCursor()`；與 FPS mouse lock 正確互動（lock 時 BlankCursor 優先，解鎖後根據 `m_cursorMode` 恢復）；`cursorMode` Q_PROPERTY reactive；側邊欄「游標：十字準心 / 標準」SideButton
 - ✅ **Tests**：15/15 PASS（無迴歸）
 
-*Updated: 2026-05-19 — Session 7*
+---
+
+## Session 8 補強（2026-05-19）
+
+- ✅ **缺失鍵盤快捷鍵**（對齊 bluestacks.conf）：`Ctrl+Shift+3`=震動、`Ctrl+Shift+4`=旋轉（循環 0/90/180/270）、`Ctrl+Shift+X`=Boss Key 縮至工作列、`Ctrl+Shift+T`=Trim Memory、`Ctrl+Shift+M`=靜音切換、`Ctrl+Shift+6`=開啟 Downloads 資料夾
+- ✅ **toggleMute()**：`KEYCODE_VOLUME_MUTE(164)` via InputBridge/Console
+- ✅ **trimMemory()**：`adb shell am send-trim-memory com.android.systemui RUNNING_CRITICAL`
+- ✅ **downloadDir()**：`QStandardPaths::DownloadLocation` 回傳路徑供 QML 開啟
+- ✅ **旋轉狀態同步**：`root.currentRotation` property；Settings 頁旋轉按鈕同步更新；`Ctrl+Shift+4` 循環旋轉並顯示狀態；Settings 頁旋轉按鈕 highlighted 反映當前旋轉
+- ✅ **Boss Key**：`root.hide()` + tray notification（雙擊圖示可還原）
+- ✅ **Tests**：15/15 PASS（無迴歸）
+
+*Updated: 2026-05-19 — Session 8*

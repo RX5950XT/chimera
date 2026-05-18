@@ -579,6 +579,22 @@ void QmlAndroidControls::unpinApp(const QString &packageName) {
     emit pinnedAppsChanged();
 }
 
+bool QmlAndroidControls::toggleMute() {
+    // KEYCODE_VOLUME_MUTE = 164
+    return sendKey(164);
+}
+
+void QmlAndroidControls::trimMemory() {
+    runAdbAsync({"-s", m_adbSerial, "shell", "am", "send-trim-memory",
+                 "com.android.systemui", "RUNNING_CRITICAL"},
+                tr("記憶體已整理"),
+                tr("記憶體整理失敗"));
+}
+
+QString QmlAndroidControls::downloadDir() const {
+    return QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+}
+
 void QmlAndroidControls::setEcoMode(bool enabled) {
 #ifdef _WIN32
     if (m_emulatorPid == 0) return;

@@ -22,6 +22,7 @@ ApplicationWindow {
     property bool overlayVisible: false
     property bool perfHudVisible: false
     property string sidePage: "main"
+    property int currentRotation: 0
     property string lastActionStatus: ""
     readonly property bool isFullscreen: visibility === Window.FullScreen
     readonly property bool guestReady: nativeDisplay.attached || guestDisplay.hasFrame
@@ -1846,7 +1847,11 @@ ApplicationWindow {
                                     required property var modelData
                                     Layout.fillWidth: true
                                     text: modelData.label
-                                    onClicked: AndroidControls.setGuestRotation(modelData.deg)
+                                    highlighted: root.currentRotation === modelData.deg
+                                    onClicked: {
+                                        root.currentRotation = modelData.deg
+                                        AndroidControls.setGuestRotation(modelData.deg)
+                                    }
                                 }
                             }
                         }
@@ -2393,5 +2398,39 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+Shift+P"
         onActivated: root.perfHudVisible = !root.perfHudVisible
+    }
+    // BlueStacks-parity shortcuts
+    Shortcut {
+        sequence: "Ctrl+Shift+3"
+        onActivated: AndroidControls.shakeDevice()
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+4"
+        onActivated: {
+            root.currentRotation = (root.currentRotation + 90) % 360
+            AndroidControls.setGuestRotation(root.currentRotation)
+            lastActionStatus = qsTr("旋轉至 ") + root.currentRotation + "°"
+        }
+    }
+    Shortcut {
+        // Boss key: hide window to system tray
+        sequence: "Ctrl+Shift+X"
+        onActivated: {
+            root.hide()
+            trayIcon.showMessage(qsTr("Chimera"), qsTr("Chimera 已縮至工作列，雙擊圖示可還原"))
+        }
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+T"
+        onActivated: AndroidControls.trimMemory()
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+M"
+        onActivated: AndroidControls.toggleMute()
+    }
+    Shortcut {
+        // Open host Downloads folder (where screenshots/recordings land)
+        sequence: "Ctrl+Shift+6"
+        onActivated: Qt.openUrlExternally(Qt.url("file:///" + AndroidControls.downloadDir().replace(/\\/g, "/")))
     }
 }
