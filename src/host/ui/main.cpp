@@ -31,6 +31,7 @@
 #include "HyperVManager.h"
 #include "HvSocketTransport.h"
 #include "HvSocketFramebufferCapture.h"
+#include "LocationSimulator.h"
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <filesystem>
@@ -673,6 +674,13 @@ int main(int argc, char *argv[]) {
             consoleInput->connectToHost(QStringLiteral("127.0.0.1"), 5554);
             qDebug() << "[main] Android Console input wired (CHIMERA_INPUT_BACKEND="
                      << inputBackend.c_str() << ")";
+
+            // Wire LocationSimulator → geo fix via the same console connection
+            chimera::integration::LocationSimulator::instance().setGeoSink(
+                [consoleInput](double lon, double lat, double alt) {
+                    consoleInput->sendGeoFix(lon, lat, alt);
+                });
+            qDebug() << "[main] LocationSimulator geo fix wired via console";
         } else {
             qDebug() << "[main] Console input disabled (CHIMERA_INPUT_BACKEND=" << inputBackend.c_str() << ")";
         }

@@ -48,6 +48,7 @@ target_link_libraries(chimera-ui PRIVATE
     chimera-graphics
     chimera-audio
     chimera-instance
+    chimera-integration
     nlohmann_json
 )
 

@@ -8,8 +8,13 @@ LocationSimulator &LocationSimulator::instance() {
     return inst;
 }
 
+void LocationSimulator::setGeoSink(GeoSink sink) {
+    m_geoSink = std::move(sink);
+}
+
 void LocationSimulator::setLocation(double lat, double lon, double altitude) {
     m_current = {lat, lon, altitude};
+    emitGeoFix(m_current);
 }
 
 GeoPoint LocationSimulator::currentLocation() const {
@@ -36,11 +41,13 @@ bool LocationSimulator::isSimulating() const {
 
 void LocationSimulator::update(double deltaSeconds) {
     if (!m_simulating || m_route.empty() || m_routeIndex >= m_route.size() - 1) return;
-    double step = m_speed * deltaSeconds;
-    GeoPoint &next = m_route[m_routeIndex + 1];
-    double dx = next.latitude - m_current.latitude;
-    double dy = next.longitude - m_current.longitude;
-    double dist = std::sqrt(dx * dx + dy * dy);
+
+    const double step = m_speed * deltaSeconds;
+    const GeoPoint &next = m_route[m_routeIndex + 1];
+    const double dx = next.latitude  - m_current.latitude;
+    const double dy = next.longitude - m_current.longitude;
+    const double dist = std::sqrt(dx * dx + dy * dy);
+
     if (dist < 1e-9) {
         m_routeIndex++;
         return;
@@ -49,9 +56,30 @@ void LocationSimulator::update(double deltaSeconds) {
         m_current = next;
         m_routeIndex++;
     } else {
-        m_current.latitude += (dx / dist) * step;
+        m_current.latitude  += (dx / dist) * step;
         m_current.longitude += (dy / dist) * step;
     }
+
+    emitGeoFix(m_current);
+}
+
+void LocationSimulator::emitGeoFix(const GeoPoint &pt) {
+    if (!m_geoSink) return;
+
+    // Throttle: only emit if enough time has passed OR location moved enough
+    const auto now = std::chrono::steady_clock::now();
+    const double elapsedSec = std::chrono::duration<double>(now - m_lastEmitTime).count();
+    const double dLat = std::abs(pt.latitude  - m_lastEmitted.latitude);
+    const double dLon = std::abs(pt.longitude - m_lastEmitted.longitude);
+
+    if (elapsedSec < kMinIntervalSec && dLat < kMinMovementDeg && dLon < kMinMovementDeg)
+        return;
+
+    m_lastEmitted = pt;
+    m_lastEmitTime = now;
+
+    // Android Console "geo fix" order: longitude, latitude, altitude
+    m_geoSink(pt.longitude, pt.latitude, pt.altitude);
 }
 
 } // namespace chimera::integration
