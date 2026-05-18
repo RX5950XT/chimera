@@ -17,6 +17,7 @@
 #include "InstanceManager.h"
 #include "ConfigManager.h"
 #include "InputBridge.h"
+#include "AndroidConsoleInput.h"
 #include "GamepadManager.h"
 #include "QmpInput.h"
 #include "AudioBridge.h"
@@ -652,16 +653,20 @@ int main(int argc, char *argv[]) {
         chimera::input::InputBridge::instance().setAdbConfig(g_adbPath, 5555);
         chimera::input::InputBridge::instance().setDisplaySize(cfg.width, cfg.height);
 
-        // Try QMP low-latency input with auto-reconnect
-        qmpInput = new chimera::input::QmpInput(&app);
-        qmpInput->setAutoReconnect(true, 5000);
-        qmpInput->setDisplaySize(cfg.width, cfg.height);
-        chimera::input::InputBridge::instance().setQmpInput(qmpInput);
-        bool qmpConnected = qmpInput->connectToHost("localhost", 5554);
-        if (qmpConnected) {
-            qDebug() << "QMP input connected (low-latency mode)";
+        // Android Console input on port 5554 (telnet protocol, NOT JSON QMP).
+        // InputBridge priority: HvSocket > Console > QMP > ADB.
+        // CHIMERA_INPUT_BACKEND=adb disables Console (force-fallback).
+        const char *inputBackendEnv = std::getenv("CHIMERA_INPUT_BACKEND");
+        const std::string inputBackend = inputBackendEnv ? inputBackendEnv : "auto";
+        if (inputBackend != "adb" && inputBackend != "qmp") {
+            auto *consoleInput = new chimera::input::AndroidConsoleInput(&app);
+            consoleInput->setAutoReconnect(true);
+            chimera::input::InputBridge::instance().setConsoleInput(consoleInput);
+            consoleInput->connectToHost(QStringLiteral("127.0.0.1"), 5554);
+            qDebug() << "[main] Android Console input wired (CHIMERA_INPUT_BACKEND="
+                     << inputBackend.c_str() << ")";
         } else {
-            qWarning() << "QMP input not available, falling back to ADB. Will retry every 5s.";
+            qDebug() << "[main] Console input disabled (CHIMERA_INPUT_BACKEND=" << inputBackend.c_str() << ")";
         }
 
         qDebug() << "Guest audio disabled (-no-audio)";

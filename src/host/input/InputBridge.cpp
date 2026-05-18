@@ -1,4 +1,5 @@
 #include "InputBridge.h"
+#include "AndroidConsoleInput.h"
 #include "InputMapper.h"
 #include "QmpInput.h"
 #include "HvSocketTransport.h"
@@ -109,6 +110,18 @@ void InputBridge::setEventCallback(EventCallback cb) {
 void InputBridge::setAdbConfig(const std::filesystem::path &adbPath, int adbPort) {
     m_adbPath = adbPath;
     m_adbPort = adbPort;
+}
+
+void InputBridge::setConsoleInput(AndroidConsoleInput *console) {
+    m_consoleInput = console;
+}
+
+bool InputBridge::hasConsoleMouse() const {
+    return m_consoleInput != nullptr && m_consoleInput->isMouseReady();
+}
+
+bool InputBridge::hasConsoleKeyboard() const {
+    return m_consoleInput != nullptr && m_consoleInput->isKeyboardReady();
 }
 
 void InputBridge::setQmpInput(QmpInput *qmp) {
@@ -337,7 +350,9 @@ void InputBridge::onGamepadAxis(int deviceId, int axis, float value) {
     default: return;
     }
 
-    if (hasQmp()) {
+    if (hasConsoleMouse()) {
+        m_consoleInput->sendMouseMove((m_displayWidth / 2) + dx, (m_displayHeight / 2) + dy);
+    } else if (hasQmp()) {
         m_qmpInput->sendMouseMove((m_displayWidth / 2) + dx, (m_displayHeight / 2) + dy);
     } else {
         const int centerX = m_displayWidth / 2;
@@ -394,77 +409,84 @@ void InputBridge::injectEvent(const Event &ev) {
         return;
     }
 
-    // Prefer QMP for low-latency input injection
-    if (hasQmp()) {
-        switch (ev.type) {
-        case Event::MouseButtonDown: {
-            m_qmpInput->sendMouseButton(qtMouseButtonToQmp(ev.code), true, ev.x, ev.y);
-            break;
-        }
-        case Event::MouseButtonUp: {
-            m_qmpInput->sendMouseButton(qtMouseButtonToQmp(ev.code), false, ev.x, ev.y);
-            break;
-        }
-        case Event::MouseMove: {
-            m_qmpInput->sendMouseMove(ev.x, ev.y);
-            break;
-        }
-        case Event::KeyDown: {
-            int qemuKey = mapQtKeyToQemu(ev.code);
-            if (qemuKey >= 0) {
-                m_qmpInput->sendKey(qemuKey, true);
-            }
-            break;
-        }
-        case Event::KeyUp: {
-            int qemuKey = mapQtKeyToQemu(ev.code);
-            if (qemuKey >= 0) {
-                m_qmpInput->sendKey(qemuKey, false);
-            }
-            break;
-        }
-        default:
-            break;
-        }
-        return;
-    }
-
-    // Fallback: ADB
-    if (m_adbPath.empty()) return;
-
+    // Per-input-type routing: Console > QMP > ADB
+    // Mouse uses Console if probe passed; keyboard uses Console only if keyboard probe passed.
     switch (ev.type) {
     case Event::MouseButtonDown: {
-        enqueueAdbCommand("input tap " + std::to_string(ev.x) + " " + std::to_string(ev.y));
+        // Qt button → Android Console bitmask (LeftButton=1, RightButton=2, MiddleButton=4)
+        const int consoleBtns = (ev.code == Qt::LeftButton) ? 1 :
+                                (ev.code == Qt::RightButton) ? 2 : 4;
+        if (hasConsoleMouse()) {
+            m_consoleInput->sendMouseEvent(ev.x, ev.y, consoleBtns);
+            qDebug() << "[InputBridge] inject path=Console type=mouse injLatency="
+                     << m_consoleInput->lastLatencyMs() << "ms";
+        } else if (hasQmp()) {
+            m_qmpInput->sendMouseButton(qtMouseButtonToQmp(ev.code), true, ev.x, ev.y);
+        } else if (!m_adbPath.empty()) {
+            enqueueAdbCommand("input tap " + std::to_string(ev.x) + " " + std::to_string(ev.y));
+        }
         break;
     }
-    case Event::MouseButtonUp:
+    case Event::MouseButtonUp: {
+        if (hasConsoleMouse()) {
+            m_consoleInput->sendMouseEvent(ev.x, ev.y, 0); // release all buttons
+        } else if (hasQmp()) {
+            m_qmpInput->sendMouseButton(qtMouseButtonToQmp(ev.code), false, ev.x, ev.y);
+        }
+        // ADB tap covers both down+up; no separate up needed
         break;
+    }
     case Event::MouseMove: {
-        enqueueAdbCommand("input swipe " + std::to_string(ev.x) + " " + std::to_string(ev.y) +
-                          " " + std::to_string(ev.x) + " " + std::to_string(ev.y) + " 0",
-                          true);
+        if (hasConsoleMouse()) {
+            m_consoleInput->sendMouseMove(ev.x, ev.y);
+        } else if (hasQmp()) {
+            m_qmpInput->sendMouseMove(ev.x, ev.y);
+        } else if (!m_adbPath.empty()) {
+            enqueueAdbCommand("input swipe " +
+                              std::to_string(ev.x) + " " + std::to_string(ev.y) + " " +
+                              std::to_string(ev.x) + " " + std::to_string(ev.y) + " 0",
+                              true);
+        }
         break;
     }
     case Event::KeyDown: {
-        int androidKey = mapQtKeyToAndroid(ev.code);
-        if (androidKey >= 0) {
+        const int androidKey = mapQtKeyToAndroid(ev.code);
+        if (hasConsoleKeyboard() && androidKey >= 0) {
+            m_consoleInput->sendKeyEvent(androidKey, true);
+            qDebug() << "[InputBridge] inject path=Console type=key code=" << androidKey
+                     << "injLatency=" << m_consoleInput->lastLatencyMs() << "ms";
+        } else if (hasQmp()) {
+            const int qemuKey = mapQtKeyToQemu(ev.code);
+            if (qemuKey >= 0) m_qmpInput->sendKey(qemuKey, true);
+        } else if (!m_adbPath.empty() && androidKey >= 0) {
             enqueueAdbCommand("input keyevent " + std::to_string(androidKey));
         }
         break;
     }
-    case Event::KeyUp:
+    case Event::KeyUp: {
+        const int androidKey = mapQtKeyToAndroid(ev.code);
+        if (hasConsoleKeyboard() && androidKey >= 0) {
+            m_consoleInput->sendKeyEvent(androidKey, false);
+        } else if (hasQmp()) {
+            const int qemuKey = mapQtKeyToQemu(ev.code);
+            if (qemuKey >= 0) m_qmpInput->sendKey(qemuKey, false);
+        }
+        // ADB has no separate key-up
         break;
+    }
     case Event::Wheel: {
         int dx = ev.relX / 40;
         int dy = ev.relY / 40;
         if (dx == 0 && dy == 0) dy = ev.relY > 0 ? -1 : 1;
         const int centerX = m_displayWidth / 2;
         const int centerY = m_displayHeight / 2;
-        enqueueAdbCommand("input swipe " + std::to_string(centerX) + " " +
-                          std::to_string(centerY) + " " +
-                          std::to_string(centerX + dx * 50) + " " +
-                          std::to_string(centerY + dy * 50) + " 100",
-                          true);
+        if (!m_adbPath.empty()) {
+            enqueueAdbCommand("input swipe " +
+                              std::to_string(centerX) + " " + std::to_string(centerY) + " " +
+                              std::to_string(centerX + dx * 50) + " " +
+                              std::to_string(centerY + dy * 50) + " 100",
+                              true);
+        }
         break;
     }
     default:

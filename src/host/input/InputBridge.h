@@ -38,7 +38,12 @@ public:
     // ADB configuration for Phase 1 MVP
     void setAdbConfig(const std::filesystem::path &adbPath, int adbPort);
 
-    // QMP low-latency input (preferred over ADB)
+    // Android Console input (emulator.exe port 5554, preferred over QMP/ADB)
+    void setConsoleInput(class AndroidConsoleInput *console);
+    bool hasConsoleMouse() const;
+    bool hasConsoleKeyboard() const;
+
+    // QMP low-latency input (QEMU backend only — port 4444/4445)
     void setQmpInput(class QmpInput *qmp);
     bool hasQmp() const;
 
@@ -85,7 +90,9 @@ private:
     std::filesystem::path m_adbPath;
     int m_adbPort = 5555;
 
-    // QMP low-latency input
+    // Android Console input (emulator.exe port 5554)
+    class AndroidConsoleInput *m_consoleInput = nullptr;
+    // QMP low-latency input (QEMU backend)
     class QmpInput *m_qmpInput = nullptr;
     // HvSocket input (HCS/HyperV backend)
     class HvSocketTransport *m_hvSocketTransport = nullptr;
