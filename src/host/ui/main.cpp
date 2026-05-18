@@ -356,8 +356,7 @@ static void runAdbShell(const QStringList &shellArgs, int timeoutMs = 1500) {
 }
 
 static void applyGuestPerformanceSettings() {
-    // Apply all guest tuning in a single adb shell invocation instead of six
-    // separate process spawns: one round-trip instead of six.
+    // All guest tuning in one ADB round-trip.
     runAdbShell({
         "settings", "put", "system", "peak_refresh_rate", "60.0", ";",
         "settings", "put", "system", "min_refresh_rate", "60.0", ";",
@@ -369,6 +368,24 @@ static void applyGuestPerformanceSettings() {
         "settings", "put", "global", "policy_control", "immersive.navigation=*",
     }, 5000);
     qDebug() << "Guest performance settings applied";
+}
+
+// Skip Android setup wizard and suppress first-boot prompts.
+// Commands are idempotent — safe to run on every boot.
+static void applyGuestFirstBootSetup() {
+    runAdbShell({
+        // Mark device as provisioned so setup wizard is skipped on next boot
+        "settings", "put", "global", "device_provisioned", "1", ";",
+        "settings", "put", "secure", "user_setup_complete", "1", ";",
+        // Suppress "finish setting up your device" notifications
+        "settings", "put", "global", "setup_wizard_has_run", "1", ";",
+        // Keep screen on while charging (emulator always "charging")
+        "settings", "put", "global", "stay_on_while_plugged_in", "3", ";",
+        // Disable annoying "Select home app" dialog by accepting the default
+        "settings", "put", "secure", "default_input_method",
+            "com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME",
+    }, 8000);
+    qDebug() << "Guest first-boot setup applied";
 }
 
 int main(int argc, char *argv[]) {
@@ -844,6 +861,7 @@ int main(int argc, char *argv[]) {
             if (booted == QStringLiteral("1")) {
                 guestPerfTimer->stop();
                 applyGuestPerformanceSettings();
+                applyGuestFirstBootSetup();
                 return;
             }
             if (attempts >= 60) {
