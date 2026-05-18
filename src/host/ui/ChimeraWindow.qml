@@ -1876,6 +1876,19 @@ ApplicationWindow {
                             onClicked: AndroidControls.adbRoot()
                         }
 
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            DockButton {
+                                Layout.fillWidth: true
+                                text: qsTr("重新啟動 Android")
+                                onClicked: {
+                                    AndroidControls.rebootGuest()
+                                    lastActionStatus = qsTr("Android 重啟中…")
+                                }
+                            }
+                        }
+
                         Item { Layout.fillHeight: true }
 
                         Label {

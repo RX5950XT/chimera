@@ -132,6 +132,12 @@ void QmlAndroidControls::adbRoot() {
                 tr("ADB root 失敗（需 google_apis AVD）"));
 }
 
+void QmlAndroidControls::rebootGuest() {
+    runAdbAsync({"-s", m_adbSerial, "reboot"},
+                tr("Android 重啟中…"),
+                tr("重啟失敗"));
+}
+
 void QmlAndroidControls::setGuestRotation(int degrees) {
     // Map to 0/90/180/270; default to 0 for any unrecognised value
     const int valid[] = {0, 90, 180, 270};

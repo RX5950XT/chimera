@@ -37,6 +37,9 @@ public:
     // Switch adbd to root (google_apis AVDs only; requires adb root support)
     Q_INVOKABLE void adbRoot();
 
+    // Reboot the guest Android OS
+    Q_INVOKABLE void rebootGuest();
+
     // Rotate the guest display and update coordinate mapping (degrees: 0, 90, 180, 270)
     Q_INVOKABLE void setGuestRotation(int degrees);
 
