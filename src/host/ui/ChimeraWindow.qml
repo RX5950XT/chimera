@@ -748,6 +748,12 @@ ApplicationWindow {
                         }
                         SideButton {
                             Layout.fillWidth: true
+                            text: qsTr("安裝 OBB")
+                            detail: qsTr("→ /obb/<pkg>/")
+                            onClicked: obbInstallDialog.open()
+                        }
+                        SideButton {
+                            Layout.fillWidth: true
                             text: qsTr("推送檔案")
                             detail: qsTr("→ Downloads")
                             onClicked: fileShareDialog.open()
@@ -1813,6 +1819,44 @@ ApplicationWindow {
         title: qsTr("選擇要推送到 Android 的檔案")
         nameFilters: [qsTr("所有檔案 (*)")]
         onAccepted: AndroidControls.pushFileToGuest(selectedFile.toString())
+    }
+
+    // OBB expansion file install
+    Dialog {
+        id: obbInstallDialog
+        title: qsTr("安裝 OBB 擴充資料")
+        modal: true
+        anchors.centerIn: parent
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        onOpened: obbFilePath.text = ""
+        onAccepted: {
+            if (obbFilePath.text.trim() !== "" && obbPackageName.text.trim() !== "")
+                AndroidControls.installObb(obbFilePath.text.trim(), obbPackageName.text.trim())
+        }
+        Column {
+            spacing: 8
+            width: 340
+            Label { text: qsTr("OBB 本機路徑（如 C:/Downloads/main.obb）："); color: theme.text; font.pixelSize: 12 }
+            TextField {
+                id: obbFilePath
+                width: parent.width
+                placeholderText: "C:/Users/xxx/Downloads/main.123456.com.example.obb"
+                color: theme.text
+                placeholderTextColor: theme.muted
+                font.pixelSize: 12
+                background: Rectangle { radius: 8; color: "#10161c"; border.color: theme.lineSoft }
+            }
+            Label { text: qsTr("目標 Package 名稱（如 com.example.game）："); color: theme.text; font.pixelSize: 12 }
+            TextField {
+                id: obbPackageName
+                width: parent.width
+                placeholderText: "com.example.game"
+                color: theme.text
+                placeholderTextColor: theme.muted
+                font.pixelSize: 12
+                background: Rectangle { radius: 8; color: "#10161c"; border.color: theme.lineSoft }
+            }
+        }
     }
 
     // Pull file from /sdcard/Download/ — user types guest filename

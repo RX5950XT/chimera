@@ -31,6 +31,9 @@ public:
     // APK installation (async; monitor installStatus property for result)
     Q_INVOKABLE void installApk(const QString &fileUrl);
 
+    // OBB expansion file install: push to /sdcard/Android/obb/<packageName>/
+    Q_INVOKABLE void installObb(const QString &fileUrl, const QString &packageName);
+
     // Switch adbd to root (google_apis AVDs only; requires adb root support)
     Q_INVOKABLE void adbRoot();
 

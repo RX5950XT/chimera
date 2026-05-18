@@ -90,6 +90,32 @@ void QmlAndroidControls::installApk(const QString &fileUrl) {
     m_adbProcess->start(m_adbExe, {"-s", m_adbSerial, "install", "-r", localPath});
 }
 
+void QmlAndroidControls::installObb(const QString &fileUrl, const QString &packageName) {
+    const QString localPath = QUrl(fileUrl).toLocalFile();
+    if (localPath.isEmpty()) { setInstallStatus(tr("OBB 路徑無效")); return; }
+    if (packageName.isEmpty()) { setInstallStatus(tr("OBB 需指定 package 名稱")); return; }
+    if (m_adbExe.isEmpty()) { setInstallStatus(tr("ADB 尚未設定")); return; }
+    if (m_adbProcess && m_adbProcess->state() != QProcess::NotRunning) {
+        setInstallStatus(tr("操作中，請稍候…")); return;
+    }
+
+    const QString obbName   = QFileInfo(localPath).fileName();
+    const QString obbDir    = "/sdcard/Android/obb/" + packageName;
+    const QString guestPath = obbDir + "/" + obbName;
+
+    // mkdir -p first using a one-shot process, then push in the finished callback
+    auto *mkdirProc = new QProcess(this);
+    connect(mkdirProc, &QProcess::finished, this,
+            [this, mkdirProc, localPath, guestPath, obbName](int, QProcess::ExitStatus) {
+        mkdirProc->deleteLater();
+        runAdbAsync({"-s", m_adbSerial, "push", localPath, guestPath},
+                    tr("OBB 已安裝：") + obbName,
+                    tr("OBB 安裝失敗：") + obbName);
+    });
+    setInstallStatus(tr("OBB 安裝中…"));
+    mkdirProc->start(m_adbExe, {"-s", m_adbSerial, "shell", "mkdir", "-p", obbDir});
+}
+
 void QmlAndroidControls::adbRoot() {
     runAdbAsync({"-s", m_adbSerial, "root"},
                 tr("ADB root 成功"),
