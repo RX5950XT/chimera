@@ -168,7 +168,7 @@ bool MemoryTrimmer::sendTrimCommand(int level) {
     }
 
     auto result = ProcessLauncher::runSync(adb, {
-        "-s", "emulator-5554", "shell", "am", "memory-factor", "set", factor
+        "-s", m_adbSerial, "shell", "am", "memory-factor", "set", factor
     });
 
     if (result.exitCode != 0) {

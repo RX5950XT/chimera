@@ -27,6 +27,7 @@
 #include "VncFramebufferCapture.h"
 #include "PerformanceMonitor.h"
 #include "QemuBackend.h"
+#include "InstanceRuntimeConfig.h"
 #include "HyperVManager.h"
 #include "HvSocketTransport.h"
 #include "HvSocketFramebufferCapture.h"
@@ -46,6 +47,7 @@ using namespace chimera;
 
 static std::filesystem::path g_projectRoot;
 static std::filesystem::path g_adbPath;
+static InstanceRuntimeConfig  g_runtimeCfg; // set when the v1 emulator instance starts
 
 #ifdef _WIN32
 // Read HCS VM serial console — connects as CLIENT to HCS's named pipe server.
@@ -344,7 +346,7 @@ static void runAdbShell(const QStringList &shellArgs, int timeoutMs = 1500) {
 
     QProcess proc;
     QStringList args;
-    args << "-s" << "emulator-5554" << "shell";
+    args << "-s" << QString::fromStdString(g_runtimeCfg.adbSerial) << "shell";
     args << shellArgs;
     proc.start(adbPathString(), args);
     proc.waitForFinished(timeoutMs);
@@ -649,8 +651,14 @@ int main(int argc, char *argv[]) {
             qWarning() << "Failed to create instance" << QString::fromStdString(cfg.name);
         }
 
+        // Populate runtime config (consolePort=5554, adbPort=5555, serial=emulator-5554)
+        g_runtimeCfg.consolePort = 5554;
+        g_runtimeCfg.adbPort     = 5555;
+        g_runtimeCfg.grpcPort    = 8554;
+        g_runtimeCfg.adbSerial   = "emulator-5554";
+
         // Configure input bridge for ADB forwarding (fallback)
-        chimera::input::InputBridge::instance().setAdbConfig(g_adbPath, 5555);
+        chimera::input::InputBridge::instance().setAdbConfig(g_adbPath, g_runtimeCfg.adbPort);
         chimera::input::InputBridge::instance().setDisplaySize(cfg.width, cfg.height);
 
         // Android Console input on port 5554 (telnet protocol, NOT JSON QMP).
@@ -803,7 +811,7 @@ int main(int argc, char *argv[]) {
             guestPerfTimer->setProperty("attempts", attempts);
 
             QProcess proc;
-            proc.start(adbPathString(), QStringList() << "-s" << "emulator-5554"
+            proc.start(adbPathString(), QStringList() << "-s" << QString::fromStdString(g_runtimeCfg.adbSerial)
                                                      << "shell" << "getprop" << "sys.boot_completed");
             proc.waitForFinished(1000);
             const QString booted = QString::fromLocal8Bit(proc.readAllStandardOutput()).trimmed();
@@ -846,7 +854,7 @@ int main(int argc, char *argv[]) {
 
             QProcess proc;
             proc.start(QString::fromStdString(g_adbPath.string()),
-                       QStringList() << "-s" << "emulator-5554"
+                       QStringList() << "-s" << QString::fromStdString(g_runtimeCfg.adbSerial)
                                      << "shell" << "getprop" << "sys.boot_completed");
             proc.waitForFinished(1000);
             const QString booted = QString::fromLocal8Bit(proc.readAllStandardOutput()).trimmed();

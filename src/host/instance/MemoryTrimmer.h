@@ -43,6 +43,9 @@ public:
     qint64 availableMB() const { return m_availableMB.load(); }
     bool monitoring() const { return m_monitoring.load(); }
 
+    void setAdbSerial(const std::string &serial) { m_adbSerial = serial; }
+    const std::string &adbSerial() const { return m_adbSerial; }
+
 public slots:
     void startMonitoring(int intervalMs = 5000);
     void stopMonitoring();
@@ -79,6 +82,7 @@ private:
     std::atomic<bool> m_monitoring{false};
     std::atomic<bool> m_stopRequested{false};
     std::thread m_worker;
+    std::string m_adbSerial = "emulator-5554";
 
 public:
     // Thresholds (available / total ratio)
