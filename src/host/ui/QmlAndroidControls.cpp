@@ -9,6 +9,8 @@
 #include <QProcess>
 #include <QUrl>
 #include <QFileInfo>
+#include <QFile>
+#include <QDateTime>
 #include <QStandardPaths>
 #include <algorithm>
 #ifdef _WIN32
@@ -296,6 +298,47 @@ void QmlAndroidControls::forceStopPackage(const QString &packageName) {
     runAdbAsync({"-s", m_adbSerial, "shell", "am", "force-stop", packageName},
                 tr("已強制停止：") + packageName,
                 tr("停止失敗：") + packageName);
+}
+
+void QmlAndroidControls::takeScreenshot() {
+    if (m_adbExe.isEmpty()) { setInstallStatus(tr("ADB 尚未設定")); return; }
+    const QString destDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    const QString ts = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+    const QString destPath = destDir + "/chimera_" + ts + ".png";
+
+    if (m_adbProcess) {
+        if (m_adbProcess->state() != QProcess::NotRunning) {
+            setInstallStatus(tr("操作中，請稍候…"));
+            return;
+        }
+        m_adbProcess->disconnect();
+    } else {
+        m_adbProcess = new QProcess(this);
+    }
+
+    connect(m_adbProcess, &QProcess::finished, this,
+            [this, destPath](int exitCode, QProcess::ExitStatus) {
+        if (exitCode == 0) {
+            const QByteArray png = m_adbProcess->readAllStandardOutput();
+            QFile f(destPath);
+            if (f.open(QIODevice::WriteOnly) && f.write(png) == png.size()) {
+                const QString name = QFileInfo(destPath).fileName();
+                setInstallStatus(tr("截圖已儲存：") + name);
+                emit notificationRequested(tr("Chimera"), tr("截圖已儲存：") + name);
+            } else {
+                setInstallStatus(tr("截圖儲存失敗"));
+            }
+        } else {
+            setInstallStatus(tr("截圖失敗"));
+        }
+    });
+
+    setInstallStatus(tr("截圖中…"));
+    m_adbProcess->start(m_adbExe, {"-s", m_adbSerial, "exec-out", "screencap", "-p"});
+}
+
+QString QmlAndroidControls::screenshotDir() const {
+    return QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
 }
 
 void QmlAndroidControls::uninstallPackage(const QString &packageName) {

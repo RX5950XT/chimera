@@ -263,15 +263,17 @@ ApplicationWindow {
     }
 
     function takeScreenshot() {
-        var path = "screenshots/chimera_" + timestamp() + ".png"
+        var dir = AndroidControls.screenshotDir()
+        var name = "chimera_" + timestamp() + ".png"
+        var path = dir + "/" + name
         var ok = nativeDisplay.attached ? nativeDisplay.saveScreenshot(path)
                                         : guestDisplay.saveScreenshot(path)
         if (!ok) {
             lastActionStatus = qsTr("截圖失敗")
-            console.log("Screenshot failed")
             return
         }
-        lastActionStatus = qsTr("截圖已儲存")
+        lastActionStatus = qsTr("截圖已儲存：") + name
+        trayIcon.showMessage(qsTr("Chimera"), qsTr("截圖已儲存：") + name)
     }
 
     function toggleRecording() {

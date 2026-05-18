@@ -81,6 +81,11 @@ public:
     Q_INVOKABLE void uninstallPackage(const QString &packageName);
     Q_INVOKABLE void clearPackageData(const QString &packageName);
 
+    // Screenshot: save guest screen to host Downloads as PNG
+    Q_INVOKABLE void takeScreenshot();
+    // Returns host Downloads folder path for screenshot naming
+    Q_INVOKABLE QString screenshotDir() const;
+
     // Configure ADB binary + device serial (called from main.cpp after emulator starts)
     void setAdbConfig(const QString &adbExe, const QString &adbSerial);
     // Wire emulator PID for eco mode
