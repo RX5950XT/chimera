@@ -13,9 +13,11 @@ namespace chimera {
 class QmlAndroidControls : public QObject {
     Q_OBJECT
 
-    Q_PROPERTY(QString installStatus READ installStatus NOTIFY installStatusChanged)
-    Q_PROPERTY(double  gpsLatitude   READ gpsLatitude   NOTIFY gpsChanged)
-    Q_PROPERTY(double  gpsLongitude  READ gpsLongitude  NOTIFY gpsChanged)
+    Q_PROPERTY(QString     installStatus      READ installStatus      NOTIFY installStatusChanged)
+    Q_PROPERTY(double      gpsLatitude        READ gpsLatitude        NOTIFY gpsChanged)
+    Q_PROPERTY(double      gpsLongitude       READ gpsLongitude       NOTIFY gpsChanged)
+    Q_PROPERTY(QStringList installedPackages  READ installedPackages  NOTIFY installedPackagesChanged)
+    Q_PROPERTY(QStringList guestDownloads     READ guestDownloads     NOTIFY guestDownloadsChanged)
 
 public:
     explicit QmlAndroidControls(QObject *parent = nullptr);
@@ -80,12 +82,16 @@ public:
     // System controls
     Q_INVOKABLE void setAirplaneMode(bool enabled);
 
-    // App management
-    Q_INVOKABLE QStringList listInstalledPackages();  // user-installed packages (3rd-party)
+    // App management (async; monitor installedPackages property for result)
+    Q_INVOKABLE void refreshInstalledPackages();
+    Q_INVOKABLE QStringList listInstalledPackages();  // synchronous fallback (deprecated)
     Q_INVOKABLE void launchPackage(const QString &packageName);
     Q_INVOKABLE void forceStopPackage(const QString &packageName);
     Q_INVOKABLE void uninstallPackage(const QString &packageName);
     Q_INVOKABLE void clearPackageData(const QString &packageName);
+
+    // Guest downloads: list files in /sdcard/Download/ (async; monitor guestDownloads property)
+    Q_INVOKABLE void refreshGuestDownloads();
 
     // Screenshot: save guest screen to host Downloads as PNG
     Q_INVOKABLE void takeScreenshot();
@@ -100,14 +106,18 @@ public:
     // Wire Android Console input for sensor/battery commands
     void setConsoleInput(input::AndroidConsoleInput *consoleInput);
 
-    QString installStatus() const { return m_installStatus; }
-    double  gpsLatitude()   const { return m_gpsLat; }
-    double  gpsLongitude()  const { return m_gpsLon; }
+    QString     installStatus()     const { return m_installStatus; }
+    double      gpsLatitude()       const { return m_gpsLat; }
+    double      gpsLongitude()      const { return m_gpsLon; }
+    QStringList installedPackages() const { return m_installedPackages; }
+    QStringList guestDownloads()    const { return m_guestDownloads; }
 
 signals:
     void installStatusChanged(const QString &status);
     void gpsChanged();
     void notificationRequested(const QString &title, const QString &message);
+    void installedPackagesChanged();
+    void guestDownloadsChanged();
 
 private:
     bool sendKey(int keyCode) const;
@@ -116,12 +126,14 @@ private:
 
     QProcess *m_adbProcess   = nullptr;
     input::AndroidConsoleInput *m_consoleInput = nullptr;
-    QString   m_adbExe;
-    QString   m_adbSerial;
-    QString   m_installStatus;
-    double    m_gpsLat = 0.0;
-    double    m_gpsLon = 0.0;
-    uint32_t  m_emulatorPid = 0;
+    QString     m_adbExe;
+    QString     m_adbSerial;
+    QString     m_installStatus;
+    double      m_gpsLat = 0.0;
+    double      m_gpsLon = 0.0;
+    uint32_t    m_emulatorPid = 0;
+    QStringList m_installedPackages;
+    QStringList m_guestDownloads;
 };
 
 } // namespace chimera

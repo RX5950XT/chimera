@@ -5,7 +5,6 @@
 #include "LocationSimulator.h"
 #include "ClipboardBridge.h"
 #include "AndroidConsoleInput.h"
-#include "SharedFolder.h"
 #include <QProcess>
 #include <QUrl>
 #include <QFileInfo>
@@ -246,14 +245,10 @@ void QmlAndroidControls::pushFileToGuest(const QString &fileUrl) {
         setInstallStatus(tr("檔案路徑無效"));
         return;
     }
-    const bool ok = storage::SharedFolder::instance().pushToGuest(
-        localPath.toStdString());
-    if (ok) {
-        const QString name = QFileInfo(localPath).fileName();
-        setInstallStatus(tr("已推送：") + name + tr("→ /sdcard/Download/"));
-    } else {
-        setInstallStatus(tr("推送失敗，請確認 ADB 連線"));
-    }
+    const QString name = QFileInfo(localPath).fileName();
+    runAdbAsync({"-s", m_adbSerial, "push", localPath, "/sdcard/Download/" + name},
+                tr("已推送：") + name + tr(" → /sdcard/Download/"),
+                tr("推送失敗：") + name);
 }
 
 void QmlAndroidControls::startGpsRoute(const QVariantList &waypoints, double speedKmh) {
@@ -304,29 +299,57 @@ void QmlAndroidControls::setEmulatorPid(uint32_t pid) {
 void QmlAndroidControls::pullFileFromGuest(const QString &guestFilename) {
     if (guestFilename.isEmpty()) return;
     const QString destDir = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
-    const bool ok = storage::SharedFolder::instance().pullFromGuest(
-        guestFilename.toStdString(), destDir.toStdString());
-    if (ok)
-        setInstallStatus(tr("已拉取：") + guestFilename + tr(" → ") + destDir);
-    else
-        setInstallStatus(tr("拉取失敗，請確認 ADB 連線"));
+    const QString guestPath = "/sdcard/Download/" + guestFilename;
+    runAdbAsync({"-s", m_adbSerial, "pull", guestPath, destDir},
+                tr("已拉取：") + guestFilename + tr(" → ") + destDir,
+                tr("拉取失敗：") + guestFilename);
+}
+
+void QmlAndroidControls::refreshInstalledPackages() {
+    if (m_adbExe.isEmpty() || m_adbSerial.isEmpty()) return;
+    setInstallStatus(tr("取得應用程式清單…"));
+    auto *proc = new QProcess(this);
+    proc->setProgram(m_adbExe);
+    proc->setArguments({"-s", m_adbSerial, "shell", "pm", "list", "packages", "-3"});
+    connect(proc, &QProcess::finished, this, [this, proc](int, QProcess::ExitStatus) {
+        proc->deleteLater();
+        QStringList packages;
+        const QString output = QString::fromUtf8(proc->readAllStandardOutput());
+        for (const QString &line : output.split(QLatin1Char('\n'))) {
+            const QString pkg = line.trimmed();
+            if (pkg.startsWith(QLatin1String("package:")))
+                packages.append(pkg.mid(8));
+        }
+        m_installedPackages = packages;
+        emit installedPackagesChanged();
+        setInstallStatus(tr("共 %1 個應用程式").arg(packages.size()));
+    });
+    proc->start();
 }
 
 QStringList QmlAndroidControls::listInstalledPackages() {
-    if (m_adbExe.isEmpty() || m_adbSerial.isEmpty()) return {};
-    QProcess proc;
-    proc.setProgram(m_adbExe);
-    proc.setArguments({"-s", m_adbSerial, "shell", "pm", "list", "packages", "-3"});
-    proc.start();
-    if (!proc.waitForFinished(5000)) { proc.kill(); return {}; }
-    QStringList packages;
-    const QString output = QString::fromUtf8(proc.readAllStandardOutput());
-    for (const QString &line : output.split(QLatin1Char('\n'))) {
-        const QString pkg = line.trimmed();
-        if (pkg.startsWith(QLatin1String("package:")))
-            packages.append(pkg.mid(8)); // strip "package:" prefix
-    }
-    return packages;
+    return m_installedPackages;
+}
+
+void QmlAndroidControls::refreshGuestDownloads() {
+    if (m_adbExe.isEmpty() || m_adbSerial.isEmpty()) return;
+    auto *proc = new QProcess(this);
+    proc->setProgram(m_adbExe);
+    proc->setArguments({"-s", m_adbSerial, "shell", "ls", "/sdcard/Download/"});
+    connect(proc, &QProcess::finished, this, [this, proc](int exitCode, QProcess::ExitStatus) {
+        proc->deleteLater();
+        if (exitCode != 0) return;
+        QStringList files;
+        const QString output = QString::fromUtf8(proc->readAllStandardOutput());
+        for (const QString &line : output.split(QLatin1Char('\n'))) {
+            const QString f = line.trimmed();
+            if (!f.isEmpty())
+                files.append(f);
+        }
+        m_guestDownloads = files;
+        emit guestDownloadsChanged();
+    });
+    proc->start();
 }
 
 void QmlAndroidControls::launchPackage(const QString &packageName) {

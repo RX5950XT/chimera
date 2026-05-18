@@ -1025,8 +1025,6 @@ ApplicationWindow {
                         spacing: 10
                         Behavior on opacity { NumberAnimation { duration: 170; easing.type: Easing.OutCubic } }
 
-                        property var pkgs: []
-
                         RowLayout {
                             Layout.fillWidth: true
                             SectionLabel { text: qsTr("應用程式"); Layout.fillWidth: true }
@@ -1052,10 +1050,7 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             text: qsTr("重新整理應用程式清單")
                             highlighted: true
-                            onClicked: {
-                                appsPage.pkgs = AndroidControls.listInstalledPackages()
-                                lastActionStatus = qsTr("已取得 %1 個應用程式").arg(appsPage.pkgs.length)
-                            }
+                            onClicked: AndroidControls.refreshInstalledPackages()
                         }
 
                         ListView {
@@ -1064,7 +1059,9 @@ ApplicationWindow {
                             Layout.fillHeight: true
                             clip: true
                             spacing: 6
-                            model: appsPage.pkgs.filter(p => appsFilter.text.length === 0 || p.toLowerCase().includes(appsFilter.text.toLowerCase()))
+                            model: AndroidControls.installedPackages.filter(
+                                p => appsFilter.text.length === 0
+                                  || p.toLowerCase().includes(appsFilter.text.toLowerCase()))
 
                             Label {
                                 anchors.centerIn: parent
@@ -1114,7 +1111,7 @@ ApplicationWindow {
                                         text: qsTr("卸載")
                                         onClicked: {
                                             AndroidControls.uninstallPackage(modelData)
-                                            appsPage.pkgs = appsPage.pkgs.filter((_, i) => i !== index)
+                                            Qt.callLater(() => AndroidControls.refreshInstalledPackages())
                                         }
                                     }
                                 }
@@ -1292,16 +1289,46 @@ ApplicationWindow {
                                 Behavior on border.color { ColorAnimation { duration: 120 } }
                             }
                         }
-                        DockButton {
+                        RowLayout {
                             Layout.fillWidth: true
-                            text: MacroEngine.recording ? qsTr("停止錄製") : qsTr("開始錄製")
-                            highlighted: MacroEngine.recording
-                            onClicked: {
-                                if (MacroEngine.recording) {
-                                    MacroEngine.stopRecording()
-                                    inlineMacroList.model = MacroEngine.listMacros()
-                                } else if (inlineMacroName.text.length > 0) {
-                                    MacroEngine.startRecording(inlineMacroName.text)
+                            spacing: 8
+
+                            DockButton {
+                                Layout.fillWidth: true
+                                text: MacroEngine.recording ? qsTr("停止錄製") : qsTr("開始錄製")
+                                highlighted: MacroEngine.recording
+                                onClicked: {
+                                    if (MacroEngine.recording) {
+                                        MacroEngine.stopRecording()
+                                        inlineMacroList.model = MacroEngine.listMacros()
+                                    } else if (inlineMacroName.text.length > 0) {
+                                        MacroEngine.startRecording(inlineMacroName.text)
+                                    }
+                                }
+                            }
+
+                            RowLayout {
+                                spacing: 4
+                                Label { text: qsTr("循環"); color: theme.muted; font.pixelSize: 11 }
+                                SpinBox {
+                                    id: macroLoopCount
+                                    from: 1; to: 999; value: 1
+                                    implicitWidth: 72
+                                    font.pixelSize: 12
+                                    contentItem: TextInput {
+                                        text: macroLoopCount.textFromValue(macroLoopCount.value)
+                                        font: macroLoopCount.font
+                                        color: theme.text
+                                        horizontalAlignment: Qt.AlignHCenter
+                                        verticalAlignment: Qt.AlignVCenter
+                                        readOnly: !macroLoopCount.editable
+                                        validator: macroLoopCount.validator
+                                    }
+                                    background: Rectangle {
+                                        radius: 8
+                                        color: theme.panelSoft
+                                        border.color: theme.lineSoft
+                                    }
                                 }
                             }
                         }
@@ -1336,7 +1363,13 @@ ApplicationWindow {
                                     RowLayout {
                                         Layout.fillWidth: true
                                         spacing: 7
-                                        DockButton { Layout.fillWidth: true; text: qsTr("播放"); highlighted: true; enabled: !MacroEngine.recording; onClicked: MacroEngine.startPlayback(modelData, 1) }
+                                        DockButton {
+                                            Layout.fillWidth: true
+                                            text: qsTr("播放")
+                                            highlighted: true
+                                            enabled: !MacroEngine.recording
+                                            onClicked: MacroEngine.startPlayback(modelData, macroLoopCount.value)
+                                        }
                                         DockButton {
                                             Layout.fillWidth: true
                                             text: qsTr("刪除")
@@ -1967,24 +2000,79 @@ ApplicationWindow {
     // Invisible storage for the selected OBB path
     TextField { id: obbSelectedPath; visible: false }
 
-    // Pull file from /sdcard/Download/ — user types guest filename
+    // Pull file from /sdcard/Download/ — shows file list + manual fallback
     Dialog {
         id: pullFileDialog
-        title: qsTr("從 Android 拉取檔案")
+        title: qsTr("從 Android /sdcard/Download/ 拉取檔案")
         modal: true
         anchors.centerIn: parent
+        width: 420
         standardButtons: Dialog.Ok | Dialog.Cancel
+        onOpened: AndroidControls.refreshGuestDownloads()
         onAccepted: {
-            if (pullFileNameInput.text.trim() !== "")
-                AndroidControls.pullFileFromGuest(pullFileNameInput.text.trim())
+            const name = pullFileNameInput.text.trim()
+            if (name.length > 0)
+                AndroidControls.pullFileFromGuest(name)
         }
-        Column {
+
+        ColumnLayout {
+            width: parent.width
             spacing: 8
-            Label { text: qsTr("/sdcard/Download/ 中的檔名：") }
+
+            Label {
+                text: qsTr("/sdcard/Download/ 檔案列表")
+                color: theme.muted
+                font.pixelSize: 11
+            }
+
+            ListView {
+                id: pullFileList
+                Layout.fillWidth: true
+                height: Math.min(contentHeight, 200)
+                clip: true
+                spacing: 4
+                model: AndroidControls.guestDownloads
+
+                Label {
+                    anchors.centerIn: parent
+                    visible: pullFileList.count === 0
+                    text: qsTr("讀取中…")
+                    color: theme.muted
+                    font.pixelSize: 11
+                }
+
+                delegate: Rectangle {
+                    required property string modelData
+                    width: pullFileList.width
+                    height: 34
+                    radius: 8
+                    color: pullFileNameInput.text === modelData ? theme.accent : theme.card
+                    border.color: theme.lineSoft
+
+                    Text {
+                        anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; leftMargin: 10 }
+                        text: modelData
+                        color: pullFileNameInput.text === modelData ? "#06110d" : theme.text
+                        font.pixelSize: 12
+                        elide: Text.ElideRight
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: pullFileNameInput.text = modelData
+                    }
+                }
+            }
+
+            Label { text: qsTr("或手動輸入檔名："); color: theme.text; font.pixelSize: 11 }
             TextField {
                 id: pullFileNameInput
-                width: 320
-                placeholderText: "e.g. screenshot.png"
+                Layout.fillWidth: true
+                placeholderText: "screenshot.png"
+                color: theme.text
+                placeholderTextColor: theme.muted
+                font.pixelSize: 12
+                background: Rectangle { radius: 8; color: "#10161c"; border.color: theme.lineSoft }
             }
         }
     }

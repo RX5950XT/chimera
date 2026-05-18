@@ -36,8 +36,9 @@ public:
 
     void setEventCallback(EventCallback cb);
 
-    // ADB configuration for Phase 1 MVP
-    void setAdbConfig(const std::filesystem::path &adbPath, int adbPort);
+    // ADB configuration
+    void setAdbConfig(const std::filesystem::path &adbPath, int adbPort,
+                      const std::string &serial = {});
 
     // Android Console input (emulator.exe port 5554, preferred over QMP/ADB)
     void setConsoleInput(class AndroidConsoleInput *console);
@@ -93,6 +94,7 @@ private:
     // ADB config
     std::filesystem::path m_adbPath;
     int m_adbPort = 5555;
+    std::string m_adbSerial;
 
     // Held mouse buttons bitmask (left=1, right=2, middle=4) — tracked for drag events
     int m_heldMouseButtons = 0;

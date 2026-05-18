@@ -107,9 +107,13 @@ void InputBridge::setEventCallback(EventCallback cb) {
     m_callback = cb;
 }
 
-void InputBridge::setAdbConfig(const std::filesystem::path &adbPath, int adbPort) {
+void InputBridge::setAdbConfig(const std::filesystem::path &adbPath, int adbPort,
+                               const std::string &serial) {
     m_adbPath = adbPath;
     m_adbPort = adbPort;
+    m_adbSerial = serial.empty()
+        ? "emulator-" + std::to_string(adbPort - 1)
+        : serial;
 }
 
 void InputBridge::setConsoleInput(AndroidConsoleInput *console) {
@@ -168,9 +172,8 @@ void InputBridge::workerLoop() {
         }
         if (m_adbPath.empty()) continue;
         // Execute ADB command synchronously in worker thread
-        const QString serial = QStringLiteral("emulator-%1").arg(m_adbPort - 1);
         QStringList args;
-        args << "-s" << serial;
+        args << "-s" << QString::fromStdString(m_adbSerial);
         args << "shell" << QString::fromStdString(cmd);
         QProcess proc;
         proc.setProgram(QString::fromStdString(m_adbPath.string()));

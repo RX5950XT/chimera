@@ -715,7 +715,8 @@ int main(int argc, char *argv[]) {
         g_runtimeCfg.adbSerial   = "emulator-5554";
 
         // Configure input bridge for ADB forwarding (fallback)
-        chimera::input::InputBridge::instance().setAdbConfig(g_adbPath, g_runtimeCfg.adbPort);
+        chimera::input::InputBridge::instance().setAdbConfig(g_adbPath, g_runtimeCfg.adbPort,
+                                                              g_runtimeCfg.adbSerial);
         chimera::input::InputBridge::instance().setDisplaySize(cfg.width, cfg.height);
 
         // Wire SharedFolder ADB config for v1 push/pull
@@ -735,7 +736,7 @@ int main(int argc, char *argv[]) {
             auto *consoleInput = new chimera::input::AndroidConsoleInput(&app);
             consoleInput->setAutoReconnect(true);
             chimera::input::InputBridge::instance().setConsoleInput(consoleInput);
-            consoleInput->connectToHost(QStringLiteral("127.0.0.1"), 5554);
+            consoleInput->connectToHost(QStringLiteral("127.0.0.1"), g_runtimeCfg.consolePort);
             qDebug() << "[main] Android Console input wired (CHIMERA_INPUT_BACKEND="
                      << inputBackend.c_str() << ")";
 
@@ -917,21 +918,22 @@ int main(int argc, char *argv[]) {
         QObject::connect(guestPerfTimer, &QTimer::timeout, [guestPerfTimer]() {
             int attempts = guestPerfTimer->property("attempts").toInt() + 1;
             guestPerfTimer->setProperty("attempts", attempts);
+            if (attempts >= 60) { guestPerfTimer->stop(); return; }
 
-            QProcess proc;
-            proc.start(adbPathString(), QStringList() << "-s" << QString::fromStdString(g_runtimeCfg.adbSerial)
-                                                     << "shell" << "getprop" << "sys.boot_completed");
-            proc.waitForFinished(1000);
-            const QString booted = QString::fromLocal8Bit(proc.readAllStandardOutput()).trimmed();
-            if (booted == QStringLiteral("1")) {
-                guestPerfTimer->stop();
-                applyGuestPerformanceSettings();
-                applyGuestFirstBootSetup();
-                return;
-            }
-            if (attempts >= 60) {
-                guestPerfTimer->stop();
-            }
+            auto *proc = new QProcess(guestPerfTimer);
+            proc->start(adbPathString(),
+                        QStringList() << "-s" << QString::fromStdString(g_runtimeCfg.adbSerial)
+                                      << "shell" << "getprop" << "sys.boot_completed");
+            QObject::connect(proc, &QProcess::finished, proc,
+                             [proc, guestPerfTimer](int, QProcess::ExitStatus) {
+                const QString booted = QString::fromLocal8Bit(proc->readAllStandardOutput()).trimmed();
+                proc->deleteLater();
+                if (booted == QStringLiteral("1")) {
+                    guestPerfTimer->stop();
+                    applyGuestPerformanceSettings();
+                    applyGuestFirstBootSetup();
+                }
+            });
         });
         guestPerfTimer->start();
     }
@@ -961,19 +963,23 @@ int main(int argc, char *argv[]) {
             int attempts = bootTimer->property("attempts").toInt() + 1;
             bootTimer->setProperty("attempts", attempts);
 
-            QProcess proc;
-            proc.start(QString::fromStdString(g_adbPath.string()),
-                       QStringList() << "-s" << QString::fromStdString(g_runtimeCfg.adbSerial)
-                                     << "shell" << "getprop" << "sys.boot_completed");
-            proc.waitForFinished(1000);
-            const QString booted = QString::fromLocal8Bit(proc.readAllStandardOutput()).trimmed();
-            if (booted == QStringLiteral("1") || attempts >= 45) {
-                bootTimer->stop();
-                if (adbCapture->start()) {
-                    qDebug() << "ADB raw screen capture fallback started (" << adbCapture->intervalMs()
-                             << "ms target interval)";
+            auto *proc = new QProcess(bootTimer);
+            proc->start(QString::fromStdString(g_adbPath.string()),
+                        QStringList() << "-s" << QString::fromStdString(g_runtimeCfg.adbSerial)
+                                      << "shell" << "getprop" << "sys.boot_completed");
+            QObject::connect(proc, &QProcess::finished, proc,
+                             [proc, adbCapture, bootTimer](int, QProcess::ExitStatus) {
+                const QString booted = QString::fromLocal8Bit(proc->readAllStandardOutput()).trimmed();
+                const int att = bootTimer->property("attempts").toInt();
+                proc->deleteLater();
+                if (booted == QStringLiteral("1") || att >= 45) {
+                    bootTimer->stop();
+                    if (adbCapture->start()) {
+                        qDebug() << "ADB raw screen capture fallback started ("
+                                 << adbCapture->intervalMs() << "ms target interval)";
+                    }
                 }
-            }
+            });
         });
         bootTimer->start();
     };
