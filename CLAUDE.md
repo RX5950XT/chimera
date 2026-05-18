@@ -40,9 +40,19 @@
 | 網速模擬 (GPRS→Full) | ✅ |
 | Screen resize / DPI / rotation | ✅ |
 | FPS lock (30/60/90/120) | ✅ |
-| Eco mode (background 降優先級) | ✅ |
+| Eco mode (background 降優先級 + Ctrl+Shift+F) | ✅ |
 | Multi-instance (batch start/stop) | ✅ |
 | Audio (WASAPI) | ✅ |
+| Boss Key 縮至工作列 (Ctrl+Shift+X) | ✅ |
+| Trim Memory (Ctrl+Shift+T) | ✅ |
+| Mute/unmute (Ctrl+Shift+M) | ✅ |
+| Shake 震動模擬 (Ctrl+Shift+3) | ✅ |
+| Rotate 循環旋轉 (Ctrl+Shift+4) | ✅ |
+| Open Downloads (Ctrl+Shift+6) | ✅ |
+| Custom cursor (十字準心 / 標準) | ✅ |
+| Pinned apps 釘選常用應用 | ✅ |
+| Network proxy 設定 | ✅ |
+| Network speed 模擬 (GPRS→Full) | ✅ |
 
 ## 架構
 
