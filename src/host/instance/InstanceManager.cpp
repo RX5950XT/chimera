@@ -422,6 +422,13 @@ InstanceConfig InstanceManager::getInstanceConfig(const std::string &name) const
     return InstanceConfig{};
 }
 
+uint32_t InstanceManager::emulatorProcessId(const std::string &name) const {
+    for (const auto &vm : d->vms) {
+        if (vm->config().name == name) return vm->processId();
+    }
+    return 0;
+}
+
 void InstanceManager::setStateCallback(StateCallback cb) {
     d->stateCallback = cb;
     for (auto &vm : d->vms) {

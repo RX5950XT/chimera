@@ -310,6 +310,14 @@ bool VirtualMachine::resume() {
     return false;
 }
 
+uint32_t VirtualMachine::processId() const {
+#ifdef _WIN32
+    return m_processHandle ? GetProcessId(static_cast<HANDLE>(m_processHandle)) : 0;
+#else
+    return 0;
+#endif
+}
+
 VMState VirtualMachine::state() const {
     if (m_state == VMState::Running && m_processHandle) {
         if (!ProcessLauncher::isRunning(static_cast<HANDLE>(m_processHandle))) {

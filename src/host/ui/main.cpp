@@ -637,6 +637,8 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    std::string g_instanceName;  // persists for NativeEmulatorView PID wiring
+
     // v1: Start emulator instance
     if (!hcsBackendMode && !qemuBackendMode && !noEmulator && !g_adbPath.empty()) {
         auto &mgr = InstanceManager::instance();
@@ -664,6 +666,7 @@ int main(int argc, char *argv[]) {
             if (mgr.startInstance(cfg.name)) {
                 qDebug() << "Instance started:" << QString::fromStdString(cfg.name);
                 emulatorStarted = true;
+                g_instanceName = cfg.name;
             } else {
                 qWarning() << "Failed to start instance" << QString::fromStdString(cfg.name);
             }
@@ -766,6 +769,23 @@ int main(int argc, char *argv[]) {
     for (auto *obj : roots) {
         guestDisplay = obj->findChild<GuestDisplay*>("guestDisplay");
         if (guestDisplay) break;
+    }
+
+    // Pin NativeEmulatorView to our specific emulator PID so it never steals
+    // another emulator.exe window launched by Android Studio or other tools.
+    if (emulatorStarted && !g_instanceName.empty()) {
+        const uint32_t emulatorPid = chimera::instance::InstanceManager::instance()
+                                         .emulatorProcessId(g_instanceName);
+        if (emulatorPid != 0) {
+            for (auto *obj : roots) {
+                auto *nativeView = obj->findChild<chimera::NativeEmulatorView *>("nativeDisplay");
+                if (nativeView) {
+                    nativeView->setEmulatorPid(emulatorPid);
+                    qDebug() << "[main] NativeEmulatorView pinned to emulator PID" << emulatorPid;
+                    break;
+                }
+            }
+        }
     }
     if (!guestDisplay) {
         qWarning() << "GuestDisplay not found; frame capture will not be visible";

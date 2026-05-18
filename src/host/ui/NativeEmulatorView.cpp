@@ -67,6 +67,7 @@ struct WindowSearch {
     std::wstring instanceName;
     std::wstring consolePort;
     HWND hostWindow = nullptr;
+    DWORD targetPid = 0;  // 0 = any; non-zero = must match
     WindowCandidate best;
 };
 
@@ -84,6 +85,11 @@ int scoreWindow(HWND hwnd, const WindowSearch &search) {
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
     if (pid == GetCurrentProcessId()) return 0;
+
+    // If we know which PID to expect, reject all others immediately.
+    // This prevents Chimera from accidentally stealing another emulator.exe
+    // (e.g. one launched by Android Studio on the same machine).
+    if (search.targetPid != 0 && pid != search.targetPid) return 0;
 
     const std::wstring image = processImageName(pid);
     const bool isKnownEmulator = containsText(image, L"\\emulator.exe") ||
@@ -211,6 +217,11 @@ void NativeEmulatorView::setConsolePort(int port) {
     if (m_consolePort == port) return;
     m_consolePort = port;
     emit consolePortChanged();
+}
+
+void NativeEmulatorView::setEmulatorPid(uint32_t pid) {
+    m_emulatorPid = pid;
+    qDebug() << "NativeEmulatorView: pinned to emulator PID" << pid;
 }
 
 bool NativeEmulatorView::attached() const {
@@ -352,13 +363,16 @@ HWND NativeEmulatorView::findEmulatorWindow() const {
     search.instanceName = toLower(m_instanceName.toStdWString());
     search.consolePort = std::to_wstring(m_consolePort);
     search.hostWindow = window() ? reinterpret_cast<HWND>(window()->winId()) : nullptr;
+    search.targetPid = static_cast<DWORD>(m_emulatorPid);
 
     EnumWindows(enumWindowsCallback, reinterpret_cast<LPARAM>(&search));
     if (!search.best.hwnd) return nullptr;
 
-    // Pre-visible windows from emulator.exe only need a process-name match (35 pts).
-    // Visible windows require stronger evidence (70 pts) to avoid false positives.
-    const int minScore = IsWindowVisible(search.best.hwnd) ? 70 : 35;
+    // Pre-visible windows: process-name match is sufficient (35 pts) when we know
+    // the target PID; without a PID we still require it to be our known emulator.
+    // Visible windows: require instance-name or port evidence (125 pts) so that
+    // any other emulator.exe window (e.g. Android Studio) is never stolen.
+    const int minScore = IsWindowVisible(search.best.hwnd) ? 125 : 35;
     return search.best.score >= minScore ? search.best.hwnd : nullptr;
 }
 

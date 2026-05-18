@@ -56,6 +56,9 @@ public:
     VMState state() const;
     const VirtualMachineConfig &config() const { return m_config; }
 
+    // Returns the OS process ID of the running emulator (0 if not running)
+    uint32_t processId() const;
+
     // QEMU command-line builder
     std::vector<std::string> buildQemuArgs() const;
 

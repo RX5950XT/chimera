@@ -43,6 +43,10 @@ public:
     Q_INVOKABLE bool startRecording(const QString &filePath, int fps);
     Q_INVOKABLE void stopRecording();
 
+    // Pin window search to a specific emulator PID so Chimera never steals
+    // another emulator.exe (e.g. Android Studio's own emulator).
+    void setEmulatorPid(uint32_t pid);
+
 signals:
     void instanceNameChanged();
     void consolePortChanged();
@@ -63,6 +67,7 @@ private:
 
     QString m_instanceName;
     int m_consolePort = 5554;
+    uint32_t m_emulatorPid = 0;
     bool m_attached = false;
     bool m_recording = false;
     bool m_nativeEmbeddingEnabled = true;

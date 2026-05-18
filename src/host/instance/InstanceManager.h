@@ -83,6 +83,9 @@ public:
     // Set device spoofing profile for a saved instance (takes effect on next start)
     bool setDeviceProfile(const std::string &name, const std::string &profileName);
 
+    // Returns the OS process ID of the running emulator for an instance (0 if not running)
+    uint32_t emulatorProcessId(const std::string &name) const;
+
     // Callbacks
     using StateCallback = std::function<void(const std::string &name, VMState state)>;
     void setStateCallback(StateCallback cb);
