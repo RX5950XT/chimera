@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VirtualMachine.h"
+#include "InstanceRuntimeConfig.h"
 #include <string>
 #include <vector>
 #include <memory>
@@ -26,6 +27,10 @@ struct InstanceConfig {
     std::string processPriority = "high";
     int qmpPort = 5554;
     std::filesystem::path dataDir;
+
+    // Grid position in the multi-instance manager UI
+    int gridRow = 0;
+    int gridCol = 0;
 };
 
 /**
@@ -51,6 +56,19 @@ public:
 
     VMState getInstanceState(const std::string &name) const;
     InstanceConfig getInstanceConfig(const std::string &name) const;
+
+    // Per-instance runtime port assignment (index-based: instance N → port 5554+2N)
+    InstanceRuntimeConfig getRuntimeConfig(const std::string &name) const;
+
+    // Batch operations (executed sequentially)
+    bool batchStartInstances(const std::vector<std::string> &names);
+    bool batchStopInstances(const std::vector<std::string> &names);
+
+    // Grid layout — update stored gridRow/gridCol
+    void setGridPosition(const std::string &name, int row, int col);
+
+    // Sort the internal instance list by name
+    void sortByName();
 
     // Callbacks
     using StateCallback = std::function<void(const std::string &name, VMState state)>;

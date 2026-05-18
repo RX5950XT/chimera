@@ -86,7 +86,9 @@ void InstanceManager::loadInstances() {
             cfg.enableRoot = item.value("enableRoot", false);
             cfg.headless = item.value("headless", false);
             cfg.processPriority = item.value("processPriority", "high");
-            cfg.dataDir = item.value("dataDir", "");
+            cfg.dataDir  = item.value("dataDir", "");
+            cfg.gridRow  = item.value("gridRow", 0);
+            cfg.gridCol  = item.value("gridCol", 0);
             d->savedConfigs.push_back(cfg);
         }
     } catch (...) {
@@ -116,7 +118,9 @@ void InstanceManager::saveInstances() const {
         item["enableRoot"] = cfg.enableRoot;
         item["headless"] = cfg.headless;
         item["processPriority"] = cfg.processPriority;
-        item["dataDir"] = cfg.dataDir.string();
+        item["dataDir"]  = cfg.dataDir.string();
+        item["gridRow"]  = cfg.gridRow;
+        item["gridCol"]  = cfg.gridCol;
         arr.push_back(item);
     }
     for (auto &vm : d->vms) {
@@ -419,6 +423,55 @@ void InstanceManager::setStateCallback(StateCallback cb) {
             if (d->stateCallback) d->stateCallback(name, s);
         });
     }
+}
+
+InstanceRuntimeConfig InstanceManager::getRuntimeConfig(const std::string &name) const {
+    // Port assignment: instance at sorted index N → base + 2*N
+    // Standard emulator spacing: even port = console, odd = ADB
+    static constexpr int kBaseConsole = 5554;
+    static constexpr int kBaseGrpc    = 8554;
+
+    const auto names = listInstances();
+    const auto it = std::find(names.begin(), names.end(), name);
+    const int idx = (it == names.end()) ? 0 : static_cast<int>(it - names.begin());
+
+    InstanceRuntimeConfig rc;
+    rc.consolePort = kBaseConsole + idx * 2;
+    rc.adbPort     = kBaseConsole + idx * 2 + 1;
+    rc.grpcPort    = kBaseGrpc    + idx * 2;
+    rc.adbSerial   = "emulator-" + std::to_string(rc.consolePort);
+    return rc;
+}
+
+bool InstanceManager::batchStartInstances(const std::vector<std::string> &names) {
+    bool ok = true;
+    for (const auto &n : names) ok &= startInstance(n);
+    return ok;
+}
+
+bool InstanceManager::batchStopInstances(const std::vector<std::string> &names) {
+    bool ok = true;
+    for (const auto &n : names) ok &= stopInstance(n);
+    return ok;
+}
+
+void InstanceManager::setGridPosition(const std::string &name, int row, int col) {
+    for (auto &cfg : d->savedConfigs) {
+        if (cfg.name == name) {
+            cfg.gridRow = row;
+            cfg.gridCol = col;
+            saveInstances();
+            return;
+        }
+    }
+}
+
+void InstanceManager::sortByName() {
+    std::sort(d->savedConfigs.begin(), d->savedConfigs.end(),
+              [](const InstanceConfig &a, const InstanceConfig &b) {
+                  return a.name < b.name;
+              });
+    saveInstances();
 }
 
 } // namespace chimera::instance

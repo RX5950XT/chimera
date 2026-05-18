@@ -2,24 +2,48 @@
 
 #include <QObject>
 #include <QStringList>
+#include <QVariantList>
+#include <QVariantMap>
 
 namespace chimera {
 
 /**
  * @brief QML-friendly wrapper around InstanceManager.
+ *
+ * Exposes multi-instance grid operations, batch start/stop, per-instance
+ * port assignments, and sort-by-name for the BlueStacks-parity UI.
  */
 class QmlInstanceManager : public QObject {
     Q_OBJECT
 public:
     explicit QmlInstanceManager(QObject *parent = nullptr);
 
+    // Basic CRUD
     Q_INVOKABLE QStringList listInstances() const;
     Q_INVOKABLE bool createInstance(const QString &name, int cpus, int ramMB, int width, int height);
     Q_INVOKABLE bool cloneInstance(const QString &sourceName, const QString &newName);
     Q_INVOKABLE bool deleteInstance(const QString &name);
+
+    // Lifecycle
     Q_INVOKABLE bool startInstance(const QString &name);
     Q_INVOKABLE bool stopInstance(const QString &name);
-    Q_INVOKABLE int getInstanceState(const QString &name) const;
+    Q_INVOKABLE int  getInstanceState(const QString &name) const;
+
+    // Batch operations
+    Q_INVOKABLE bool batchStart(const QStringList &names);
+    Q_INVOKABLE bool batchStop(const QStringList &names);
+
+    // Grid model: returns list of {name, state, gridRow, gridCol, consolePort, adbPort, grpcPort}
+    Q_INVOKABLE QVariantList instanceModel() const;
+
+    // Grid layout
+    Q_INVOKABLE void setGridPosition(const QString &name, int row, int col);
+
+    // Sort
+    Q_INVOKABLE void sortByName();
+
+    // Per-instance runtime config (ports)
+    Q_INVOKABLE QVariantMap instanceRuntimeConfig(const QString &name) const;
 
     // State enum for QML
     enum class VMState {
