@@ -4,10 +4,45 @@
 
 ## 當前狀態
 
-**完成度**: BlueStacks Parity Roadmap v3 P0–P4e + Session 2–5 補強 COMPLETE (2026-05-19)
+**完成度**: BlueStacks Parity Roadmap v3 P0–P4e + Session 2–7 補強 COMPLETE (2026-05-19)
 **生產引擎**: `emulator.exe` (Google QEMU+WHPX fork) — `--qemu-backend` / `--hcs-backend` 為 legacy R&D，保留不刪
-**下一步**: Phase 8 — gfxstream-capable QEMU 或 SwiftShader APEX → SurfaceFlinger stable → boot_completed=1 → ADB TCP
+**BlueStacks parity (emulator.exe 路徑)**: 已達成核心功能同等級（見「BlueStacks Parity 功能清單」）
+**Phase 8 (legacy)**: `--cuttlefish` R&D 路徑的 gfxstream/SF stable 問題，不影響生產路徑功能
 **Tests**: 15/15 unit tests PASS；3 integration tests（需 emulator 運行中）
+
+## BlueStacks Parity 功能清單（production emulator.exe 路徑）
+
+| 功能 | 狀態 |
+|------|------|
+| Android boot + WHPX | ✅ |
+| Native display embedding (Win32) | ✅ |
+| Input (keyboard/mouse/touch/gamepad) | ✅ |
+| Multi-touch (MT evdev Type-B) | ✅ |
+| IME 文字輸入 | ✅ |
+| FPS 鼠標鎖定 | ✅ |
+| 十字準心游標 | ✅ |
+| APK / OBB 安裝 | ✅ |
+| App 管理 (launch/stop/uninstall/clear) | ✅ |
+| 釘選常用應用 | ✅ |
+| Screen recording + screenshot | ✅ |
+| GPS 模擬 (geo fix + route) | ✅ |
+| 感應器模擬 (acc/gyro/mag) | ✅ |
+| 震動裝置模擬 | ✅ |
+| 電池模擬 | ✅ |
+| Macro 錄製/播放 | ✅ |
+| Key scheme 匯入/匯出 | ✅ |
+| Performance HUD (FPS/Lat/Drop) | ✅ |
+| Root mode | ✅ |
+| Device spoofing (5 flagship profiles) | ✅ |
+| Clipboard 同步 | ✅ |
+| File sharing (push/pull) | ✅ |
+| 網路 Proxy 設定 | ✅ |
+| 網速模擬 (GPRS→Full) | ✅ |
+| Screen resize / DPI / rotation | ✅ |
+| FPS lock (30/60/90/120) | ✅ |
+| Eco mode (background 降優先級) | ✅ |
+| Multi-instance (batch start/stop) | ✅ |
+| Audio (WASAPI) | ✅ |
 
 ## 架構
 
@@ -85,4 +120,4 @@ ctest --test-dir build -C Release --output-on-failure -LE integration
 **禁止 commit**: BlueStacks binaries (Binaries/, Client/, Engine/, Dumps/)
 
 ---
-*Updated: 2026-05-18*
+*Updated: 2026-05-19*
