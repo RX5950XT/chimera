@@ -336,9 +336,9 @@ void InputBridge::onGamepadButton(int deviceId, int button, bool pressed) {
     auto it = s_gamepadBtnMap.find(button);
     if (it == s_gamepadBtnMap.end()) return;
 
-    if (hasQmp()) {
-        // Map gamepad buttons to QEMU keycodes (use KEY_LEFTCTRL etc. as placeholders)
-        // For now, fall through to ADB for gamepad
+    if (hasConsoleKeyboard()) {
+        m_consoleInput->sendKeyEvent(it->second, pressed);
+        return;
     }
 
     if (pressed) {
