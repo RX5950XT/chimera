@@ -50,6 +50,9 @@ public:
     Q_INVOKABLE void setBatteryLevel(int percent);             // 0–100
     Q_INVOKABLE void setBatteryStatus(const QString &status);  // "charging" | "discharging" | "full"
 
+    // File sharing: host → /sdcard/Download/ via ADB push
+    Q_INVOKABLE void pushFileToGuest(const QString &fileUrl);
+
     // Configure ADB binary + device serial (called from main.cpp after emulator starts)
     void setAdbConfig(const QString &adbExe, const QString &adbSerial);
 

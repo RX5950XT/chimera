@@ -5,8 +5,10 @@
 #include "LocationSimulator.h"
 #include "ClipboardBridge.h"
 #include "AndroidConsoleInput.h"
+#include "SharedFolder.h"
 #include <QProcess>
 #include <QUrl>
+#include <QFileInfo>
 #include <algorithm>
 
 namespace chimera {
@@ -148,6 +150,22 @@ void QmlAndroidControls::setBatteryLevel(int percent) {
 void QmlAndroidControls::setBatteryStatus(const QString &status) {
     if (m_consoleInput)
         m_consoleInput->sendPowerStatus(status.toStdString());
+}
+
+void QmlAndroidControls::pushFileToGuest(const QString &fileUrl) {
+    const QString localPath = QUrl(fileUrl).toLocalFile();
+    if (localPath.isEmpty()) {
+        setInstallStatus(tr("檔案路徑無效"));
+        return;
+    }
+    const bool ok = storage::SharedFolder::instance().pushToGuest(
+        localPath.toStdString());
+    if (ok) {
+        const QString name = QFileInfo(localPath).fileName();
+        setInstallStatus(tr("已推送：") + name + tr("→ /sdcard/Download/"));
+    } else {
+        setInstallStatus(tr("推送失敗，請確認 ADB 連線"));
+    }
 }
 
 void QmlAndroidControls::syncClipboardToGuest() {

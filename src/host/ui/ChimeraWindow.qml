@@ -683,6 +683,12 @@ ApplicationWindow {
                         }
                         SideButton {
                             Layout.fillWidth: true
+                            text: qsTr("推送檔案")
+                            detail: qsTr("→ Downloads")
+                            onClicked: fileShareDialog.open()
+                        }
+                        SideButton {
+                            Layout.fillWidth: true
                             text: qsTr("多開管理")
                             detail: qsTr("Ctrl+Shift+8")
                             onClicked: root.openSidePage("multi")
@@ -1400,6 +1406,13 @@ ApplicationWindow {
         title: qsTr("選擇 APK 檔案")
         nameFilters: [qsTr("APK 檔案 (*.apk)"), qsTr("所有檔案 (*)")]
         onAccepted: AndroidControls.installApk(selectedFile.toString())
+    }
+
+    FileDialog {
+        id: fileShareDialog
+        title: qsTr("選擇要推送到 Android 的檔案")
+        nameFilters: [qsTr("所有檔案 (*)")]
+        onAccepted: AndroidControls.pushFileToGuest(selectedFile.toString())
     }
 
     Shortcut {
