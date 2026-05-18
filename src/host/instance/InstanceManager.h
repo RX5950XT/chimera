@@ -22,6 +22,7 @@ struct InstanceConfig {
     int maxFps = 60;
     bool enableVsync = false;
     bool enableRoot = false;
+    bool enableAudio = false;            // Enables host audio output via WASAPI
     bool headless = false;
     std::string deviceProfile;           // Device spoofing profile name
     std::string processPriority = "high";
@@ -75,6 +76,12 @@ public:
 
     // Toggle root mode for a saved instance (takes effect on next start)
     bool setEnableRoot(const std::string &name, bool enabled);
+
+    // Toggle audio for a saved instance (takes effect on next start)
+    bool setEnableAudio(const std::string &name, bool enabled);
+
+    // Set device spoofing profile for a saved instance (takes effect on next start)
+    bool setDeviceProfile(const std::string &name, const std::string &profileName);
 
     // Callbacks
     using StateCallback = std::function<void(const std::string &name, VMState state)>;

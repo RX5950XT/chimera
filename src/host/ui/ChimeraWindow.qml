@@ -696,6 +696,18 @@ ApplicationWindow {
                         }
                         SideButton {
                             Layout.fillWidth: true
+                            text: qsTr("剪貼簿同步")
+                            detail: qsTr("→ Android")
+                            onClicked: AndroidControls.syncClipboardToGuest()
+                        }
+                        SideButton {
+                            Layout.fillWidth: true
+                            text: qsTr("GPS 位置")
+                            detail: qsTr("座標模擬")
+                            onClicked: root.openSidePage("gps")
+                        }
+                        SideButton {
+                            Layout.fillWidth: true
                             text: qsTr("設定")
                             detail: qsTr("Ctrl+Shift+,")
                             onClicked: root.openSidePage("settings")
@@ -985,6 +997,96 @@ ApplicationWindow {
                         }
                     }
 
+                    // ---- GPS page --------------------------------------------
+                    ColumnLayout {
+                        id: gpsPage
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        visible: sidePage === "gps"
+                        opacity: visible ? 1 : 0
+                        spacing: 10
+                        Behavior on opacity { NumberAnimation { duration: 170; easing.type: Easing.OutCubic } }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            SectionLabel { text: qsTr("GPS 位置模擬"); Layout.fillWidth: true }
+                            DockButton { text: qsTr("返回"); onClicked: root.openSidePage("main") }
+                        }
+
+                        Label {
+                            text: qsTr("目前：%1, %2").arg(AndroidControls.gpsLatitude.toFixed(6)).arg(AndroidControls.gpsLongitude.toFixed(6))
+                            color: theme.muted
+                            font.pixelSize: 11
+                            Layout.fillWidth: true
+                        }
+
+                        Label { text: qsTr("緯度"); color: theme.text; font.pixelSize: 12 }
+                        TextField {
+                            id: gpsLatField
+                            Layout.fillWidth: true
+                            placeholderText: "25.033964"
+                            text: AndroidControls.gpsLatitude !== 0 ? AndroidControls.gpsLatitude.toFixed(6) : ""
+                            color: theme.text
+                            background: Rectangle {
+                                radius: 6
+                                color: theme.panelSoft
+                                border.color: parent.activeFocus ? theme.accent : theme.line
+                            }
+                            font.pixelSize: 13
+                        }
+
+                        Label { text: qsTr("經度"); color: theme.text; font.pixelSize: 12 }
+                        TextField {
+                            id: gpsLonField
+                            Layout.fillWidth: true
+                            placeholderText: "121.564468"
+                            text: AndroidControls.gpsLongitude !== 0 ? AndroidControls.gpsLongitude.toFixed(6) : ""
+                            color: theme.text
+                            background: Rectangle {
+                                radius: 6
+                                color: theme.panelSoft
+                                border.color: parent.activeFocus ? theme.accent : theme.line
+                            }
+                            font.pixelSize: 13
+                        }
+
+                        DockButton {
+                            Layout.fillWidth: true
+                            text: qsTr("套用 GPS 位置")
+                            highlighted: true
+                            onClicked: {
+                                const lat = parseFloat(gpsLatField.text) || 0
+                                const lon = parseFloat(gpsLonField.text) || 0
+                                AndroidControls.setGpsLocation(lat, lon, 0)
+                                lastActionStatus = qsTr("GPS 已設定：%1, %2").arg(lat.toFixed(6)).arg(lon.toFixed(6))
+                            }
+                        }
+
+                        // Common cities
+                        SectionLabel { text: qsTr("常用地點") }
+                        Repeater {
+                            model: [
+                                { name: qsTr("台北"), lat: 25.033964, lon: 121.564468 },
+                                { name: qsTr("東京"), lat: 35.689487, lon: 139.691706 },
+                                { name: qsTr("首爾"), lat: 37.566535, lon: 126.977969 },
+                                { name: qsTr("上海"), lat: 31.224361, lon: 121.469170 }
+                            ]
+                            delegate: DockButton {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                text: modelData.name
+                                onClicked: {
+                                    gpsLatField.text = modelData.lat.toFixed(6)
+                                    gpsLonField.text = modelData.lon.toFixed(6)
+                                    AndroidControls.setGpsLocation(modelData.lat, modelData.lon, 0)
+                                    lastActionStatus = qsTr("GPS：%1").arg(modelData.name)
+                                }
+                            }
+                        }
+
+                        Item { Layout.fillHeight: true }
+                    }
+
                     // ---- Settings page ---------------------------------------
                     ColumnLayout {
                         id: settingsPage
@@ -1084,6 +1186,26 @@ ApplicationWindow {
                             }
                         }
 
+                        SectionLabel { text: qsTr("裝置偽裝") }
+
+                        Repeater {
+                            model: InstanceManager.availableDeviceProfiles()
+                            delegate: DockButton {
+                                required property string modelData
+                                Layout.fillWidth: true
+                                text: modelData.length > 0 ? modelData : qsTr("無偽裝（預設）")
+                                highlighted: settingsPage.cfg.deviceProfile === modelData
+                                onClicked: {
+                                    if (InstanceManager.setDeviceProfile("chimera_dev", modelData)) {
+                                        settingsPage.cfg = InstanceManager.instanceFullConfig("chimera_dev")
+                                        lastActionStatus = modelData.length > 0
+                                            ? qsTr("裝置：") + modelData + qsTr("（下次啟動生效）")
+                                            : qsTr("已關閉裝置偽裝（下次啟動生效）")
+                                    }
+                                }
+                            }
+                        }
+
                         SectionLabel { text: qsTr("進階") }
 
                         RowLayout {
@@ -1101,6 +1223,24 @@ ApplicationWindow {
                                     }
                                 }
                             }
+                            DockButton {
+                                Layout.fillWidth: true
+                                text: settingsPage.cfg.enableAudio ? qsTr("音效 開") : qsTr("音效 關")
+                                highlighted: settingsPage.cfg.enableAudio === true
+                                onClicked: {
+                                    const cur = settingsPage.cfg.enableAudio === true
+                                    if (InstanceManager.setEnableAudio("chimera_dev", !cur)) {
+                                        settingsPage.cfg = InstanceManager.instanceFullConfig("chimera_dev")
+                                        lastActionStatus = !cur ? qsTr("音效已啟用（下次啟動生效）") : qsTr("音效已停用（下次啟動生效）")
+                                    }
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
                             DockButton {
                                 Layout.fillWidth: true
                                 text: settingsPage.cfg.enableRoot ? qsTr("Root 開") : qsTr("Root 關")
@@ -1126,7 +1266,7 @@ ApplicationWindow {
 
                         Label {
                             Layout.fillWidth: true
-                            text: qsTr("CPU / RAM / Root 變更需重啟 Instance")
+                            text: qsTr("CPU / RAM / Root / 音效 變更需重啟 Instance")
                             color: theme.muted
                             wrapMode: Text.WordWrap
                             font.pixelSize: 11

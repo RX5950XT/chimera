@@ -84,6 +84,8 @@ void InstanceManager::loadInstances() {
             cfg.maxFps = item.value("maxFps", 60);
             cfg.enableVsync = item.value("enableVsync", false);
             cfg.enableRoot = item.value("enableRoot", false);
+            cfg.enableAudio = item.value("enableAudio", false);
+            cfg.deviceProfile = item.value("deviceProfile", "");
             cfg.headless = item.value("headless", false);
             cfg.processPriority = item.value("processPriority", "high");
             cfg.dataDir  = item.value("dataDir", "");
@@ -116,6 +118,8 @@ void InstanceManager::saveInstances() const {
         item["maxFps"] = cfg.maxFps;
         item["enableVsync"] = cfg.enableVsync;
         item["enableRoot"] = cfg.enableRoot;
+        item["enableAudio"] = cfg.enableAudio;
+        item["deviceProfile"] = cfg.deviceProfile;
         item["headless"] = cfg.headless;
         item["processPriority"] = cfg.processPriority;
         item["dataDir"]  = cfg.dataDir.string();
@@ -191,6 +195,7 @@ bool InstanceManager::createInstance(const InstanceConfig &config) {
     vmConfig.enableVsync = config.enableVsync;
     vmConfig.headless = config.headless;
     vmConfig.enableRoot = config.enableRoot;
+    vmConfig.enableAudio = config.enableAudio;
     vmConfig.processPriority = config.processPriority;
     vmConfig.qmpPort = config.qmpPort;
     vmConfig.deviceProfile = config.deviceProfile;
@@ -484,6 +489,30 @@ bool InstanceManager::setEnableRoot(const std::string &name, bool enabled) {
     for (auto &cfg : d->savedConfigs) {
         if (cfg.name == name) {
             cfg.enableRoot = enabled;
+            saveInstances();
+            return true;
+        }
+    }
+    return false;
+}
+
+bool InstanceManager::setEnableAudio(const std::string &name, bool enabled) {
+    if (!isValidInstanceName(name)) return false;
+    for (auto &cfg : d->savedConfigs) {
+        if (cfg.name == name) {
+            cfg.enableAudio = enabled;
+            saveInstances();
+            return true;
+        }
+    }
+    return false;
+}
+
+bool InstanceManager::setDeviceProfile(const std::string &name, const std::string &profileName) {
+    if (!isValidInstanceName(name)) return false;
+    for (auto &cfg : d->savedConfigs) {
+        if (cfg.name == name) {
+            cfg.deviceProfile = profileName;
             saveInstances();
             return true;
         }

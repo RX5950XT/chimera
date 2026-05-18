@@ -210,7 +210,9 @@ bool VirtualMachine::start() {
 
     args.push_back("-no-snapshot");
     args.push_back("-no-boot-anim");
-    args.push_back("-no-audio");
+    if (!m_config.enableAudio) {
+        args.push_back("-no-audio");
+    }
     args.push_back("-no-metrics");
 
     // Root mode: enable a writable /system partition (google_apis only).

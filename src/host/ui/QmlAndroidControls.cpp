@@ -2,6 +2,8 @@
 
 #include "InputBridge.h"
 #include "KeyCodes.h"
+#include "LocationSimulator.h"
+#include "ClipboardBridge.h"
 #include <QProcess>
 #include <QUrl>
 #include <algorithm>
@@ -117,6 +119,20 @@ void QmlAndroidControls::runAdbAsync(const QStringList &args,
 
     setInstallStatus(tr("執行中…"));
     m_adbProcess->start(m_adbExe, args);
+}
+
+void QmlAndroidControls::setGpsLocation(double lat, double lon, double altMetres) {
+    integration::LocationSimulator::instance().setLocation(lat, lon, altMetres);
+    if (m_gpsLat != lat || m_gpsLon != lon) {
+        m_gpsLat = lat;
+        m_gpsLon = lon;
+        emit gpsChanged();
+    }
+}
+
+void QmlAndroidControls::syncClipboardToGuest() {
+    integration::ClipboardBridge::instance().syncHostToGuest();
+    setInstallStatus(tr("剪貼簿已同步至 Android"));
 }
 
 void QmlAndroidControls::setInstallStatus(const QString &s) {

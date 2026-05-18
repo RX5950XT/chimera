@@ -54,6 +54,15 @@ public:
     // Toggle root mode (takes effect on next start)
     Q_INVOKABLE bool setEnableRoot(const QString &name, bool enabled);
 
+    // Toggle audio output (takes effect on next start)
+    Q_INVOKABLE bool setEnableAudio(const QString &name, bool enabled);
+
+    // Set device spoofing profile by name (takes effect on next start)
+    Q_INVOKABLE bool setDeviceProfile(const QString &name, const QString &profileName);
+
+    // Returns built-in device profile names (for UI selector)
+    Q_INVOKABLE QStringList availableDeviceProfiles() const;
+
     // State enum for QML
     enum class VMState {
         Stopped = 0,

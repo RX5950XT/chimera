@@ -1,5 +1,6 @@
 #include "QmlInstanceManager.h"
 #include "InstanceManager.h"
+#include "DeviceSpoofer.h"
 
 namespace chimera {
 
@@ -106,6 +107,8 @@ QVariantMap QmlInstanceManager::instanceFullConfig(const QString &name) const {
     m[QStringLiteral("graphicsRenderer")] = QString::fromStdString(cfg.graphicsRenderer);
     m[QStringLiteral("enableVsync")]      = cfg.enableVsync;
     m[QStringLiteral("enableRoot")]       = cfg.enableRoot;
+    m[QStringLiteral("enableAudio")]      = cfg.enableAudio;
+    m[QStringLiteral("deviceProfile")]    = QString::fromStdString(cfg.deviceProfile);
     m[QStringLiteral("headless")]         = cfg.headless;
     return m;
 }
@@ -118,6 +121,24 @@ bool QmlInstanceManager::updateInstanceFps(const QString &name, int maxFps) {
 bool QmlInstanceManager::setEnableRoot(const QString &name, bool enabled) {
     return chimera::instance::InstanceManager::instance().setEnableRoot(
         name.toStdString(), enabled);
+}
+
+bool QmlInstanceManager::setEnableAudio(const QString &name, bool enabled) {
+    return chimera::instance::InstanceManager::instance().setEnableAudio(
+        name.toStdString(), enabled);
+}
+
+bool QmlInstanceManager::setDeviceProfile(const QString &name, const QString &profileName) {
+    return chimera::instance::InstanceManager::instance().setDeviceProfile(
+        name.toStdString(), profileName.toStdString());
+}
+
+QStringList QmlInstanceManager::availableDeviceProfiles() const {
+    QStringList list;
+    list.append(QString());  // empty = "預設 (無偽裝)"
+    for (const auto &p : chimera::instance::DeviceSpoofer::getBuiltinProfiles())
+        list.append(QString::fromStdString(p.name));
+    return list;
 }
 
 QVariantMap QmlInstanceManager::instanceRuntimeConfig(const QString &name) const {

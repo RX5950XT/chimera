@@ -11,6 +11,8 @@ class QmlAndroidControls : public QObject {
     Q_OBJECT
 
     Q_PROPERTY(QString installStatus READ installStatus NOTIFY installStatusChanged)
+    Q_PROPERTY(double  gpsLatitude   READ gpsLatitude   NOTIFY gpsChanged)
+    Q_PROPERTY(double  gpsLongitude  READ gpsLongitude  NOTIFY gpsChanged)
 
 public:
     explicit QmlAndroidControls(QObject *parent = nullptr);
@@ -32,13 +34,22 @@ public:
     // Rotate the guest display and update coordinate mapping (degrees: 0, 90, 180, 270)
     Q_INVOKABLE void setGuestRotation(int degrees);
 
+    // Set GPS location in the guest (lat, lon in decimal degrees, alt in metres)
+    Q_INVOKABLE void setGpsLocation(double lat, double lon, double altMetres = 0.0);
+
+    // Clipboard: push current Windows clipboard text to the guest Android
+    Q_INVOKABLE void syncClipboardToGuest();
+
     // Configure ADB binary + device serial (called from main.cpp after emulator starts)
     void setAdbConfig(const QString &adbExe, const QString &adbSerial);
 
     QString installStatus() const { return m_installStatus; }
+    double  gpsLatitude()   const { return m_gpsLat; }
+    double  gpsLongitude()  const { return m_gpsLon; }
 
 signals:
     void installStatusChanged(const QString &status);
+    void gpsChanged();
 
 private:
     bool sendKey(int keyCode) const;
@@ -49,6 +60,8 @@ private:
     QString   m_adbExe;
     QString   m_adbSerial;
     QString   m_installStatus;
+    double    m_gpsLat = 0.0;
+    double    m_gpsLon = 0.0;
 };
 
 } // namespace chimera

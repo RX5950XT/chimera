@@ -34,6 +34,7 @@ struct VirtualMachineConfig {
     bool enableVnc = false;
     bool headless = false;               // -no-window flag; false enables native window embedding
     bool enableRoot = false;             // -writable-system (google_apis only; adb root post-boot)
+    bool enableAudio = false;            // Remove -no-audio flag; emulator handles host audio natively
     std::string deviceProfile;           // Device spoofing profile name
     std::string processPriority = "high";
 };
