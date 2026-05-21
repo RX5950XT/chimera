@@ -15,7 +15,7 @@
 | 功能 | 狀態 |
 |------|------|
 | Android boot + WHPX | ✅ |
-| Native display embedding (Win32) | ✅ |
+| 顯示內嵌（gRPC 串流，emulator headless 無彈窗） | ✅ |
 | Input (keyboard/mouse/touch/gamepad) | ✅ |
 | Multi-touch (MT evdev Type-B) | ✅ |
 | IME 文字輸入 | ✅ |
@@ -69,8 +69,9 @@ Tests             tests/unit/            15 Qt Test executables
                   tests/integration/     emulator-boot / input-inject / screencap (QSKIP guards)
 ```
 
-**Input priority chain**: HvSocket → Console (port 5554 telnet) → QMP → ADB
-**Display path**: Native Win32 window embed (default) → gRPC/ADB fallback (`--stream-capture`)
+**Input priority chain**: 滑鼠/觸控 HvSocket → Console (5554 telnet) → QMP → ADB；
+鍵盤 gRPC `sendKey` (8554) → QMP → ADB（console 無鍵盤通道）
+**Display path**: gRPC framebuffer streaming（預設，emulator `-no-window` headless，無彈出視窗）→ legacy Win32 window embed（opt-in `--native-embed`）
 
 ## 重要決策（不討論不改）
 
@@ -97,14 +98,22 @@ ctest --test-dir build -C Release --output-on-failure -LE integration
 | `CHIMERA_INPUT_BACKEND` | `console\|adb\|qmp\|auto` | `auto` | auto = 嘗試 Console，不 Ready 則退回 ADB |
 | `CHIMERA_PROCESS_LAUNCHER` | `legacy\|native\|auto` | `auto` | legacy = `_popen`；native = `CreateProcessW` |
 
+**CLI 旗標**：`--native-embed` 改用 legacy Win32 視窗嵌入（預設為 gRPC streaming，emulator headless）；`--no-emulator` 不啟動 emulator。
+
 ## 已知問題
 
 | 問題 | 狀態 |
 |------|------|
 | SurfaceFlinger crash-loop (`--cuttlefish`) | OPEN — Phase 8 (gfxstream) |
 | ADB TCP blocked (boot_completed=1 未到達) | OPEN — Phase 8 解鎖 |
-| gRPC stream 峰值 ~32 FPS @ 720p | ACCEPTED — Native embed 為預設 |
-| Native child window 疊在 QML 上 | ACCEPTED — controls 放在 viewport 外 |
+| Console 無鍵盤通道（`event keydown` 不存在、`event send` EV_KEY 只到觸控裝置） | RESOLVED — 鍵盤改走 emulator gRPC `sendKey`，<5ms（getevent 驗證）|
+| gRPC 截圖偶發 stall（Max 100–176ms）造成幀率短暫掉到 ~50 | PARTIAL — 動畫中達 60–68fps；完全消除尖刺需 native-embed 路徑 |
+| emulator `streamScreenshot` 動畫中 0 幀（此 build 壞掉） | ACCEPTED — 改用 `getScreenshot` 管線輪詢 |
+| 舊 Win32 SetParent 嵌入會破壞 emulator Qt 視窗群組 | RESOLVED — 改用 gRPC streaming 為預設，embed 改 opt-in |
+| emulator `streamScreenshot` 串流被節流（~0.1 FPS） | RESOLVED — 改為管線化輪詢 unary `getScreenshot` |
+| gRPC 擷取忙輪詢榨乾 CPU（電腦卡頓） | RESOLVED — 幀率節流（pace 到 16ms/60FPS）+ depth 4 管線 + 擷取寬度上限 720px |
+| emulator/qemu 以 HIGH 優先級啟動，搶佔主機（音樂卡頓） | RESOLVED — `processPriority` 改 `normal` |
+| gRPC 管線 HTTP/2 stream hang，擷取整個凍結 | RESOLVED — watchdog（無幀 2s 重啟管線）+ 請求 transferTimeout |
 
 ## 路徑
 
@@ -124,10 +133,12 @@ ctest --test-dir build -C Release --output-on-failure -LE integration
 |------|------|
 | `AGENTS.md` | Build、測試、Git、Coding 標準、疑難排解 |
 | `CONTEXT.md` | 開發歷程、相位記錄、bug 修正紀錄 |
+| `tasks/todo.md` | 當前任務規劃、清理範圍與驗證回顧 |
 | `docs/adr/ADR-001-shared-folder.md` | SharedFolder 技術選型 ADR |
 | `docs/references/bluestacks.conf` | BlueStacks 設定格式參考 |
 
-**禁止 commit**: BlueStacks binaries (Binaries/, Client/, Engine/, Dumps/)
+**禁止 commit**: BlueStacks binaries (Binaries/, Client/, Engine/, Dumps/)、root 層 ISO/QCOW2/installer、
+QEMU/debug logs、R&D throwaway scripts、runtime output dirs。
 
 ---
-*Updated: 2026-05-19*
+*Updated: 2026-05-21 — Session 12（版控衛生清理與文件交接）*

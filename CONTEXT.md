@@ -268,3 +268,164 @@ Chimera 的等效路徑：Android Console `event` protocol on port 5554（繞過
 - ✅ **Tests**：15/15 PASS（無迴歸）
 
 *Updated: 2026-05-19 — Session 8*
+
+---
+
+## Session 9：顯示路徑改為 gRPC streaming + Console 輸入修正（2026-05-19）
+
+### 問題背景
+使用者回報：開啟 Chimera 時 emulator 仍會彈出獨立的原生視窗，沒有乖乖內嵌。
+
+### 根因
+舊的 `NativeEmulatorView` Win32 `SetParent` 視窗嵌入法本質脆弱：modern Android emulator
+（Qt 6.5.3）擁有複雜的多視窗群組（device 視窗 + 垂直工具列 + Extended Controls + 大量
+helper 視窗）。把其中一個視窗 reparent 進外部 process 的視窗會破壞 emulator 的 Qt 視窗
+管理——emulator 會銷毀/重建視窗，最後被嵌入的常常是**工具列**（`Qt653QWindowToolSaveBits`）
+而非 device 視窗，畫面變黑。每個 session 都在打地鼠。
+
+### 解法（架構決策）
+**改用 gRPC framebuffer streaming 為預設顯示路徑**（BlueStacks 做法——自己渲染 guest
+framebuffer，不 wrap 別的 process 的視窗）：
+- `main.cpp`：`nativeDisplayEnabled` 改為 `--native-embed` opt-in；預設 `streamCapture=true`
+- emulator 以 `cfg.headless=true` → `-no-window` 啟動，**完全不會有彈出視窗**
+- 幀流經 `GrpcFramebufferCapture`（port 8554）→ `GuestDisplay` QML item 渲染
+- 新增 context property `nativeEmbedEnabled`；`ChimeraWindow.qml` 的
+  `NativeEmulatorView.nativeEmbeddingEnabled` 綁定它（預設 false，NativeEmulatorView 休眠）
+- legacy Win32 embed 經 `--native-embed` 仍可用，保留不刪
+
+### Console 輸入修正（`AndroidConsoleInput.cpp`）
+手動 telnet 驗證 emulator console 協定後修正兩個 bug：
+1. **auth 解析**：`auth <token>` 後 console 回 `Android Console: type 'help'...` 接著
+   `OK`，舊程式把第一行資訊 banner 誤判為拒絕。改為只有 `KO` 開頭才是拒絕，其他資訊行
+   忽略、繼續等 `OK`/`KO`。
+2. **probe 卡死**：console 錯誤終止行格式是 `KO: <reason>`（冒號），舊程式只認 `KO`/`KO `，
+   導致 probe 永遠等不到終止行。改用 `line.startsWith("KO")`。
+3. **`event keydown` 不存在**：emulator console `event` 只有 `send/types/codes/text/mouse`
+   子指令，沒有 `keydown`/`keyup`。probe 正確偵測到 → keyboard 退回 ADB，mouse 走 console。
+   狀態正常達 `Ready`。
+
+### 驗證
+- emulator headless 啟動，0 個彈出視窗
+- Android 開機完成，主畫面渲染於 Chimera viewport 內
+- 觸發 `am start` 開啟 Chrome → gRPC 串流即時更新（畫面變動推幀，靜態 0 FPS 屬正常省電）
+- `AndroidConsoleInput` 狀態 `Disconnected→ConnectedUnauthed→AuthPending→Probing→Ready`
+
+### gRPC 顯示效能修正（Session 9 後段）
+症狀：顯示內嵌後，持續動畫下 FPS 僅 2–15、幀間隔達 16 秒。
+
+隔離測試（python gRPC client 直接打 emulator）：
+- `streamScreenshot`（server-streaming RPC）：**3 幀 / 21 秒 = 0.1 FPS**——此 RPC 被節流/壞掉
+- `getScreenshot`（unary RPC）輪詢：~24/s；管線化（depth 2–4 並行）：**50–55/s**
+- 結論：瓶頸是 emulator 的 `streamScreenshot`，**不是** Qt HTTP/2
+
+修法：`GrpcFramebufferCapture` 從 `streamScreenshot` 改為**管線化輪詢 `getScreenshot`**
+（`m_pipelineDepth=3` 個 unary 請求並行 in-flight，完成一個就補一個）；錯誤時 200ms
+backoff 避免開機前 tight-loop。
+
+驗證：持續動畫下 **30–44 FPS**，幀時間 24–32ms，最大 <100ms，0 dropped（修正前 2–15 FPS
+含多秒停頓）——約 10–20× 提升。
+
+### 已知待改善
+- console keyboard 走 ADB fallback（emulator console 無 `event keydown`，非 bug）
+
+## Session 10 — gRPC 擷取性能優化（CPU 卡頓）
+
+症狀：使用者回報「電腦超卡」，且 FPS 達不到 60。
+
+根因：`GrpcFramebufferCapture` 管線化輪詢**無節流**——depth-3 pipeline 每收到回應立即
+再發 `getScreenshot`，以最高速忙輪詢。同時擷取改成原生全解析度（~6MB/幀）。兩者疊加
+把 chimera-ui 與 emulator 兩邊 CPU 都打滿，反而拖垮吞吐，60 FPS 也達不到。
+
+修法 A — gRPC 擷取（`GrpcFramebufferCapture` + `main.cpp`）：
+1. **幀率節流**：新增 `scheduleNext()`，以 `QElapsedTimer` 把 dispatch cadence 鎖在
+   目標幀間隔（`m_intervalMs`，main.cpp 設 16ms ≈ 60FPS）。落後時就立刻發、不爆衝補。
+   回應完成改呼叫 `scheduleNext()` 而非立即 `sendRequest()`。
+2. **pipeline depth 3→4**：節流已鎖死 dispatch 速率，故加深 depth **不增加 CPU**，
+   只是讓穩定 cadence 能撐過較長的 RPC 來回延遲（~60ms 仍可維持 ~60FPS）。
+3. **擷取寬度上限 720px**（原為 0=原生）：全解析度的傳輸/protobuf 解碼/GPU 上傳成本
+   遠高於 emulator 端一次下採樣；720px 對顯示 widget 仍過採樣，畫質無感、CPU 砍半。
+
+修法 B — 程序優先級（`main.cpp:698`）：emulator/qemu 原以 `processPriority="high"`
+（HIGH_PRIORITY_CLASS）啟動，一顆 4-vCPU VM 跑高優先級會搶佔主機所有一般優先級執行緒
+——桌面、瀏覽器、**音訊執行緒**——導致全系統卡頓、播放的音樂跳針。改為 `"normal"`，
+交給 OS 排程公平分配；eco mode 仍可在背景時降到更低。
+
+修法 C — 擷取管線 stall watchdog：實測發現開機後螢幕轉靜止時，4 個並行
+`getScreenshot` HTTP/2 stream 會全部 hang 住、`finished` 永不觸發，擷取整個凍結且
+不自我恢復（觸發畫面變動也救不回）。對策：
+- `GrpcFramebufferCapture` 內建 1Hz watchdog，首幀後啟用；無幀超過 2s 即 `restartPipeline()`
+  （abort 全部 in-flight、重新 prime）。
+- 每個請求加 `setTransferTimeout(2s)`，hang 的 stream 會被中止轉為一般 error→重試。
+
+驗證（Android 34，chimera_dev，實機，16 邏輯核）：
+- 程序優先級：`emulator`／`qemu` 由 High → **Normal**（已實測確認）
+- chimera-ui CPU：忙輪詢爆滿 → **4.7%**（≈0.75 核）；RAM ~240MB
+- 擷取 watchdog：60s 觀測幀數持續推進、watchdog 觸發 1 次即自動恢復，不再永久凍結
+- 擷取幀率：靜止畫面 ~12 FPS（無新幀屬正常）、UI 動畫中 ~30–40 FPS
+- 15/15 unit tests PASS，無回歸
+
+**FPS 上限說明**：host 擷取管線已非瓶頸（pacing 目標 16ms、depth 4、CPU 僅 4.7% 有餘裕）。
+`getScreenshot` 會等 guest 渲染出新幀才回傳，故實際幀率 = guest 產幀速率。要逼近 60 FPS
+需 guest 端持續以 60Hz 渲染（遊戲負載），屬 emulator/GPU 設定範疇，非 host wrapper 可控。
+
+## Session 10 補充 — 版控衛生
+
+- `.gitignore` 補上 debug 產物（`*.err *.out *.ppm verify*.png qemu_*.png chimera-perf.*`）、
+  R&D 腳本（`run-qemu-*.ps1 test-qemu-*.bat`）、BlueStacks binaries（`Binaries/ Client/ Engine/ Dumps/`）
+- 刪除 6.03 GB 誤產生垃圾檔（`-`、` 2` 等磁碟映像殘骸）
+- `AGENTS.md` 新增「Commit 排除」章節，與 `.gitignore`／`CLAUDE.md` 對齊
+
+## Session 11 — 載入 LOGO 重疊、鍵盤延遲、FPS 上限調查
+
+### LOGO 重疊（載入畫面）
+`GuestDisplay::paint()` 在無畫面時自繪「等待 Android 畫面...」黑底文字，QML 的 loading
+`Column`（"C" 標誌 + 「等待 Android 啟動…」）又疊在同一置中位置 → 兩個載入指示重疊。
+修法：`GuestDisplay` 無幀時只填黑，載入畫面 UI 完全由 QML `Column` 單一負責。
+
+### 鍵盤延遲（按鍵響應）
+根因：實測確認 emulator console（5554）**無可用鍵盤通道**——`event keydown` 不存在；
+`event send` 的 EV_KEY 只送到觸控裝置（`getevent` 證實鍵盤裝置 event13 收不到）。
+故鍵盤一直走 ADB `input keyevent`（~100ms/鍵 shell spawn）。
+
+修法：新增 `EmulatorGrpcInput`（`src/host/input/`），走 emulator gRPC
+`EmulatorController.sendKey` RPC（port 8554）。`KeyboardEvent` proto：codeType=Evdev、
+eventType、keyCode。InputBridge 鍵盤優先序改為 **gRPC → QMP → ADB**；IME 文字走
+gRPC `KeyboardEvent.text`。
+驗證：`getevent /dev/input/event13` 確認 gRPC sendKey 的 KEY_A/KEY_B 真的送達 guest
+鍵盤；延遲 <5ms（vs ADB ~100ms）。
+
+### FPS 上限調查（穩定 60 幀目標）
+以 python gRPC client 直測 emulator screenshot API：
+- `getScreenshot` 序列輪詢：~17 fps（靜止）；並發 depth 2≈40、4≈43、8/12≈45 — **~45fps 飽和**
+- `streamScreenshot`：動畫中 15s 內 **0 幀**（此 build 上壞掉，非節流）
+- ImageFormat 的 width/height resize 請求被忽略（payload 恆為原生 1280×720）
+app 實測（QNetworkAccessManager HTTP/2 多工，比 python 執行緒測試效率高）：
+持續動畫中 **60–68 FPS**（幀計數 ~62/s）、Avg 幀間隔 15–17ms、0 dropped；偶發
+emulator getScreenshot stall（Max 100–176ms）時短暫掉到 ~40–50。靜止畫面低 fps 屬正常
+（無新幀可抓）。pipeline depth 維持 4（depth 8 實測未改善、反增 stall 尖刺）。
+殘留掉幀尖刺為 emulator 端 getScreenshot 偶發停頓；完全消除需 native-embed 路徑
+（emulator 自身 GPU 渲染、免截圖輪詢），屬顯示架構層級變更，未在本 session 動。
+
+*Updated: 2026-05-19 — Session 11*
+
+---
+
+## Session 12 — 版控衛生清理與文件交接（2026-05-21）
+
+### 清理範圍
+
+- 刪除 root 層 ignored R&D/output 產物：Android ISO、QEMU installer、QCOW2、QEMU/debug logs、
+  `chimera-perf.*`、`run-qemu-*.ps1`、`test-qemu-*.bat`、`test_hvsock.exe`。
+- 刪除大型可重建輸出：`out/`（cuttlefish/test-vm VHDX/RAW/ISO/kernel artifacts）。
+- 刪除 runtime/擷取資料夾與錯誤路徑殘留：`instances/`、`recordings/`、`screenshots/`、`tmp/`、
+  `DWorkspace_cloudPersonal_Projectchimerathird_partyqemu-new/`、`/`。
+- 保留本機開發快取：`build/`、`third_party/android-sdk/`、`third_party/android-avd/`、`third_party/ffmpeg/`。
+
+### 版控確認
+
+- `git ls-files --others --exclude-standard` 清理後只剩真正要審查的新檔：
+  `src/host/input/EmulatorGrpcInput.cpp`、`src/host/input/EmulatorGrpcInput.h`、`tasks/todo.md`。
+- `git ls-files -oi --exclude-standard` 清理後只剩 `build/` 與 `third_party/` ignored cache。
+- `AGENTS.md` / `CLAUDE.md` / `CONTEXT.md` 已補上 commit 排除與清理交接規則。
+
+*Updated: 2026-05-21 — Session 12*

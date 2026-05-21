@@ -84,3 +84,24 @@ Thumbs.db
 *.log
 *_err.log
 *_out.log
+
+# Debug / capture artifacts (process stdout/stderr dumps, raw frame grabs,
+# verification screenshots) — generated during R&D, never source.
+*.err
+*.out
+*.ppm
+verify*.png
+qemu_*.png
+shot_*.png
+chimera-perf.*
+
+# Throwaway R&D / debug scripts
+run-qemu-*.ps1
+test-qemu-*.bat
+test_grpc_*.py
+
+# BlueStacks reverse-engineering binaries — must never be committed
+Binaries/
+Client/
+Engine/
+Dumps/

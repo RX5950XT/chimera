@@ -65,6 +65,22 @@ ctest --test-dir build -C Release --output-on-failure -LE integration
 - **沒有確認不 push**
 - 多個相關零碎提交才 squash；要保留 bisect 能力就不 squash
 
+## Commit 排除（禁止進版控）
+
+`.gitignore` 已涵蓋下列；commit 前確認 `git status` 不含這些：
+
+- **BlueStacks 逆向 binaries**：`Binaries/`、`Client/`、`Engine/`、`Dumps/`
+- **debug/擷取產物**：`*.err`、`*.out`、`*.ppm`、`verify*.png`、`qemu_*.png`、
+  `shot_*.png`、`chimera-perf.*`、`*.log`
+- **R&D 拋棄式腳本**：`run-qemu-*.ps1`、`test-qemu-*.bat`、`test_grpc_*.py`
+- **大型 binary 與下載物**：`*.img/*.vhdx/*.qcow2/*.iso/*.dll/*.exe/*.lib`、
+  `third_party/android-sdk|android-avd|ffmpeg`
+- **執行期資料**：`build/`、`instances/`、`recordings/`、`screenshots/`、`tmp/`
+
+清理時先跑 `git ls-files --others --exclude-standard` 確認未追蹤來源檔，再跑
+`git ls-files -oi --exclude-standard` 盤點 ignored 產物。`build/`、`third_party/android-sdk/`、
+`third_party/android-avd/`、`third_party/ffmpeg/` 是可重建的本機快取；除非要重建環境，預設保留。
+
 ## 需維護的文件
 
 | 文件 | 何時更新 |
