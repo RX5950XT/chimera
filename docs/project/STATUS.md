@@ -49,7 +49,7 @@
 - Disabled ADB raw display fallback by default; it is now opt-in via `--adb-display-fallback` because it can collapse display to ~1 FPS.
 - Added landscape guest adaptation on boot: 1280x720, 240 dpi, 60Hz settings, orientation request ignore, animation scales off, and wake/dismiss-keyguard/HOME so the stream lands on a usable desktop.
 - Disabled Quick Boot by default after snapshot state caused ADB offline / empty-screen risk; set `CHIMERA_QUICK_BOOT=1` or use the verifier when intentionally testing snapshot boot.
-- Upgraded default guest adaptation to 1920x1080 landscape / 320 dpi while keeping gRPC raw capture capped at 800x450 for 60+ FPS on the current raw `getScreenshot` path.
+- Upgraded default guest adaptation to 1920x1080 landscape / 320 dpi, and later removed the 800x450 gRPC capture cap so capture requests are clamped to at least 1920x1080.
 - Added emulator gRPC `sendTouch` and routed normal clicks/touches through it; runtime smoke confirmed tapping Settings brings `com.android.settings` foreground.
 - Replaced misleading single FPS counter with truthful `guestFps`, `streamFps`, `renderFps`, and duplicate-frame metrics; static screens no longer report capture-loop 60 FPS as guest FPS.
 - Reduced idle overhead by fingerprinting gRPC frames: duplicate frames update stream metrics only, skip QML repaint/recorder feed, and back off capture to 100ms until input or content changes.
@@ -71,7 +71,7 @@
 - Removed the host title-bar subtitle, kept the large `CHIMERA` logo, and switched the visible host UI copy to Traditional Chinese where this flow exposes it.
 - Changed the side-panel FPS to effective FPS (`min(Guest, Stream, Render)`) so Stream delivery can no longer masquerade as true visible smoothness.
 - Runtime dynamic-flow evidence still does not prove true 60 FPS: notification/scroll smoke reached Stream `61.3 FPS` while Guest/Render were only `8.9 FPS`; a longer flow reached Guest `13.9` / Render `12.9`. True 60+ now requires shared memory/shared texture capture and a scene graph texture renderer.
-- Retuned raw capture after app-switch smoke failures at 960x540 and intermittent 896x504 regressions: default is now 800x450, with latest runtime smoke Stream min 62.2 / avg 62.6 while launching Google Play, Files, Chrome, and Settings.
+- Removed the low-resolution raw capture default after user feedback: lowering capture below 1920x1080 is no longer allowed as a performance shortcut.
 - Fixed `InstanceManager` saved/live instance visibility, invalid iterator usage, saved-only start path, and instance name validation.
 - Fixed QMP auto-reconnect not starting after failed connection/socket error.
 - Fixed `MacroEngine` playback thread replacement risk.
@@ -82,7 +82,7 @@
 - gRPC streaming is the default display path; native window embedding remains opt-in only via `--native-embed` because it can black out the emulator Qt surface and leak the toolbar.
 - Latest live boot test removed stale AVD locks, reached Android boot complete, reported `1920x1080` / `320 dpi`, and ADB screenshot showed a usable landscape Home screen.
 - Emulator boot depends on `-crash-report-mode never`; without it, Android Emulator can stall on a crash-report consent dialog before QEMU/ADB becomes available.
-- gRPC RGB888 stream is the default display path; current 800×450 stream verification sustains min 62.2 / avg 62.6 FPS through app-switch smoke. Higher-fidelity 1080p capture still needs shared memory/shared texture rather than raw `getScreenshot`.
+- gRPC RGB888 stream is still available, but capture requests are clamped to at least 1920x1080. Full-resolution performance must be solved through shared memory/shared texture/custom producer work, not by downscaling the capture request.
 - Perf metrics are now separated: `guestFps` means content-changing guest frames, `streamFps` means capture replies, `renderFps` means Qt paints, and `duplicateRate` exposes repeated frames. A static HOME screen should report Guest 0 FPS and high duplicate rate.
 - Runtime smoke verified `com.chimera.launcher` is installed and becomes HOME; launching Settings changes foreground to `com.android.settings`.
 - Latest launcher smoke verified UI tree contains `CHIMERA`, ADB screenshot is not black, and tapping Settings from the launcher opens `com.android.settings`.
@@ -503,6 +503,8 @@ Test project D:/Workspace_cloud/Personal_Project/chimera/build
 - New verification: `test-shared-d3d11-texture-capture` creates a real named D3D11 shared texture and opens it from another D3D11 device.
 - `SharedD3D11TextureCapture` now waits for Win32 frame events on a worker thread and only counts new even sequences, so duplicate metadata ticks cannot inflate Stream FPS.
 - Added `shared_d3d11_texture_producer` runtime helper. Smoke test with `chimera-ui --no-emulator` measured `Guest/Stream/Render 59.6 FPS`, average `16.1ms`, `Dup: 0`, with no leftover processes.
+- Added `test-grpc-framebuffer-capture`; `GrpcFramebufferCapture` now clamps requests below 1920x1080 back to 1080p.
+- Latest 1920x1080 shared texture smoke measured `Guest/Stream/Render 59.9 FPS`, average `16.3ms`, `Dup: 0`, with no leftover processes.
 - Current status: host side is ready; Android/emulator producer is still missing, so true dynamic 1080p/60 FPS remains unproven until producer integration and runtime flow tests.
 
 ## Known Limitations

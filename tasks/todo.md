@@ -2,6 +2,26 @@
 
 ---
 
+## 2026-05-27 Session 29 — enforce 1080p floor, no hidden downscale
+
+### Plan
+
+- [x] 找出仍偷偷把 gRPC capture 預設降到 800x450 的程式碼與文件。
+- [x] 在 `GrpcFramebufferCapture` 層建立 1920x1080 最低解析度防線，env var 設小也會被 clamp 回 1080p。
+- [x] 新增 unit test 驗證 800x450 request 會提升到 1920x1080，且 full-resolution request encoding 正確。
+- [x] 用 1920x1080 D3D11 shared texture producer 跑 runtime smoke，驗證不是靠降解析度拿 60fps。
+- [x] 更新交接文件，明確禁止用低於 1920x1080 的 capture 當預設或驗證捷徑。
+
+### Review
+
+- `GrpcFramebufferCapture::normalizedCaptureSize()` 現在最低只接受 1920x1080；`main.cpp` 預設與 `CHIMERA_CAPTURE_WIDTH/HEIGHT` 都會通過同一個 clamp。
+- `test-grpc-framebuffer-capture` 覆蓋解析度 floor 與 gRPC image request 的 1920x1080 encoding。
+- Runtime shared texture smoke 使用 `shared_d3d11_texture_producer --width 1920 --height 1080 --fps 60`，結果為 `Guest: 59.9 FPS | Stream: 59.9 FPS | Render: 59.9 FPS | Avg: 16.3ms | Dup: 0`。
+- `ctest --test-dir build -C Release --output-on-failure -LE integration` 為 19/19 PASS。
+- 注意：這輪修掉「偷降解析度」與證明 host shared texture path 可在 1080p 接近 60；Android/emulator 端 shared texture producer 仍是下一個硬缺口，尚未宣稱真機通知欄/遊戲 flow 完成。
+
+---
+
 ## 2026-05-27 Session 28 — shared memory/shared D3D11 texture renderer
 
 ### Plan

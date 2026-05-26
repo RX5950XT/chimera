@@ -53,3 +53,4 @@
 - 測試 shared texture 時至少要建立真 D3D11 shared resource，並用第二個 D3D11 device 打開；只測 metadata signal 不足以證明 named handle 可用。
 - 不可讓 shared texture metadata capture 依賴 UI thread QTimer；frame event 應由 worker 等待，且只有新 even sequence 才能計入 Stream/Guest，否則又會變成「看起來 60、實際沒新 frame」。
 - Runtime helper producer 也不能用高成本 CPU 全圖填色來測 60fps；要用 GPU render/clear 與固定 frame pacing，否則會把 producer 自己的 30fps 誤判成 renderer 瓶頸。
+- 不可用降低 capture 解析度來換取漂亮 FPS；Chimera 的 capture/request floor 必須至少 1920x1080，低於這個值的 env 或預設都要被程式 clamp 回 1080p。

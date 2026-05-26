@@ -33,8 +33,8 @@ GrpcFramebufferCapture::GrpcFramebufferCapture(QString host, int port, int reque
     : FramebufferCapture(parent),
       m_host(std::move(host)),
       m_port(port),
-      m_requestedWidth(requestedWidth),
-      m_requestedHeight(requestedHeight) {
+      m_requestedWidth(normalizedCaptureSize(requestedWidth, requestedHeight).width()),
+      m_requestedHeight(normalizedCaptureSize(requestedWidth, requestedHeight).height()) {
     m_watchdog.setInterval(1000);
     connect(&m_watchdog, &QTimer::timeout, this, &GrpcFramebufferCapture::checkStall);
 }
@@ -229,6 +229,11 @@ QByteArray GrpcFramebufferCapture::buildImageFormatRequest(int width, int height
     if (height > 0) appendVarintField(&payload, 4, static_cast<quint64>(height));
     if (displayId > 0) appendVarintField(&payload, 5, static_cast<quint64>(displayId));
     return payload;
+}
+
+QSize GrpcFramebufferCapture::normalizedCaptureSize(int requestedWidth, int requestedHeight) {
+    return QSize((std::max)(requestedWidth, kMinimumCaptureWidth),
+                 (std::max)(requestedHeight, kMinimumCaptureHeight));
 }
 
 void GrpcFramebufferCapture::appendGrpcFrame(QByteArray *out, const QByteArray &payload) {

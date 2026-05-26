@@ -4,6 +4,7 @@
 #include <QByteArray>
 #include <QElapsedTimer>
 #include <QNetworkAccessManager>
+#include <QSize>
 #include <QSet>
 #include <QString>
 #include <QTimer>
@@ -33,6 +34,9 @@ public:
     QString backendName() const override { return QStringLiteral("gRPC"); }
     void notifyInputActivity();
 
+    static constexpr int kMinimumCaptureWidth = 1920;
+    static constexpr int kMinimumCaptureHeight = 1080;
+    static QSize normalizedCaptureSize(int requestedWidth, int requestedHeight);
     static QByteArray buildImageFormatRequest(int width, int height, int displayId = 0);
     static void appendVarint(QByteArray *out, quint64 value);
     static bool readVarint(const QByteArray &data, int *offset, quint64 *value);

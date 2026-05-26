@@ -59,8 +59,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-chimera-laun
 - Runtime display/input smoke：啟動後確認 `wm size=1920x1080`、`wm density=320`、`pm path com.chimera.launcher` 存在、HOME foreground 是 `com.chimera.launcher`，並驗證 tap/launch 後 foreground package 真的改變。Perf log 要看 Guest/Stream/Render 分離；靜止畫面 Guest FPS 可為 0。
 - Runtime shared texture smoke：可用 `shared_d3d11_texture_producer` + `chimera-ui --no-emulator` 驗證 host path；合格數據需 Guest/Stream/Render 同步接近 60、`Dup: 0`，不能只看單一 Stream FPS。
 - 測試失敗 `0xC0000135` → Qt DLL 未在 PATH
-- **Unit tests** (18/18): config-manager, input-mapper, instance-manager, virtual-machine, graphics-framebuffer,
-  adb-framebuffer-capture, shared-memory-framebuffer-capture, shared-d3d11-texture-capture,
+- **Unit tests** (19/19): config-manager, input-mapper, instance-manager, virtual-machine, graphics-framebuffer,
+  adb-framebuffer-capture, grpc-framebuffer-capture, shared-memory-framebuffer-capture, shared-d3d11-texture-capture,
   qmp-input, process-launcher, android-console-input, coordinate-mapper,
   clipboard-bridge, location-simulator, device-spoofer, macro-engine, gamepad-manager, audio-bridge
 - **Integration tests** (`tests/integration/`, 3 個): 需要 env vars
@@ -127,7 +127,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-chimera-laun
 | Quick Boot snapshot 壞掉、ADB offline 或啟動後空畫面 | 預設 full boot；只有設 `$env:CHIMERA_QUICK_BOOT="1"` 才啟用 snapshot。用 `scripts\verify-quick-boot.ps1` 重建並驗證 `chimera_quickboot` |
 | 預設啟動後仍是黑/空畫面 | 先確認不是 native embed：預設應顯示 `Stream · 已連線`；`Native · 已連線` 只應出現在明確加 `--native-embed` 時。再抓 ADB screenshot 判斷 guest state |
 | 畫面有但點擊沒反應 | 普通點擊應走 emulator gRPC `sendTouch`；不要只看 Android Console `event mouse` 回 OK。用 `dumpsys activity/window` 驗證 tap 後 foreground package 是否改變 |
-| 1080p capture FPS 低於 60 | Android guest 保持 1920x1080/320dpi；gRPC raw capture 預設 800x450 才能在 app switch smoke 穩定 60+。全 1080p raw `getScreenshot` 會吃滿頻寬/CPU，需 shared memory/shared texture 才能長期解 |
+| 1080p capture FPS 低於 60 | 不可降低預設解析度；`GrpcFramebufferCapture` 會把低於 1920x1080 的 request clamp 回 1080p。效能要靠 shared memory/shared texture/custom producer 解，不准用 800x450 這類降階當完成證據 |
 | Shared texture 啟用後黑畫面 | 確認 `CHIMERA_D3D11_TEXTURE_METADATA` 指向 metadata mapping，producer 已建立 named D3D11 shared texture；Qt 必須走 D3D11 RHI（目前 main 會設 `QSG_RHI_BACKEND=d3d11`）。若沒有第一幀，gRPC fallback 應接手 |
 | Shared texture 只有 30fps 左右 | 先確認 producer 真的以 60Hz 產生新 even sequence；consumer 端 `SharedD3D11TextureCapture` 應由 worker 等 frame event，不可退回 UI thread QTimer |
 | Shared memory/frame metadata 偶發破圖 | 檢查 producer 是否遵守 odd/even sequence seqlock；odd 表示寫入中，consumer 只接受相同且為 even 的 sequence |

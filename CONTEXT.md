@@ -986,3 +986,30 @@ HANDLE acquireKillOnCloseJob() {
 - 下一步是把 producer 接到 emulator/custom display path，然後用 notification shade、wheel scroll、app switch 三個動態 flow 重測 Guest/Stream/Render 與 visible latency。
 
 *Updated: 2026-05-27 — Session 28*
+
+---
+
+## Session 29 — 1080p floor / no hidden downscale（2026-05-27）
+
+### 修正
+
+- 使用者指出不准用降低解析度換 FPS；`main.cpp` 仍把 gRPC capture 預設設為 800x450，已移除。
+- `GrpcFramebufferCapture` 新增 1920x1080 最低解析度 floor；constructor 會透過 `normalizedCaptureSize()` clamp，`CHIMERA_CAPTURE_WIDTH/HEIGHT` 設小也不會低於 1080p。
+- `main.cpp` 的 gRPC capture 預設改為 1920x1080，並走同一個 clamp。
+- 新增 `test-grpc-framebuffer-capture`，驗證 800x450 request 會被提升到 1920x1080，且 gRPC image request 會帶 1920/1080。
+
+### 驗證
+
+- `cmake --build build --config Release --target test-grpc-framebuffer-capture chimera-ui shared_d3d11_texture_producer`：通過。
+- `test-grpc-framebuffer-capture`：4/4 PASS。
+- `ctest --test-dir build -C Release --output-on-failure -LE integration`：19/19 PASS。
+- 1920x1080 shared texture runtime smoke：`shared_d3d11_texture_producer --width 1920 --height 1080 --fps 60` + `chimera-ui --no-emulator`，Perf log 為 `Guest: 59.9 FPS | Stream: 59.9 FPS | Render: 59.9 FPS | Avg: 16.3ms | Dup: 0`。
+- smoke 結束後無 `chimera-ui` / `shared_d3d11_texture_producer` 殘留。
+
+### 狀態
+
+- 已修掉「偷偷降解析度」這個問題；現行 capture request 低於 1920x1080 會被拒絕式提升。
+- host shared texture path 已證明可在 1920x1080 接近 60 FPS 且沒有 duplicate 灌水。
+- 尚未完成的核心目標：把 Android/emulator guest framebuffer producer 接到 named D3D11 shared texture，並用通知欄、滾輪滑動、app switch/遊戲 flow 驗證真 1080p 60+。
+
+*Updated: 2026-05-27 — Session 29*

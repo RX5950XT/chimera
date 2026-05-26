@@ -672,8 +672,8 @@ int main(int argc, char *argv[]) {
         });
 
     bool emulatorStarted = false;
-    int grpcCaptureWidth = 800;
-    int grpcCaptureHeight = 450;
+    int grpcCaptureWidth = chimera::graphics::GrpcFramebufferCapture::kMinimumCaptureWidth;
+    int grpcCaptureHeight = chimera::graphics::GrpcFramebufferCapture::kMinimumCaptureHeight;
     QSize guestInputSize;
     chimera::input::QmpInput *qmpInput = nullptr;
 
@@ -927,21 +927,22 @@ int main(int argc, char *argv[]) {
         });
         gpsRouteTimer->start(1000);
 
-        // Keep the Android guest and input coordinate space at 1080p, but cap
-        // the gRPC raw-frame pipe near the default viewport size. 1080p RGB888
-        // is >6 MB per frame and the emulator's getScreenshot path drops to
-        // ~15-30 FPS on this host; 800x450 is the highest raw getScreenshot
-        // default that has repeatedly survived app-switch smoke at 60+ on this
-        // machine. Higher-quality 1080p output needs a shared texture/memory
-        // capture backend instead of polling raw screenshots.
-        grpcCaptureWidth = 800;
-        grpcCaptureHeight = 450;
+        // Keep the Android guest, input, and capture request at no less than
+        // 1920x1080. Performance work must happen above this floor; smaller
+        // raw screenshot requests are not an acceptable way to report 60 FPS.
+        grpcCaptureWidth = chimera::graphics::GrpcFramebufferCapture::kMinimumCaptureWidth;
+        grpcCaptureHeight = chimera::graphics::GrpcFramebufferCapture::kMinimumCaptureHeight;
         if (const char *captureWidthEnv = std::getenv("CHIMERA_CAPTURE_WIDTH")) {
-            grpcCaptureWidth = (std::max)(320, std::atoi(captureWidthEnv));
+            grpcCaptureWidth = std::atoi(captureWidthEnv);
         }
         if (const char *captureHeightEnv = std::getenv("CHIMERA_CAPTURE_HEIGHT")) {
-            grpcCaptureHeight = (std::max)(180, std::atoi(captureHeightEnv));
+            grpcCaptureHeight = std::atoi(captureHeightEnv);
         }
+        const QSize grpcCaptureSize =
+            chimera::graphics::GrpcFramebufferCapture::normalizedCaptureSize(
+                grpcCaptureWidth, grpcCaptureHeight);
+        grpcCaptureWidth = grpcCaptureSize.width();
+        grpcCaptureHeight = grpcCaptureSize.height();
     }
 
     const QUrl url(QStringLiteral("qrc:/ChimeraWindow.qml"));

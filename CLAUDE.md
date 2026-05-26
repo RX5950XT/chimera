@@ -8,7 +8,7 @@
 **生產引擎**: `emulator.exe` (Google QEMU+WHPX fork) — `--qemu-backend` / `--hcs-backend` 為 legacy R&D，保留不刪
 **BlueStacks parity (emulator.exe 路徑)**: 已達成核心功能同等級（見「BlueStacks Parity 功能清單」）
 **Phase 8 (legacy)**: `--cuttlefish` R&D 路徑的 gfxstream/SF stable 問題，不影響生產路徑功能
-**Tests**: 18/18 unit tests PASS；3 integration tests（需 emulator 運行中）
+**Tests**: 19/19 unit tests PASS；3 integration tests（需 emulator 運行中）
 
 ## BlueStacks Parity 功能清單（production emulator.exe 路徑）
 
@@ -100,7 +100,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-quick-boot.
 | `CHIMERA_INPUT_BACKEND` | `console\|adb\|qmp\|auto` | `auto` | auto = 嘗試 Console，不 Ready 則退回 ADB |
 | `CHIMERA_PROCESS_LAUNCHER` | `legacy\|native\|auto` | `auto` | legacy = `_popen`；native = `CreateProcessW` |
 | `CHIMERA_QUICK_BOOT` | `0\|1` | `0` | `1` = 啟用 `chimera_quickboot` snapshot；預設 full boot，直到 snapshot 空畫面/ADB offline 風險完全穩定 |
-| `CHIMERA_CAPTURE_WIDTH` / `CHIMERA_CAPTURE_HEIGHT` | 正整數 | `800` / `450` | gRPC raw capture 尺寸；guest/input 仍是 1920x1080。1080p raw 目前只作 benchmark |
+| `CHIMERA_CAPTURE_WIDTH` / `CHIMERA_CAPTURE_HEIGHT` | 正整數 | `1920` / `1080` | gRPC raw capture 尺寸；低於 1920x1080 會被 clamp 回 1080p，不可用降解析度換 FPS |
 | `CHIMERA_SHMEM_FRAME_NAME` / `CHIMERA_SHMEM_FRAME_EVENT` | Win32 object name | 空 | CPU-copy shared-memory framebuffer backend；使用 seqlock header，沒有第一幀時仍會讓 gRPC fallback |
 | `CHIMERA_D3D11_TEXTURE_METADATA` / `CHIMERA_D3D11_TEXTURE_EVENT` | Win32 object name | 空 | D3D11 named shared texture metadata backend；producer 必須建立 named shared texture，host 用 Qt D3D11 scene graph native render |
 
@@ -113,20 +113,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-quick-boot.
 | SurfaceFlinger crash-loop (`--cuttlefish`) | OPEN — Phase 8 (gfxstream) |
 | ADB TCP blocked (boot_completed=1 未到達) | OPEN — Phase 8 解鎖 |
 | Console 無鍵盤通道（`event keydown` 不存在、`event send` EV_KEY 只到觸控裝置） | RESOLVED — 鍵盤改走 emulator gRPC `sendKey`，<5ms（getevent 驗證）|
-| gRPC 截圖偶發 stall / app switch 尖峰造成短暫掉幀 | PARTIAL — 800x450 raw capture runtime smoke 達 min 62.2 / avg 62.6；完全消除尖刺需 shared GPU texture/custom QEMU 顯示路徑 |
+| gRPC 截圖偶發 stall / app switch 尖峰造成短暫掉幀 | PARTIAL — 不再允許降到 800x450 當預設；1080p raw `getScreenshot` 仍慢，解法是 shared GPU texture/custom QEMU 顯示路徑 |
 | emulator `streamScreenshot` 動畫中 0 幀（此 build 壞掉） | ACCEPTED — 改用 `getScreenshot` 管線輪詢 |
 | 舊 Win32 SetParent 嵌入會破壞 emulator Qt 視窗群組 | RESOLVED — 改用 gRPC streaming 為預設，embed 改 opt-in |
 | emulator `streamScreenshot` 串流被節流（~0.1 FPS） | RESOLVED — 改為管線化輪詢 unary `getScreenshot` |
-| gRPC 擷取忙輪詢榨乾 CPU（電腦卡頓） | RESOLVED — idle duplicate cadence 約 50ms、有輸入才 boost 到 16ms；管線化 + capture 預設 800x450 |
+| gRPC 擷取忙輪詢榨乾 CPU（電腦卡頓） | PARTIAL — idle duplicate cadence 約 50ms、有輸入才 boost 到 16ms；capture floor 是 1920x1080，後續需用 shared texture producer 降低 1080p 成本 |
 | emulator/qemu 搶佔主機 audio thread（音樂卡頓/雜音） | RESOLVED — 預設 2 vCPU + `normal` priority（不高於 Normal）；boot completed 前不啟動 gRPC capture；`enableAudio=false` 時不掛 `virtio-snd-pci` |
 | gRPC 管線 HTTP/2 stream hang，擷取整個凍結 | RESOLVED — watchdog（無幀 2s 重啟管線）+ 請求 transferTimeout |
 | gRPC 擷取 busy-polling 榨乾 CPU | RESOLVED — idle duplicate cadence 約 50ms，互動時 pace 到 16ms + depth 3 管線 |
 | gRPC pipeline stall thundering herd（~5fps 永久崩潰） | RESOLVED — `restartPipeline()` 不 abort、只補 slot |
-| 原生 1080p 擷取（>6MB/幀）拖垮頻寬/CPU | RESOLVED — Android guest 維持 1920x1080/320dpi，gRPC raw capture 預設 800x450；全 1080p 需 shared memory/shared texture |
+| 原生 1080p 擷取（>6MB/幀）拖垮頻寬/CPU | PARTIAL — Android guest 與 capture request 都維持至少 1920x1080；host shared texture smoke 已達 1080p 59.9 FPS，Android/emulator producer 尚未接入 |
 | 滑鼠滾輪捲動卡頓 | PARTIAL — wheel 改走 emulator gRPC `sendTouchSwipe()`，throttle 約 16ms，單次 instant swipe 降到 3 個 touch request；ADB `input swipe` 只保留為 fallback |
 | FPS 虛報（靜止畫面報 60+） | RESOLVED — 主側欄單一 FPS 改顯示有效 FPS：`min(guestFps, streamFps, renderFps)`；Stream 只留在 HUD/log |
 | 靜止畫面重複 repaint 造成 host 開銷 | RESOLVED — gRPC duplicate frame 只更新 stream metric，不送 `frameReady()`；idle duplicate cadence 約 50ms，有輸入才 boost |
-| 真 60 FPS 互動流暢度 | PARTIAL — host shared texture smoke 已達 `Guest/Stream/Render 59.6 FPS`、`Dup 0`；Android/emulator 端 shared texture producer 尚未接入，通知欄/滑動/遊戲 flow 仍需重測 |
+| 真 60 FPS 互動流暢度 | PARTIAL — host shared texture smoke 已達 1920x1080 `Guest/Stream/Render 59.9 FPS`、`Dup 0`；Android/emulator 端 shared texture producer 尚未接入，通知欄/滑動/遊戲 flow 仍需重測 |
 | orphan qemu 累積導致雙 VM、整機卡死 | RESOLVED — `ProcessLauncher::runAsync()` 將子程序放入 kill-on-close Job Object；force-kill `chimera-ui.exe` 後 emulator/qemu 皆消失 |
 | 冷開機數十秒 | PARTIAL — Quick Boot verifier 曾量到 full boot 66.7s → snapshot boot 9.7s；但 snapshot 可能保存壞的 guest state，預設改回 full boot，需 `CHIMERA_QUICK_BOOT=1` 才啟用 |
 | 開機後 Stream 顯示近乎空畫面 | RESOLVED — full boot 後自動 wake / dismiss keyguard / HOME；runtime 驗證 ADB screenshot 為 1920x1080 橫向 Home，gRPC 62-67 FPS |
