@@ -31,7 +31,7 @@ CMDTOOLS_ZIP = os.path.join(SDK_DIR, "cmdtools.zip")
 # Android API level and ABI
 API_LEVEL = 34
 ABI = "x86_64"
-AVD_NAME = "chimera_pie64"
+AVD_NAME = "chimera_dev"
 
 
 def log(msg: str):

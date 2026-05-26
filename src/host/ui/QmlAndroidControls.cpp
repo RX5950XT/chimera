@@ -33,6 +33,15 @@ bool QmlAndroidControls::back() {
 }
 
 bool QmlAndroidControls::home() {
+    if (!m_adbExe.isEmpty() && !m_adbSerial.isEmpty()) {
+        const int exitCode = QProcess::execute(m_adbExe, {
+            "-s", m_adbSerial, "shell", "am", "start",
+            "-n", "com.chimera.launcher/.MainActivity",
+            "-a", "android.intent.action.MAIN",
+            "-c", "android.intent.category.HOME"
+        });
+        if (exitCode == 0) return true;
+    }
     return sendKey(static_cast<int>(input::AndroidKeyCode::Home));
 }
 
@@ -600,7 +609,7 @@ void QmlAndroidControls::setEcoMode(bool enabled) {
     if (m_emulatorPid == 0) return;
     HANDLE hProc = OpenProcess(PROCESS_SET_INFORMATION, FALSE, m_emulatorPid);
     if (!hProc) return;
-    SetPriorityClass(hProc, enabled ? BELOW_NORMAL_PRIORITY_CLASS : HIGH_PRIORITY_CLASS);
+    SetPriorityClass(hProc, enabled ? BELOW_NORMAL_PRIORITY_CLASS : NORMAL_PRIORITY_CLASS);
     CloseHandle(hProc);
 #else
     Q_UNUSED(enabled)

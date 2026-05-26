@@ -13,11 +13,12 @@ ApplicationWindow {
     id: root
     visible: true
     title: qsTr("Chimera 模擬器")
-    width: 1360
-    height: 820
+    width: 1480
+    height: 860
     minimumWidth: 960
     minimumHeight: 620
     color: theme.bg
+    flags: Qt.Window | Qt.FramelessWindowHint
 
     property bool overlayVisible: false
     property bool perfHudVisible: false
@@ -27,6 +28,9 @@ ApplicationWindow {
     readonly property bool isFullscreen: visibility === Window.FullScreen
     readonly property bool guestReady: nativeDisplay.attached || guestDisplay.hasFrame
     readonly property bool isRecording: ScreenRecorder.recording || nativeDisplay.recording
+    readonly property real effectiveFps: Math.max(
+        0,
+        Math.min(PerfMonitor.guestFps, PerfMonitor.renderFps, PerfMonitor.streamFps))
 
     onVisibilityChanged: {
         // Eco mode: lower emulator priority when minimized, restore when visible
@@ -39,8 +43,8 @@ ApplicationWindow {
         category: "MainWindow"
         property int windowX: -1
         property int windowY: -1
-        property int windowWidth: 1360
-        property int windowHeight: 820
+        property int windowWidth: 1480
+        property int windowHeight: 860
     }
 
     Component.onCompleted: {
@@ -133,6 +137,30 @@ ApplicationWindow {
             border.width: 1
             Behavior on color { ColorAnimation { duration: 120 } }
             Behavior on border.color { ColorAnimation { duration: 120 } }
+        }
+    }
+
+    component TitleButton: Button {
+        id: titleControl
+        hoverEnabled: true
+        implicitWidth: 42
+        implicitHeight: 30
+        font.pixelSize: 13
+        font.weight: Font.DemiBold
+
+        contentItem: Text {
+            text: titleControl.text
+            color: titleControl.hovered ? theme.text : theme.muted
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            font: titleControl.font
+        }
+
+        background: Rectangle {
+            radius: 7
+            color: titleControl.down ? "#26323b"
+                 : (titleControl.hovered ? "#202932" : "transparent")
+            Behavior on color { ColorAnimation { duration: 100 } }
         }
     }
 
@@ -332,11 +360,160 @@ ApplicationWindow {
         }
     }
 
+    Rectangle {
+        id: titleBar
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: isFullscreen ? 0 : 38
+        visible: !isFullscreen
+        color: "#0c1117"
+        border.color: theme.lineSoft
+        z: 20
+
+        TapHandler {
+            acceptedButtons: Qt.LeftButton
+            onDoubleTapped: {
+                root.visibility = root.visibility === Window.Maximized ? Window.Windowed : Window.Maximized
+            }
+        }
+
+        DragHandler {
+            target: null
+            acceptedButtons: Qt.LeftButton
+            onActiveChanged: if (active) root.startSystemMove()
+        }
+
+        RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: 12
+            anchors.rightMargin: 8
+            spacing: 9
+
+            Rectangle {
+                Layout.alignment: Qt.AlignVCenter
+                width: 26
+                height: 26
+                radius: 7
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: theme.accent }
+                    GradientStop { position: 1.0; color: theme.accent2 }
+                }
+                Label {
+                    anchors.centerIn: parent
+                    text: "C"
+                    color: "#06110d"
+                    font.pixelSize: 15
+                    font.weight: Font.Black
+                }
+            }
+
+            ColumnLayout {
+                Layout.alignment: Qt.AlignVCenter
+                spacing: 0
+                Label {
+                    text: qsTr("CHIMERA")
+                    color: theme.text
+                    font.pixelSize: 16
+                    font.weight: Font.Black
+                    font.letterSpacing: 1.6
+                }
+            }
+
+            Rectangle {
+                Layout.alignment: Qt.AlignVCenter
+                visible: root.isRecording
+                implicitWidth: recTitleLabel.implicitWidth + 24
+                implicitHeight: 24
+                radius: 12
+                color: "#321b1d"
+                border.color: theme.danger
+                Label {
+                    id: recTitleLabel
+                    anchors.centerIn: parent
+                    text: qsTr("錄影中")
+                    color: theme.text
+                    font.pixelSize: 11
+                    font.weight: Font.DemiBold
+                }
+            }
+
+            Item { Layout.fillWidth: true }
+
+            TitleButton {
+                text: "-"
+                onClicked: root.showMinimized()
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("最小化")
+            }
+            TitleButton {
+                text: root.visibility === Window.Maximized ? "□" : "□"
+                onClicked: root.visibility = root.visibility === Window.Maximized ? Window.Windowed : Window.Maximized
+                ToolTip.visible: hovered
+                ToolTip.text: root.visibility === Window.Maximized ? qsTr("還原") : qsTr("最大化")
+            }
+            TitleButton {
+                id: closeTitleButton
+                text: "X"
+                hoverEnabled: true
+                onClicked: Qt.quit()
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("關閉")
+                background: Rectangle {
+                    radius: 7
+                    color: closeTitleButton.down ? "#5a2327"
+                         : (closeTitleButton.hovered ? "#8a2d35" : "transparent")
+                    Behavior on color { ColorAnimation { duration: 100 } }
+                }
+            }
+        }
+    }
+
+    MouseArea {
+        anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
+        width: 6
+        visible: !isFullscreen
+        z: 50
+        cursorShape: Qt.SizeHorCursor
+        acceptedButtons: Qt.LeftButton
+        onPressed: root.startSystemResize(Qt.LeftEdge)
+    }
+    MouseArea {
+        anchors { right: parent.right; top: parent.top; bottom: parent.bottom }
+        width: 6
+        visible: !isFullscreen
+        z: 50
+        cursorShape: Qt.SizeHorCursor
+        acceptedButtons: Qt.LeftButton
+        onPressed: root.startSystemResize(Qt.RightEdge)
+    }
+    MouseArea {
+        anchors { left: parent.left; right: parent.right; top: parent.top }
+        height: 6
+        visible: !isFullscreen
+        z: 50
+        cursorShape: Qt.SizeVerCursor
+        acceptedButtons: Qt.LeftButton
+        onPressed: root.startSystemResize(Qt.TopEdge)
+    }
+    MouseArea {
+        anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
+        height: 6
+        visible: !isFullscreen
+        z: 50
+        cursorShape: Qt.SizeVerCursor
+        acceptedButtons: Qt.LeftButton
+        onPressed: root.startSystemResize(Qt.BottomEdge)
+    }
+
     ColumnLayout {
         id: shell
-        anchors.fill: parent
-        anchors.margins: isFullscreen ? 0 : 16
-        spacing: isFullscreen ? 0 : 14
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.top: isFullscreen ? parent.top : titleBar.bottom
+        anchors.margins: isFullscreen ? 0 : 10
+        spacing: isFullscreen ? 0 : 10
         opacity: 0
 
         Component.onCompleted: introAnim.start()
@@ -349,154 +526,11 @@ ApplicationWindow {
             easing.type: Easing.OutCubic
         }
 
-        // ---- Top bar ------------------------------------------------------
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: isFullscreen ? 0 : 62
-            visible: !isFullscreen
-            radius: 16
-            color: theme.panel
-            border.color: theme.line
-
-            Rectangle {
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.leftMargin: 16
-                anchors.rightMargin: 16
-                height: 2
-                radius: 1
-                gradient: Gradient {
-                    orientation: Gradient.Horizontal
-                    GradientStop { position: 0.0; color: theme.accent }
-                    GradientStop { position: 0.5; color: theme.accent2 }
-                    GradientStop { position: 1.0; color: "#1c242d" }
-                }
-            }
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: 20
-                anchors.rightMargin: 16
-                spacing: 14
-
-                Rectangle {
-                    Layout.alignment: Qt.AlignVCenter
-                    width: 34
-                    height: 34
-                    radius: 10
-                    gradient: Gradient {
-                        GradientStop { position: 0.0; color: theme.accent }
-                        GradientStop { position: 1.0; color: theme.accent2 }
-                    }
-                    Label {
-                        anchors.centerIn: parent
-                        text: "C"
-                        color: "#06110d"
-                        font.pixelSize: 19
-                        font.weight: Font.Black
-                    }
-                }
-
-                ColumnLayout {
-                    spacing: 1
-
-                    Label {
-                        text: qsTr("CHIMERA")
-                        color: theme.text
-                        font.pixelSize: 17
-                        font.weight: Font.Black
-                        font.letterSpacing: 1.5
-                    }
-                    Label {
-                        text: qsTr("Android 遊戲執行環境")
-                        color: theme.muted
-                        font.pixelSize: 10
-                        font.letterSpacing: 0.4
-                    }
-                }
-
-                Item { Layout.fillWidth: true }
-
-                // Status pill
-                Rectangle {
-                    Layout.alignment: Qt.AlignVCenter
-                    implicitHeight: 30
-                    implicitWidth: statusRow.implicitWidth + 24
-                    radius: 15
-                    color: theme.panelSoft
-                    border.color: root.guestReady ? "#2f6b51" : "#5a4a2a"
-
-                    RowLayout {
-                        id: statusRow
-                        anchors.centerIn: parent
-                        spacing: 7
-
-                        Rectangle {
-                            width: 8; height: 8; radius: 4
-                            color: root.guestReady ? theme.accent : theme.warn
-                            SequentialAnimation on opacity {
-                                running: true
-                                loops: Animation.Infinite
-                                NumberAnimation { to: 0.35; duration: 900; easing.type: Easing.InOutSine }
-                                NumberAnimation { to: 1.0; duration: 900; easing.type: Easing.InOutSine }
-                            }
-                        }
-                        Label {
-                            text: nativeDisplay.attached ? qsTr("Native · 已連線")
-                                : (guestDisplay.hasFrame ? qsTr("Stream · 已連線")
-                                : qsTr("等待畫面"))
-                            color: theme.text
-                            font.pixelSize: 11
-                            font.weight: Font.DemiBold
-                        }
-                    }
-                }
-
-                Rectangle {
-                    Layout.alignment: Qt.AlignVCenter
-                    implicitHeight: 30
-                    implicitWidth: recRow.implicitWidth + 22
-                    radius: 15
-                    visible: root.isRecording
-                    color: "#3a1f1f"
-                    border.color: theme.danger
-
-                    RowLayout {
-                        id: recRow
-                        anchors.centerIn: parent
-                        spacing: 6
-                        Rectangle {
-                            width: 8; height: 8; radius: 4
-                            color: theme.danger
-                            SequentialAnimation on opacity {
-                                running: root.isRecording
-                                loops: Animation.Infinite
-                                NumberAnimation { to: 0.25; duration: 600 }
-                                NumberAnimation { to: 1.0; duration: 600 }
-                            }
-                        }
-                        Label {
-                            text: qsTr("錄影中")
-                            color: theme.text
-                            font.pixelSize: 11
-                            font.weight: Font.DemiBold
-                        }
-                    }
-                }
-
-                DockButton {
-                    text: root.isFullscreen ? qsTr("離開全螢幕") : qsTr("全螢幕")
-                    onClicked: root.toggleFullscreen()
-                }
-            }
-        }
-
         // ---- Main row -----------------------------------------------------
         RowLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            spacing: isFullscreen ? 0 : 14
+            spacing: isFullscreen ? 0 : 10
 
             Item {
                 id: displayStage
@@ -509,7 +543,7 @@ ApplicationWindow {
                     width: Math.min(parent.width, parent.height * guestAspect)
                     height: Math.min(parent.height, width / guestAspect)
                     anchors.centerIn: parent
-                    radius: isFullscreen ? 0 : 16
+                    radius: isFullscreen ? 0 : 10
                     color: "#020504"
                     border.color: isFullscreen ? "transparent" : theme.line
                     border.width: 1
@@ -528,7 +562,7 @@ ApplicationWindow {
                         anchors.fill: parent
                         instanceName: "chimera_dev"
                         consolePort: 5554
-                        nativeEmbeddingEnabled: true
+                        nativeEmbeddingEnabled: nativeEmbedEnabled
                     }
 
                     InputMapperOverlay {
@@ -558,7 +592,7 @@ ApplicationWindow {
                             spacing: 3
 
                             Label {
-                                text: PerfMonitor.fps.toFixed(0) + " FPS"
+                                text: "內容 " + PerfMonitor.guestFps.toFixed(0) + " FPS"
                                 color: PerfMonitor.fps < 30 ? theme.danger
                                      : (PerfMonitor.fps < 50 ? theme.warn : theme.accent)
                                 font.pixelSize: 16
@@ -566,15 +600,25 @@ ApplicationWindow {
                                 font.family: "Courier New"
                             }
                             Label {
+                                visible: !nativeDisplay.attached
+                                text: "串流 " + PerfMonitor.streamFps.toFixed(0)
+                                      + "  顯示 " + PerfMonitor.renderFps.toFixed(0)
+                                color: theme.muted
+                                font.pixelSize: 12
+                                font.weight: Font.Medium
+                                font.family: "Courier New"
+                            }
+                            Label {
                                 visible: !nativeDisplay.attached && PerfMonitor.visibleLatencyMs >= 0
-                                text: "Lat  " + PerfMonitor.visibleLatencyMs.toFixed(0) + " ms"
+                                text: "延遲 " + PerfMonitor.visibleLatencyMs.toFixed(0) + " ms"
                                 color: PerfMonitor.visibleLatencyMs > 50 ? theme.warn : theme.text
                                 font.pixelSize: 12
                                 font.weight: Font.DemiBold
                                 font.family: "Courier New"
                             }
                             Label {
-                                text: "Drop " + PerfMonitor.droppedFrames
+                                text: "掉幀 " + PerfMonitor.droppedFrames
+                                      + "  重複 " + (PerfMonitor.duplicateRate * 100).toFixed(0) + "%"
                                 color: PerfMonitor.droppedFrames > 10 ? theme.warn : theme.muted
                                 font.pixelSize: 12
                                 font.weight: Font.Medium
@@ -619,112 +663,91 @@ ApplicationWindow {
 
             // ---- Side panel ----------------------------------------------
             Rectangle {
-                Layout.preferredWidth: root.width >= 1200 ? 250 : 220
+                Layout.preferredWidth: root.width >= 1200 ? 190 : 172
                 Layout.fillHeight: true
                 visible: !isFullscreen
-                radius: 16
+                radius: 12
                 color: theme.panel
                 border.color: theme.line
 
                 ColumnLayout {
                     anchors.fill: parent
-                    anchors.margins: 16
-                    spacing: 14
+                    anchors.margins: 12
+                    spacing: 10
 
-                    // Performance stat card
+                    // Compact FPS / fullscreen card
                     Rectangle {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 92
-                        radius: 13
+                        Layout.preferredHeight: 44
+                        radius: 10
                         color: theme.card
                         border.color: theme.lineSoft
 
                         RowLayout {
                             anchors.fill: parent
-                            anchors.margins: 14
-                            spacing: 10
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 8
+                            spacing: 6
+
+                            Label {
+                                text: root.effectiveFps.toFixed(0)
+                                color: nativeDisplay.attached || root.effectiveFps >= 50
+                                       ? theme.accent
+                                       : (root.effectiveFps >= 30 ? theme.warn : theme.danger)
+                                font.pixelSize: 26
+                                font.weight: Font.Black
+                                Layout.alignment: Qt.AlignVCenter
+                            }
 
                             ColumnLayout {
-                                spacing: 0
                                 Layout.alignment: Qt.AlignVCenter
-
-                                RowLayout {
-                                    spacing: 5
-                                    Label {
-                                        text: nativeDisplay.attached
-                                            ? InstanceManager.instanceFullConfig("chimera_dev").maxFps.toString()
-                                            : PerfMonitor.fps.toFixed(0)
-                                        color: theme.accent
-                                        font.pixelSize: 34
-                                        font.weight: Font.Black
-                                    }
-                                    Label {
-                                        text: "FPS"
-                                        color: theme.muted
-                                        font.pixelSize: 11
-                                        font.weight: Font.Bold
-                                        Layout.alignment: Qt.AlignBottom
-                                        bottomPadding: 7
-                                    }
+                                Layout.fillWidth: true
+                                spacing: 0
+                                Label {
+                                    text: "FPS"
+                                    color: theme.text
+                                    font.pixelSize: 12
+                                    font.weight: Font.Bold
                                 }
                                 Label {
-                                    text: nativeDisplay.attached ? qsTr("Native 顯示路徑")
-                                                                 : qsTr("串流顯示路徑")
+                                    text: qsTr("有效")
                                     color: theme.muted
-                                    font.pixelSize: 10
+                                    font.pixelSize: 9
                                 }
                             }
 
-                            Item { Layout.fillWidth: true }
-
-                            ColumnLayout {
+                            DockButton {
                                 Layout.alignment: Qt.AlignVCenter
-                                spacing: 4
-
-                                ColumnLayout {
-                                    spacing: 0
-                                    Label {
-                                        text: qsTr("掉幀")
-                                        color: theme.muted
-                                        font.pixelSize: 10
-                                    }
-                                    Label {
-                                        text: PerfMonitor.droppedFrames + " / " + PerfMonitor.totalFrames
-                                        color: theme.text
-                                        font.pixelSize: 12
-                                        font.weight: Font.DemiBold
-                                    }
-                                }
-
-                                ColumnLayout {
-                                    spacing: 0
-                                    visible: !nativeDisplay.attached && PerfMonitor.visibleLatencyMs >= 0
-                                    Label {
-                                        text: qsTr("延遲")
-                                        color: theme.muted
-                                        font.pixelSize: 10
-                                    }
-                                    Label {
-                                        text: PerfMonitor.visibleLatencyMs.toFixed(0) + "ms"
-                                        color: PerfMonitor.visibleLatencyMs > 50 ? theme.warn : theme.text
-                                        font.pixelSize: 12
-                                        font.weight: Font.DemiBold
-                                    }
-                                }
+                                implicitWidth: 54
+                                implicitHeight: 30
+                                leftPadding: 8
+                                rightPadding: 8
+                                text: root.isFullscreen ? qsTr("退出") : qsTr("全螢幕")
+                                font.pixelSize: 11
+                                onClicked: root.toggleFullscreen()
+                                ToolTip.visible: hovered
+                                ToolTip.text: root.isFullscreen ? qsTr("離開全螢幕") : qsTr("進入全螢幕")
                             }
                         }
                     }
 
                     // ---- Main page -------------------------------------------
-                    ColumnLayout {
+                    ScrollView {
+                        id: mainPageScroll
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         visible: sidePage === "main"
                         opacity: visible ? 1 : 0
-                        spacing: 10
+                        clip: true
+                        contentWidth: availableWidth
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Behavior on opacity { NumberAnimation { duration: 170; easing.type: Easing.OutCubic } }
 
-                        // Pinned Apps — visible only when at least one app is pinned
+                      ColumnLayout {
+                        width: mainPageScroll.availableWidth
+                        spacing: 10
+
+                        // 常用應用程式：只有使用者釘選 app 時才顯示。
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 6
@@ -766,7 +789,7 @@ ApplicationWindow {
                             }
                         }
 
-                        SectionLabel { text: qsTr("ANDROID 導航") }
+                        SectionLabel { text: qsTr("Android 導航") }
 
                         RowLayout {
                             Layout.fillWidth: true
@@ -775,44 +798,20 @@ ApplicationWindow {
                             NavButton {
                                 Layout.fillWidth: true
                                 text: qsTr("返回")
-                                detail: qsTr("Back")
+                                detail: qsTr("上一頁")
                                 onClicked: root.runAndroidAction("back", AndroidControls.back())
                             }
                             NavButton {
                                 Layout.fillWidth: true
                                 text: qsTr("首頁")
-                                detail: qsTr("Home")
+                                detail: qsTr("主畫面")
                                 onClicked: root.runAndroidAction("home", AndroidControls.home())
                             }
                             NavButton {
                                 Layout.fillWidth: true
                                 text: qsTr("最近")
-                                detail: qsTr("Recents")
+                                detail: qsTr("多工")
                                 onClicked: root.runAndroidAction("recents", AndroidControls.recents())
-                            }
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-
-                            NavButton {
-                                Layout.fillWidth: true
-                                text: "▲"
-                                detail: qsTr("音量+")
-                                onClicked: AndroidControls.volumeUp()
-                            }
-                            NavButton {
-                                Layout.fillWidth: true
-                                text: "▼"
-                                detail: qsTr("音量-")
-                                onClicked: AndroidControls.volumeDown()
-                            }
-                            NavButton {
-                                Layout.fillWidth: true
-                                text: qsTr("選單")
-                                detail: qsTr("Menu")
-                                onClicked: root.runAndroidAction("menu", AndroidControls.menu())
                             }
                         }
 
@@ -832,21 +831,6 @@ ApplicationWindow {
                             highlighted: guestDisplay.mouseLocked
                             visible: !nativeDisplay.attached
                             onClicked: guestDisplay.setMouseLocked(!guestDisplay.mouseLocked)
-                        }
-                        SideButton {
-                            Layout.fillWidth: true
-                            text: guestDisplay.cursorMode === 1 ? qsTr("游標：十字準心") : qsTr("游標：標準")
-                            detail: qsTr("FPS / MOBA")
-                            highlighted: guestDisplay.cursorMode === 1
-                            visible: !nativeDisplay.attached
-                            onClicked: guestDisplay.setCursorMode(guestDisplay.cursorMode === 1 ? 0 : 1)
-                        }
-                        SideButton {
-                            Layout.fillWidth: true
-                            text: root.perfHudVisible ? qsTr("隱藏效能 HUD") : qsTr("效能 HUD")
-                            detail: qsTr("Ctrl+Shift+P")
-                            highlighted: root.perfHudVisible
-                            onClicked: root.perfHudVisible = !root.perfHudVisible
                         }
                         SideButton {
                             Layout.fillWidth: true
@@ -876,58 +860,15 @@ ApplicationWindow {
                         }
                         SideButton {
                             Layout.fillWidth: true
-                            text: qsTr("安裝 OBB")
-                            detail: qsTr("→ /obb/<pkg>/")
-                            onClicked: obbFileDialog.open()
-                        }
-                        SideButton {
-                            Layout.fillWidth: true
-                            text: qsTr("推送檔案")
-                            detail: qsTr("→ Downloads")
-                            onClicked: fileShareDialog.open()
-                        }
-                        SideButton {
-                            Layout.fillWidth: true
-                            text: qsTr("拉取檔案")
-                            detail: qsTr("Downloads ←")
-                            onClicked: pullFileDialog.open()
-                        }
-                        SideButton {
-                            Layout.fillWidth: true
                             text: qsTr("應用程式")
-                            detail: qsTr("App 管理")
+                            detail: qsTr("應用管理")
                             onClicked: root.openSidePage("apps")
                         }
                         SideButton {
                             Layout.fillWidth: true
-                            text: qsTr("多開管理")
-                            detail: qsTr("Ctrl+Shift+8")
-                            onClicked: root.openSidePage("multi")
-                        }
-                        SideButton {
-                            Layout.fillWidth: true
-                            text: qsTr("巨集管理")
-                            detail: qsTr("Ctrl+Shift+7")
-                            highlighted: MacroEngine.recording || MacroEngine.playing
-                            onClicked: root.openSidePage("macro")
-                        }
-                        SideButton {
-                            Layout.fillWidth: true
                             text: qsTr("剪貼簿同步")
-                            detail: qsTr("→ Android")
+                            detail: qsTr("送到 Android")
                             onClicked: AndroidControls.syncClipboardToGuest()
-                        }
-                        SideButton {
-                            Layout.fillWidth: true
-                            text: qsTr("GPS 位置")
-                            detail: qsTr("座標模擬")
-                            onClicked: root.openSidePage("gps")
-                        }
-                        SideButton {
-                            Layout.fillWidth: true
-                            text: qsTr("感應器 / 電池")
-                            detail: qsTr("陀螺儀 / 加速度")
-                            onClicked: root.openSidePage("sensor")
                         }
                         SideButton {
                             Layout.fillWidth: true
@@ -936,10 +877,9 @@ ApplicationWindow {
                             onClicked: root.openSidePage("settings")
                         }
 
-                        Item { Layout.fillHeight: true }
-
                         Label {
                             Layout.fillWidth: true
+                            Layout.topMargin: 4
                             visible: AndroidControls.installStatus.length > 0
                             text: AndroidControls.installStatus
                             color: AndroidControls.installStatus.indexOf(qsTr("失敗")) >= 0 ? theme.danger
@@ -960,14 +900,7 @@ ApplicationWindow {
                             font.weight: Font.Medium
                         }
 
-                        Label {
-                            Layout.fillWidth: true
-                            text: qsTr("點一下畫面後，鍵鼠會直接送進 Android。F11 全螢幕，Esc 離開。")
-                            color: theme.muted
-                            wrapMode: Text.WordWrap
-                            font.pixelSize: 11
-                            lineHeight: 1.3
-                        }
+                      }
                     }
 
                     // ---- Keymap page -----------------------------------------
@@ -994,7 +927,7 @@ ApplicationWindow {
                             SideButton {
                                 Layout.fillWidth: true
                                 text: overlayVisible ? qsTr("關閉疊層") : qsTr("開啟疊層")
-                                detail: qsTr("Overlay")
+                                detail: qsTr("覆蓋層")
                                 enabled: !nativeDisplay.attached
                                 highlighted: overlayVisible
                                 onClicked: overlayVisible = !overlayVisible
@@ -1261,7 +1194,7 @@ ApplicationWindow {
                         TextField {
                             id: inlineInstanceName
                             Layout.fillWidth: true
-                            placeholderText: qsTr("新 instance 名稱")
+                            placeholderText: qsTr("新執行個體名稱")
                             color: theme.text
                             placeholderTextColor: theme.muted
                             font.pixelSize: 12
@@ -1279,11 +1212,11 @@ ApplicationWindow {
                             spacing: 7
                             DockButton {
                                 Layout.fillWidth: true
-                                text: qsTr("建立 Instance")
+                                text: qsTr("建立執行個體")
                                 highlighted: true
                                 onClicked: {
                                     if (inlineInstanceName.text.length > 0) {
-                                        InstanceManager.createInstance(inlineInstanceName.text, 4, 2048, 1280, 720)
+                                        InstanceManager.createInstance(inlineInstanceName.text, 4, 2048, 1920, 1080)
                                         inlineInstanceName.text = ""
                                         inlineInstanceList.model = InstanceManager.listInstances()
                                     }
@@ -1514,14 +1447,21 @@ ApplicationWindow {
                     }
 
                     // ---- Sensor / Battery page -------------------------------
-                    ColumnLayout {
-                        id: sensorPage
+                    ScrollView {
+                        id: sensorPageScroll
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         visible: sidePage === "sensor"
                         opacity: visible ? 1 : 0
-                        spacing: 10
+                        clip: true
+                        contentWidth: availableWidth
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Behavior on opacity { NumberAnimation { duration: 170; easing.type: Easing.OutCubic } }
+
+                      ColumnLayout {
+                        id: sensorPage
+                        width: sensorPageScroll.availableWidth
+                        spacing: 10
 
                         RowLayout {
                             Layout.fillWidth: true
@@ -1626,19 +1566,25 @@ ApplicationWindow {
                             text: qsTr("震動裝置")
                             onClicked: AndroidControls.shakeDevice()
                         }
-
-                        Item { Layout.fillHeight: true }
+                      }
                     }
 
                     // ---- GPS page --------------------------------------------
-                    ColumnLayout {
-                        id: gpsPage
+                    ScrollView {
+                        id: gpsPageScroll
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         visible: sidePage === "gps"
                         opacity: visible ? 1 : 0
-                        spacing: 10
+                        clip: true
+                        contentWidth: availableWidth
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Behavior on opacity { NumberAnimation { duration: 170; easing.type: Easing.OutCubic } }
+
+                      ColumnLayout {
+                        id: gpsPage
+                        width: gpsPageScroll.availableWidth
+                        spacing: 10
 
                         RowLayout {
                             Layout.fillWidth: true
@@ -1750,20 +1696,27 @@ ApplicationWindow {
                             }
                         }
 
-                        Item { Layout.fillHeight: true }
+                      }
                     }
 
                     // ---- Settings page ---------------------------------------
-                    ColumnLayout {
-                        id: settingsPage
+                    ScrollView {
+                        id: settingsPageScroll
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         visible: sidePage === "settings"
                         opacity: visible ? 1 : 0
-                        spacing: 10
+                        clip: true
+                        contentWidth: availableWidth
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Behavior on opacity { NumberAnimation { duration: 170; easing.type: Easing.OutCubic } }
 
-                        property var cfg: visible ? InstanceManager.instanceFullConfig("chimera_dev") : ({})
+                      ColumnLayout {
+                        id: settingsPage
+                        width: settingsPageScroll.availableWidth
+                        spacing: 10
+
+                        property var cfg: settingsPageScroll.visible ? InstanceManager.instanceFullConfig("chimera_dev") : ({})
 
                         RowLayout {
                             Layout.fillWidth: true
@@ -1934,7 +1887,8 @@ ApplicationWindow {
                                     { label: "手機 9:16",  w: 720,  h: 1280 },
                                     { label: "手機 9:19",  w: 1080, h: 2280 },
                                     { label: "平板 4:3",   w: 1200, h: 900  },
-                                    { label: "橫屏 16:9",  w: 1280, h: 720  }
+                                    { label: "橫屏 720p",  w: 1280, h: 720  },
+                                    { label: "橫屏 1080p", w: 1920, h: 1080 }
                                 ]
                                 delegate: DockButton {
                                     required property var modelData
@@ -1985,7 +1939,7 @@ ApplicationWindow {
                             }
                         }
 
-                        SectionLabel { text: qsTr("網路 Proxy") }
+                        SectionLabel { text: qsTr("網路代理") }
 
                         Rectangle {
                             Layout.fillWidth: true
@@ -2044,14 +1998,14 @@ ApplicationWindow {
                                     spacing: 6
                                     DockButton {
                                         Layout.fillWidth: true
-                                        text: qsTr("套用 Proxy")
+                                        text: qsTr("套用代理")
                                         highlighted: true
                                         onClicked: AndroidControls.setNetworkProxy(
                                             proxyHostField.text, parseInt(proxyPortField.text) || 0)
                                     }
                                     DockButton {
                                         Layout.fillWidth: true
-                                        text: qsTr("清除 Proxy")
+                                        text: qsTr("清除代理")
                                         enabled: AndroidControls.proxyEnabled
                                         onClicked: AndroidControls.clearNetworkProxy()
                                     }
@@ -2059,7 +2013,7 @@ ApplicationWindow {
                             }
                         }
 
-                        SectionLabel { text: qsTr("網速模擬（Console）") }
+                        SectionLabel { text: qsTr("網速模擬（主控台）") }
 
                         RowLayout {
                             Layout.fillWidth: true
@@ -2086,12 +2040,12 @@ ApplicationWindow {
 
                             DockButton {
                                 Layout.fillWidth: true
-                                text: qsTr("Eco 30FPS")
+                                text: qsTr("省電 30FPS")
                                 highlighted: settingsPage.cfg.maxFps === 30
                                 onClicked: {
                                     if (InstanceManager.updateInstanceFps("chimera_dev", 30)) {
                                         settingsPage.cfg = InstanceManager.instanceFullConfig("chimera_dev")
-                                        lastActionStatus = qsTr("Eco 模式已啟用（30 FPS）")
+                                        lastActionStatus = qsTr("省電模式已啟用（30 FPS）")
                                     }
                                 }
                             }
@@ -2147,16 +2101,16 @@ ApplicationWindow {
                             }
                         }
 
-                        Item { Layout.fillHeight: true }
-
                         Label {
                             Layout.fillWidth: true
-                            text: qsTr("CPU / RAM / Root / 音效 變更需重啟 Instance")
+                            Layout.topMargin: 4
+                            text: qsTr("CPU / RAM / Root / 音效變更需重啟執行個體")
                             color: theme.muted
                             wrapMode: Text.WordWrap
                             font.pixelSize: 11
                             lineHeight: 1.3
                         }
+                      }
                     }
                 }
             }
@@ -2191,7 +2145,7 @@ ApplicationWindow {
 
     Dialog {
         id: obbInstallDialog
-        title: qsTr("安裝 OBB — 輸入 Package 名稱")
+        title: qsTr("安裝 OBB — 輸入套件名稱")
         modal: true
         anchors.centerIn: parent
         standardButtons: Dialog.Ok | Dialog.Cancel
@@ -2210,7 +2164,7 @@ ApplicationWindow {
                 color: theme.muted; font.pixelSize: 11
                 width: parent.width; wrapMode: Text.WordWrap
             }
-            Label { text: qsTr("目標 Package 名稱（如 com.example.game）："); color: theme.text; font.pixelSize: 12 }
+            Label { text: qsTr("目標套件名稱（如 com.example.game）："); color: theme.text; font.pixelSize: 12 }
             TextField {
                 id: obbPackageName
                 width: parent.width

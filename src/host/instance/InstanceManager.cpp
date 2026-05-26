@@ -74,20 +74,21 @@ void InstanceManager::loadInstances() {
         for (auto &item : j["instances"]) {
             InstanceConfig cfg;
             cfg.name = item.value("name", "");
-            cfg.cpus = item.value("cpus", 4);
+            cfg.cpus = item.value("cpus", 2);
             cfg.ramMB = item.value("ramMB", 2048);
-            cfg.width = item.value("width", 1280);
-            cfg.height = item.value("height", 720);
-            cfg.dpi = item.value("dpi", 240);
+            cfg.width = item.value("width", 1920);
+            cfg.height = item.value("height", 1080);
+            cfg.dpi = item.value("dpi", 320);
             cfg.graphicsEngine = item.value("graphicsEngine", "angle");
             cfg.graphicsRenderer = item.value("graphicsRenderer", "host");
             cfg.maxFps = item.value("maxFps", 60);
             cfg.enableVsync = item.value("enableVsync", false);
             cfg.enableRoot = item.value("enableRoot", false);
             cfg.enableAudio = item.value("enableAudio", false);
+            cfg.quickBoot = item.value("quickBoot", true);
             cfg.deviceProfile = item.value("deviceProfile", "");
             cfg.headless = item.value("headless", false);
-            cfg.processPriority = item.value("processPriority", "high");
+            cfg.processPriority = item.value("processPriority", "normal");
             cfg.dataDir  = item.value("dataDir", "");
             cfg.gridRow  = item.value("gridRow", 0);
             cfg.gridCol  = item.value("gridCol", 0);
@@ -119,6 +120,7 @@ void InstanceManager::saveInstances() const {
         item["enableVsync"] = cfg.enableVsync;
         item["enableRoot"] = cfg.enableRoot;
         item["enableAudio"] = cfg.enableAudio;
+        item["quickBoot"] = cfg.quickBoot;
         item["deviceProfile"] = cfg.deviceProfile;
         item["headless"] = cfg.headless;
         item["processPriority"] = cfg.processPriority;
@@ -142,6 +144,10 @@ void InstanceManager::saveInstances() const {
         item["graphicsRenderer"] = c.graphicsRenderer;
         item["maxFps"] = c.maxFps;
         item["enableVsync"] = c.enableVsync;
+        item["enableRoot"] = c.enableRoot;
+        item["enableAudio"] = c.enableAudio;
+        item["quickBoot"] = c.quickBoot;
+        item["deviceProfile"] = c.deviceProfile;
         item["headless"] = c.headless;
         item["processPriority"] = c.processPriority;
         item["dataDir"] = c.dataDir.string();
@@ -196,6 +202,7 @@ bool InstanceManager::createInstance(const InstanceConfig &config) {
     vmConfig.headless = config.headless;
     vmConfig.enableRoot = config.enableRoot;
     vmConfig.enableAudio = config.enableAudio;
+    vmConfig.quickBoot = config.quickBoot;
     vmConfig.processPriority = config.processPriority;
     vmConfig.qmpPort = config.qmpPort;
     vmConfig.deviceProfile = config.deviceProfile;
@@ -410,6 +417,10 @@ InstanceConfig InstanceManager::getInstanceConfig(const std::string &name) const
             cfg.enableVsync = c.enableVsync;
             cfg.headless = c.headless;
             cfg.processPriority = c.processPriority;
+            cfg.enableRoot = c.enableRoot;
+            cfg.enableAudio = c.enableAudio;
+            cfg.quickBoot = c.quickBoot;
+            cfg.deviceProfile = c.deviceProfile;
             cfg.dataDir = c.dataDir;
             return cfg;
         }

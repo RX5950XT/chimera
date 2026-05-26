@@ -5,6 +5,7 @@
 #include <string>
 #include <functional>
 #include <filesystem>
+#include <chrono>
 #include <thread>
 #include <queue>
 #include <mutex>
@@ -47,6 +48,10 @@ public:
     bool hasConsoleMouse() const;
     bool hasConsoleKeyboard() const;
 
+    // Emulator gRPC keyboard input (port 8554) — the low-latency keyboard
+    // path; the console has no working keyboard channel.
+    void setGrpcInput(class EmulatorGrpcInput *grpc) { m_grpcInput = grpc; }
+
     // QMP low-latency input (QEMU backend only — port 4444/4445)
     void setQmpInput(class QmpInput *qmp);
     bool hasQmp() const;
@@ -64,7 +69,7 @@ public:
     void onKeyEvent(bool press, int nativeScanCode, int nativeVirtualKey);
     void onMouseMove(int x, int y, int dx, int dy);
     void onMouseButton(bool press, int button, int x, int y);
-    void onWheel(int deltaX, int deltaY);
+    void onWheel(int deltaX, int deltaY, int x = -1, int y = -1);
     void onGamepadButton(int deviceId, int button, bool pressed);
     void onGamepadAxis(int deviceId, int axis, float value);
 
@@ -109,12 +114,15 @@ private:
 
     // Android Console input (emulator.exe port 5554)
     class AndroidConsoleInput *m_consoleInput = nullptr;
+    class EmulatorGrpcInput *m_grpcInput = nullptr;
     // QMP low-latency input (QEMU backend)
     class QmpInput *m_qmpInput = nullptr;
     // HvSocket input (HCS/HyperV backend)
     class HvSocketTransport *m_hvSocketTransport = nullptr;
     int m_displayWidth = 1920;
     int m_displayHeight = 1080;
+    std::chrono::steady_clock::time_point m_lastGrpcWheel{};
+    std::chrono::steady_clock::time_point m_lastGrpcTouchMove{};
     CoordinateMapper m_mapper;
 
     // Multi-touch slot tracking: pointId → slot index, slot → current tracking ID

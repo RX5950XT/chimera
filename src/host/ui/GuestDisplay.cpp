@@ -1,5 +1,4 @@
 #include "GuestDisplay.h"
-#include <QPainter>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QWheelEvent>
@@ -8,16 +7,63 @@
 #include <QGuiApplication>
 #include <QCursor>
 #include <QQuickWindow>
+#include <QSGRendererInterface>
+#include <QSGSimpleTextureNode>
+#include <QSGTexture>
+#include <QtQuick/qsgtexture_platform.h>
 #include <QDebug>
 #include <algorithm>
 #include "InputBridge.h"
 
+#ifdef Q_OS_WIN
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <d3d11_1.h>
+#include <dxgi1_2.h>
+#include <wrl/client.h>
+#endif
+
 namespace chimera {
 
+namespace {
+
+class GuestTextureNode final : public QSGSimpleTextureNode {
+public:
+    ~GuestTextureNode() override { delete texture(); }
+
+    void replaceTexture(QSGTexture *next) {
+        QSGTexture *previous = texture();
+        setTexture(next);
+        delete previous;
+    }
+
+    quint64 sequence = 0;
+    bool nativeD3D11 = false;
+    void *nativeTexture = nullptr;
+    QString nativeTextureName;
+    QSize nativeTextureSize;
+};
+
+} // namespace
+
+struct GuestDisplay::NativeD3D11TextureState {
+#ifdef Q_OS_WIN
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+#endif
+    QString name;
+    QSize size;
+    quint64 sequence = 0;
+    bool hasAlpha = false;
+    bool uploadTexture = false;
+};
+
 GuestDisplay::GuestDisplay(QQuickItem *parent)
-    : QQuickPaintedItem(parent)
+    : QQuickItem(parent)
 {
-    setRenderTarget(QQuickPaintedItem::FramebufferObject);
     setAcceptedMouseButtons(Qt::AllButtons);
     setAcceptTouchEvents(true);
     setFlag(QQuickItem::ItemAcceptsInputMethod, true);
@@ -26,6 +72,8 @@ GuestDisplay::GuestDisplay(QQuickItem *parent)
     setFocus(true);
 }
 
+GuestDisplay::~GuestDisplay() = default;
+
 QImage GuestDisplay::frame() const {
     return m_frame;
 }
@@ -33,6 +81,12 @@ QImage GuestDisplay::frame() const {
 void GuestDisplay::setFrame(const QImage &img) {
     const bool sizeChanged = m_frame.isNull() || img.size() != m_frame.size();
     m_frame = img;
+    ++m_frameSequence;
+    m_nativeD3D11Texture = nullptr;
+    m_nativeD3D11TextureSequence = 0;
+    m_nativeD3D11TextureHasAlpha = false;
+    m_sharedD3D11TextureName.clear();
+    m_nativeD3D11State.reset();
     if (sizeChanged && !m_frame.isNull() && !m_guestSize.isValid()) {
         m_mapper.setGuestSize(m_frame.width(), m_frame.height());
     }
@@ -41,7 +95,68 @@ void GuestDisplay::setFrame(const QImage &img) {
 }
 
 bool GuestDisplay::hasFrame() const {
-    return !m_frame.isNull();
+    return !m_frame.isNull() || m_nativeD3D11Texture || !m_sharedD3D11TextureName.isEmpty();
+}
+
+void GuestDisplay::setNativeD3D11Texture(void *texture,
+                                         const QSize &size,
+                                         quint64 sequence,
+                                         bool hasAlpha) {
+    if (!texture || !size.isValid() || sequence == 0) {
+        clearNativeD3D11Texture();
+        return;
+    }
+
+    const bool sizeChanged = m_nativeD3D11TextureSize != size;
+    m_nativeD3D11Texture = texture;
+    m_nativeD3D11TextureSize = size;
+    m_nativeD3D11TextureSequence = sequence;
+    m_nativeD3D11TextureHasAlpha = hasAlpha;
+    m_sharedD3D11TextureName.clear();
+    m_uploadD3D11State.reset();
+    m_frame = QImage();
+    if (sizeChanged && !m_guestSize.isValid()) {
+        m_mapper.setGuestSize(size.width(), size.height());
+    }
+    update();
+    if (sizeChanged) emit frameChanged();
+}
+
+void GuestDisplay::setSharedD3D11Texture(const QString &textureName,
+                                         const QSize &size,
+                                         quint64 sequence,
+                                         bool hasAlpha) {
+    if (textureName.isEmpty() || !size.isValid() || sequence == 0) {
+        clearNativeD3D11Texture();
+        return;
+    }
+
+    const bool sizeChanged = m_nativeD3D11TextureSize != size;
+    m_sharedD3D11TextureName = textureName;
+    m_nativeD3D11Texture = nullptr;
+    m_nativeD3D11TextureSize = size;
+    m_nativeD3D11TextureSequence = sequence;
+    m_nativeD3D11TextureHasAlpha = hasAlpha;
+    m_uploadD3D11State.reset();
+    m_frame = QImage();
+    if (sizeChanged && !m_guestSize.isValid()) {
+        m_mapper.setGuestSize(size.width(), size.height());
+    }
+    update();
+    if (sizeChanged) emit frameChanged();
+}
+
+void GuestDisplay::clearNativeD3D11Texture() {
+    if (!m_nativeD3D11Texture && m_sharedD3D11TextureName.isEmpty() && !m_nativeD3D11State) return;
+    m_nativeD3D11Texture = nullptr;
+    m_nativeD3D11TextureSize = QSize();
+    m_nativeD3D11TextureSequence = 0;
+    m_nativeD3D11TextureHasAlpha = false;
+    m_sharedD3D11TextureName.clear();
+    m_nativeD3D11State.reset();
+    m_uploadD3D11State.reset();
+    update();
+    emit frameChanged();
 }
 
 void GuestDisplay::setGuestSize(const QSize &size) {
@@ -56,7 +171,7 @@ void GuestDisplay::setRotation(int degrees) {
 }
 
 void GuestDisplay::geometryChange(const QRectF &newGeom, const QRectF &oldGeom) {
-    QQuickPaintedItem::geometryChange(newGeom, oldGeom);
+    QQuickItem::geometryChange(newGeom, oldGeom);
     m_mapper.setHostViewSize(static_cast<int>(newGeom.width()),
                              static_cast<int>(newGeom.height()));
 }
@@ -97,20 +212,202 @@ void GuestDisplay::setCursorMode(int mode) {
     emit cursorModeChanged();
 }
 
-void GuestDisplay::paint(QPainter *painter) {
-    if (m_frame.isNull()) {
-        painter->fillRect(boundingRect(), Qt::black);
-        painter->setPen(QColor(220, 230, 230));
-        painter->drawText(boundingRect(), Qt::AlignCenter, QStringLiteral("等待 Android 畫面..."));
-        return;
+QSGNode *GuestDisplay::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) {
+    auto *node = static_cast<GuestTextureNode *>(oldNode);
+    if (m_frame.isNull() && !m_nativeD3D11Texture && m_sharedD3D11TextureName.isEmpty()) {
+        delete node;
+        return nullptr;
     }
+
+    QQuickWindow *quickWindow = window();
+    if (!quickWindow) {
+        return node;
+    }
+
+    if (!node) {
+        node = new GuestTextureNode();
+    }
+
+    if (m_nativeD3D11Texture || !m_sharedD3D11TextureName.isEmpty()) {
+        const auto api = quickWindow->rendererInterface()->graphicsApi();
+        if (api != QSGRendererInterface::Direct3D11) {
+            delete node;
+            return nullptr;
+        }
+
+#ifdef Q_OS_WIN
+        void *nativeTexture = m_nativeD3D11Texture;
+        if (!nativeTexture && !m_sharedD3D11TextureName.isEmpty()) {
+            const bool shouldOpen = !m_nativeD3D11State ||
+                                    m_nativeD3D11State->name != m_sharedD3D11TextureName ||
+                                    m_nativeD3D11State->size != m_nativeD3D11TextureSize;
+            if (shouldOpen) {
+                auto state = std::make_unique<NativeD3D11TextureState>();
+                state->name = m_sharedD3D11TextureName;
+                state->size = m_nativeD3D11TextureSize;
+                state->sequence = m_nativeD3D11TextureSequence;
+                state->hasAlpha = m_nativeD3D11TextureHasAlpha;
+
+                auto *renderer = quickWindow->rendererInterface();
+                auto *device = static_cast<ID3D11Device *>(
+                    renderer->getResource(quickWindow, QSGRendererInterface::DeviceResource));
+                Microsoft::WRL::ComPtr<ID3D11Device1> device1;
+                if (device && SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&device1)))) {
+                    const std::wstring name = m_sharedD3D11TextureName.toStdWString();
+                    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+                    const HRESULT hr = device1->OpenSharedResourceByName(
+                        name.c_str(),
+                        DXGI_SHARED_RESOURCE_READ,
+                        IID_PPV_ARGS(&texture));
+                    if (SUCCEEDED(hr)) {
+                        state->texture = texture;
+                        m_nativeD3D11State = std::move(state);
+                    } else {
+                        qWarning() << "OpenSharedResourceByName failed for"
+                                   << m_sharedD3D11TextureName
+                                   << QStringLiteral("hr=0x%1")
+                                          .arg(static_cast<quint32>(hr), 8, 16, QLatin1Char('0'));
+                    }
+                }
+            }
+            if (m_nativeD3D11State && m_nativeD3D11State->texture) {
+                nativeTexture = m_nativeD3D11State->texture.Get();
+            }
+        }
+#else
+        void *nativeTexture = m_nativeD3D11Texture;
+#endif
+
+        if (!nativeTexture) {
+            delete node;
+            return nullptr;
+        }
+
+        const bool textureChanged = !node->nativeD3D11 ||
+                                    node->nativeTexture != nativeTexture ||
+                                    node->nativeTextureName != m_sharedD3D11TextureName ||
+                                    node->nativeTextureSize != m_nativeD3D11TextureSize;
+        if (textureChanged) {
+            auto options = m_nativeD3D11TextureHasAlpha
+                ? QQuickWindow::CreateTextureOptions(QQuickWindow::TextureHasAlphaChannel)
+                : QQuickWindow::CreateTextureOptions();
+            QSGTexture *texture = QNativeInterface::QSGD3D11Texture::fromNative(
+                nativeTexture,
+                quickWindow,
+                m_nativeD3D11TextureSize,
+                options);
+            if (texture) {
+                texture->setFiltering(QSGTexture::Nearest);
+                node->replaceTexture(texture);
+                node->sequence = m_nativeD3D11TextureSequence;
+                node->nativeD3D11 = true;
+                node->nativeTexture = nativeTexture;
+                node->nativeTextureName = m_sharedD3D11TextureName;
+                node->nativeTextureSize = m_nativeD3D11TextureSize;
+            }
+        }
+        node->sequence = m_nativeD3D11TextureSequence;
+
+        const QRectF dr = m_mapper.displayRect();
+        node->setRect(dr.isEmpty() ? boundingRect() : dr);
+        emit framePainted();
+        return node;
+    }
+
+    QImage textureImage = m_frame;
+    if (textureImage.format() != QImage::Format_RGBA8888 &&
+        textureImage.format() != QImage::Format_RGBX8888) {
+        textureImage = textureImage.convertToFormat(QImage::Format_RGBA8888);
+    }
+
+#ifdef Q_OS_WIN
+    if (quickWindow->rendererInterface()->graphicsApi() == QSGRendererInterface::Direct3D11) {
+        auto *renderer = quickWindow->rendererInterface();
+        auto *device = static_cast<ID3D11Device *>(
+            renderer->getResource(quickWindow, QSGRendererInterface::DeviceResource));
+        auto *context = static_cast<ID3D11DeviceContext *>(
+            renderer->getResource(quickWindow, QSGRendererInterface::DeviceContextResource));
+        const QSize imageSize = textureImage.size();
+        const bool needTexture = !m_uploadD3D11State ||
+                                 m_uploadD3D11State->size != imageSize ||
+                                 !m_uploadD3D11State->texture;
+        if (device && context && (needTexture || m_uploadD3D11State)) {
+            if (needTexture) {
+                auto state = std::make_unique<NativeD3D11TextureState>();
+                state->name = QStringLiteral("$upload");
+                state->size = imageSize;
+                state->uploadTexture = true;
+                D3D11_TEXTURE2D_DESC desc = {};
+                desc.Width = static_cast<UINT>(imageSize.width());
+                desc.Height = static_cast<UINT>(imageSize.height());
+                desc.MipLevels = 1;
+                desc.ArraySize = 1;
+                desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                desc.SampleDesc.Count = 1;
+                desc.Usage = D3D11_USAGE_DEFAULT;
+                desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                if (SUCCEEDED(device->CreateTexture2D(&desc, nullptr, &state->texture))) {
+                    m_uploadD3D11State = std::move(state);
+                }
+            }
+            if (m_uploadD3D11State && m_uploadD3D11State->texture) {
+                if (m_uploadD3D11State->sequence != m_frameSequence) {
+                    context->UpdateSubresource(m_uploadD3D11State->texture.Get(),
+                                               0,
+                                               nullptr,
+                                               textureImage.constBits(),
+                                               static_cast<UINT>(textureImage.bytesPerLine()),
+                                               0);
+                    m_uploadD3D11State->sequence = m_frameSequence;
+                }
+                void *nativeTexture = m_uploadD3D11State->texture.Get();
+                const bool textureChanged = !node->nativeD3D11 ||
+                                            node->nativeTexture != nativeTexture ||
+                                            node->nativeTextureName != m_uploadD3D11State->name ||
+                                            node->nativeTextureSize != imageSize;
+                if (textureChanged) {
+                    QSGTexture *texture = QNativeInterface::QSGD3D11Texture::fromNative(
+                        nativeTexture,
+                        quickWindow,
+                        imageSize,
+                        QQuickWindow::TextureHasAlphaChannel);
+                    if (texture) {
+                        texture->setFiltering(QSGTexture::Nearest);
+                        node->replaceTexture(texture);
+                        node->nativeD3D11 = true;
+                        node->nativeTexture = nativeTexture;
+                        node->nativeTextureName = m_uploadD3D11State->name;
+                        node->nativeTextureSize = imageSize;
+                    }
+                }
+                node->sequence = m_frameSequence;
+                const QRectF dr = m_mapper.displayRect();
+                node->setRect(dr.isEmpty() ? boundingRect() : dr);
+                emit framePainted();
+                return node;
+            }
+        }
+    }
+#endif
+
+    QSGTexture *texture = quickWindow->createTextureFromImage(
+        textureImage,
+        QQuickWindow::TextureHasAlphaChannel);
+    if (!texture) {
+        return node;
+    }
+    texture->setFiltering(QSGTexture::Nearest);
+    node->replaceTexture(texture);
+    node->sequence++;
+    node->nativeD3D11 = false;
+    node->nativeTexture = nullptr;
+    node->nativeTextureName.clear();
+    node->nativeTextureSize = QSize();
+
     const QRectF dr = m_mapper.displayRect();
-    if (dr.isEmpty()) {
-        painter->drawImage(boundingRect().toRect(), m_frame);
-    } else {
-        painter->drawImage(dr, m_frame, QRectF(0, 0, m_frame.width(), m_frame.height()));
-    }
+    node->setRect(dr.isEmpty() ? boundingRect() : dr);
     emit framePainted();
+    return node;
 }
 
 void GuestDisplay::keyPressEvent(QKeyEvent *event) {
@@ -186,8 +483,16 @@ void GuestDisplay::mouseMoveEvent(QMouseEvent *event) {
 }
 
 void GuestDisplay::wheelEvent(QWheelEvent *event) {
-    auto delta = event->angleDelta();
-    chimera::input::InputBridge::instance().onWheel(delta.x(), delta.y());
+    QPoint delta = event->angleDelta();
+    if (delta.isNull() && !event->pixelDelta().isNull())
+        delta = event->pixelDelta() * 8;
+    QPoint guestPos;
+    if (m_mapper.mapToGuest(event->position(), guestPos)) {
+        chimera::input::InputBridge::instance().onWheel(
+            delta.x(), delta.y(), guestPos.x(), guestPos.y());
+    } else {
+        chimera::input::InputBridge::instance().onWheel(delta.x(), delta.y());
+    }
     event->accept();
 }
 
@@ -221,7 +526,7 @@ void GuestDisplay::inputMethodEvent(QInputMethodEvent *event) {
 
 QVariant GuestDisplay::inputMethodQuery(Qt::InputMethodQuery query) const {
     if (query == Qt::ImEnabled) return QVariant(true);
-    return QQuickPaintedItem::inputMethodQuery(query);
+    return QQuickItem::inputMethodQuery(query);
 }
 
 } // namespace chimera

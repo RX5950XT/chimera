@@ -1,5 +1,6 @@
 #include "InputBridge.h"
 #include "AndroidConsoleInput.h"
+#include "EmulatorGrpcInput.h"
 #include "InputMapper.h"
 #include "QmpInput.h"
 #include "HvSocketTransport.h"
@@ -7,6 +8,7 @@
 #include <QProcess>
 #include <QDebug>
 #include <Qt>
+#include <algorithm>
 #include <unordered_map>
 #include <cmath>
 
@@ -82,6 +84,10 @@ int qtMouseButtonToQmp(int button) {
         return 0;
     }
 }
+
+constexpr int kPrimaryTouchId = 0;
+constexpr int kWheelTouchId = 9;
+constexpr int kTouchPressure = 1;
 
 InputBridge &InputBridge::instance() {
     static InputBridge inst;
@@ -309,16 +315,22 @@ void InputBridge::onMouseButton(bool press, int button, int x, int y) {
     injectEvent(ev);
 }
 
-void InputBridge::onWheel(int deltaX, int deltaY) {
+void InputBridge::onWheel(int deltaX, int deltaY, int x, int y) {
     if (!m_forwarding) return;
     Event ev{};
     ev.type = Event::Wheel;
     ev.relX = deltaX; ev.relY = deltaY;
+    ev.x = x;
+    ev.y = y;
     injectEvent(ev);
 }
 
 void InputBridge::onTouchPoint(int pointId, int x, int y, bool pressed) {
     if (!m_forwarding) return;
+    if (m_grpcInput) {
+        m_grpcInput->sendTouch(pointId, x, y, pressed ? kTouchPressure : 0);
+        return;
+    }
     if (!m_consoleInput || !m_consoleInput->isMouseReady()) return;
 
     if (pressed) {
@@ -347,6 +359,11 @@ void InputBridge::onTouchPoint(int pointId, int x, int y, bool pressed) {
 
 void InputBridge::onTextInput(const std::string &utf8text) {
     if (!m_forwarding || utf8text.empty()) return;
+    // Prefer the emulator gRPC text path (real key events, IME-correct).
+    if (m_grpcInput) {
+        m_grpcInput->sendText(QString::fromStdString(utf8text));
+        return;
+    }
     if (m_consoleInput && m_consoleInput->isConnected()) {
         m_consoleInput->sendText(utf8text);
         return;
@@ -483,7 +500,10 @@ void InputBridge::injectEvent(const Event &ev) {
         // Qt button → Android Console bitmask (LeftButton=1, RightButton=2, MiddleButton=4)
         const int consoleBtns = (ev.code == Qt::LeftButton) ? 1 :
                                 (ev.code == Qt::RightButton) ? 2 : 4;
-        if (hasConsoleMouse()) {
+        if (m_grpcInput && ev.code == Qt::LeftButton) {
+            m_lastGrpcTouchMove = {};
+            m_grpcInput->sendTouch(kPrimaryTouchId, ev.x, ev.y, kTouchPressure);
+        } else if (hasConsoleMouse()) {
             m_consoleInput->sendMouseEvent(ev.x, ev.y, consoleBtns);
         } else if (hasQmp()) {
             m_qmpInput->sendMouseButton(qtMouseButtonToQmp(ev.code), true, ev.x, ev.y);
@@ -493,7 +513,10 @@ void InputBridge::injectEvent(const Event &ev) {
         break;
     }
     case Event::MouseButtonUp: {
-        if (hasConsoleMouse()) {
+        if (m_grpcInput && ev.code == Qt::LeftButton) {
+            m_grpcInput->sendTouch(kPrimaryTouchId, ev.x, ev.y, 0);
+            m_lastGrpcTouchMove = {};
+        } else if (hasConsoleMouse()) {
             m_consoleInput->sendMouseEvent(ev.x, ev.y, 0); // release all buttons
         } else if (hasQmp()) {
             m_qmpInput->sendMouseButton(qtMouseButtonToQmp(ev.code), false, ev.x, ev.y);
@@ -503,7 +526,15 @@ void InputBridge::injectEvent(const Event &ev) {
     }
     case Event::MouseMove: {
         // ev.code carries held-button bitmask from onMouseButton; 0=hover, 1=left drag, etc.
-        if (hasConsoleMouse()) {
+        if (m_grpcInput && (ev.code & 1) != 0) {
+            const auto now = std::chrono::steady_clock::now();
+            if (m_lastGrpcTouchMove.time_since_epoch().count() != 0 &&
+                now - m_lastGrpcTouchMove < std::chrono::milliseconds(8)) {
+                break;
+            }
+            m_lastGrpcTouchMove = now;
+            m_grpcInput->sendTouch(kPrimaryTouchId, ev.x, ev.y, kTouchPressure);
+        } else if (hasConsoleMouse()) {
             m_consoleInput->sendMouseEvent(ev.x, ev.y, ev.code);
         } else if (hasQmp()) {
             m_qmpInput->sendMouseMove(ev.x, ev.y);
@@ -516,39 +547,53 @@ void InputBridge::injectEvent(const Event &ev) {
         break;
     }
     case Event::KeyDown: {
-        const int androidKey = mapQtKeyToAndroid(ev.code);
-        if (hasConsoleKeyboard() && androidKey >= 0) {
-            m_consoleInput->sendKeyEvent(androidKey, true);
-        } else if (hasQmp()) {
-            const int qemuKey = mapQtKeyToQemu(ev.code);
-            if (qemuKey >= 0) m_qmpInput->sendKey(qemuKey, true);
-        } else if (!m_adbPath.empty() && androidKey >= 0) {
-            enqueueAdbCommand("input keyevent " + std::to_string(androidKey));
+        // Keyboard priority: emulator gRPC sendKey (low latency) → QMP → ADB.
+        // gRPC/QMP take a Linux evdev code; ADB needs an Android keycode.
+        const int linuxKey = mapQtKeyToQemu(ev.code);
+        if (m_grpcInput && linuxKey > 0) {
+            m_grpcInput->sendKey(linuxKey, true);
+        } else if (hasQmp() && linuxKey >= 0) {
+            m_qmpInput->sendKey(linuxKey, true);
+        } else {
+            const int androidKey = mapQtKeyToAndroid(ev.code);
+            if (!m_adbPath.empty() && androidKey >= 0)
+                enqueueAdbCommand("input keyevent " + std::to_string(androidKey));
         }
         break;
     }
     case Event::KeyUp: {
-        const int androidKey = mapQtKeyToAndroid(ev.code);
-        if (hasConsoleKeyboard() && androidKey >= 0) {
-            m_consoleInput->sendKeyEvent(androidKey, false);
-        } else if (hasQmp()) {
-            const int qemuKey = mapQtKeyToQemu(ev.code);
-            if (qemuKey >= 0) m_qmpInput->sendKey(qemuKey, false);
+        const int linuxKey = mapQtKeyToQemu(ev.code);
+        if (m_grpcInput && linuxKey > 0) {
+            m_grpcInput->sendKey(linuxKey, false);
+        } else if (hasQmp() && linuxKey >= 0) {
+            m_qmpInput->sendKey(linuxKey, false);
         }
         // ADB has no separate key-up
         break;
     }
     case Event::Wheel: {
-        int dx = ev.relX / 40;
-        int dy = ev.relY / 40;
+        int dx = ev.relX / 30;
+        int dy = ev.relY / 30;
         if (dx == 0 && dy == 0) dy = ev.relY > 0 ? -1 : 1;
-        const int centerX = m_displayWidth / 2;
-        const int centerY = m_displayHeight / 2;
-        if (!m_adbPath.empty()) {
+        const int centerX = (ev.x >= 0) ? ev.x : (m_displayWidth / 2);
+        const int centerY = (ev.y >= 0) ? ev.y : (m_displayHeight / 2);
+        const int maxX = (m_displayWidth > 0) ? (m_displayWidth - 1) : 0;
+        const int maxY = (m_displayHeight > 0) ? (m_displayHeight - 1) : 0;
+        const int endX = std::clamp(centerX + dx * 28, 0, maxX);
+        const int endY = std::clamp(centerY + dy * 28, 0, maxY);
+        if (m_grpcInput) {
+            const auto now = std::chrono::steady_clock::now();
+            if (m_lastGrpcWheel.time_since_epoch().count() != 0 &&
+                now - m_lastGrpcWheel < std::chrono::milliseconds(16)) {
+                break;
+            }
+            m_lastGrpcWheel = now;
+            m_grpcInput->sendTouchSwipe(kWheelTouchId, centerX, centerY, endX, endY, 0);
+        } else if (!m_adbPath.empty()) {
             enqueueAdbCommand("input swipe " +
                               std::to_string(centerX) + " " + std::to_string(centerY) + " " +
-                              std::to_string(centerX + dx * 50) + " " +
-                              std::to_string(centerY + dy * 50) + " 100",
+                              std::to_string(endX) + " " +
+                              std::to_string(endY) + " 100",
                               true);
         }
         break;

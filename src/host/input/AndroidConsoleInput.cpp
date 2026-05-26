@@ -127,18 +127,28 @@ void AndroidConsoleInput::processLine(const QString &line) {
         break;
 
     case State::AuthPending:
+        // After "auth <token>" the console replies with an informational
+        // banner ("Android Console: type 'help' ...") followed by the real
+        // result terminator: "OK" on success, "KO" on failure. Only those two
+        // advance state; banner lines must be ignored, not treated as failure.
         if (line == QLatin1String("OK")) {
             m_probe     = {};
             m_probeStep = 0;
             setState(State::Probing);
             startProbe();
-        } else {
+        } else if (line.startsWith(QLatin1String("KO"))) {
+            // Console failure terminator is "KO" or "KO: <reason>".
             qWarning() << "[AndroidConsoleInput] auth rejected:" << line;
             setState(State::FailedAuth);
         }
+        // else: informational banner line — keep waiting for OK/KO
         break;
 
     case State::Probing: {
+        // Console command responses terminate with "OK" or "KO[: reason]";
+        // ignore any informational lines that precede the terminator.
+        if (line != QLatin1String("OK") && !line.startsWith(QLatin1String("KO")))
+            break;
         const bool ok = (line == QLatin1String("OK"));
         if (m_probeStep == 0) {
             m_probe.mouseCmdOk = ok;

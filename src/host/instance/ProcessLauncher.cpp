@@ -1,4 +1,5 @@
 #include "ProcessLauncher.h"
+#include <QDebug>
 #include <iostream>
 #include <sstream>
 #include <thread>
@@ -9,6 +10,27 @@
 namespace chimera::instance {
 
 namespace {
+
+// Process-global kill-on-close job. If the host exits or is force-killed,
+// Windows closes this handle and tears down the emulator/qemu tree with it.
+HANDLE acquireKillOnCloseJob() {
+    static HANDLE job = []() -> HANDLE {
+        HANDLE h = CreateJobObjectW(nullptr, nullptr);
+        if (!h) {
+            qWarning() << "[ProcessLauncher] CreateJobObjectW failed:" << GetLastError();
+            return nullptr;
+        }
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = {};
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(h, JobObjectExtendedLimitInformation, &info, sizeof(info))) {
+            qWarning() << "[ProcessLauncher] SetInformationJobObject failed:" << GetLastError();
+            CloseHandle(h);
+            return nullptr;
+        }
+        return h;
+    }();
+    return job;
+}
 
 std::vector<DWORD> collectChildProcesses(DWORD rootPid) {
     std::vector<std::pair<DWORD, DWORD>> processes;
@@ -280,10 +302,12 @@ HANDLE ProcessLauncher::runAsync(const std::string &exe, const std::vector<std::
     std::vector<wchar_t> cmdBuf(cmdLine.begin(), cmdLine.end());
     cmdBuf.push_back(L'\0');
 
+    // Assign to the kill-on-close job before the child can spawn qemu.
     BOOL created = CreateProcessW(
         nullptr, cmdBuf.data(), nullptr, nullptr,
         redirect ? TRUE : FALSE,
-        CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
+        CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW |
+            CREATE_SUSPENDED,
         nullptr, nullptr, &si, &pi);
 
     if (redirect) {
@@ -299,6 +323,28 @@ HANDLE ProcessLauncher::runAsync(const std::string &exe, const std::vector<std::
         return nullptr;
     }
 
+    if (HANDLE job = acquireKillOnCloseJob()) {
+        if (!AssignProcessToJobObject(job, pi.hProcess)) {
+            qWarning() << "[ProcessLauncher] AssignProcessToJobObject failed:"
+                       << GetLastError()
+                       << "- child process will not be killed automatically on host exit";
+        }
+    } else {
+        qWarning() << "[ProcessLauncher] kill-on-close job unavailable:"
+                   << "child process will not be killed automatically on host exit";
+    }
+
+    if (ResumeThread(pi.hThread) == static_cast<DWORD>(-1)) {
+        qWarning() << "[ProcessLauncher] ResumeThread failed:" << GetLastError();
+        TerminateProcess(pi.hProcess, 1);
+        if (redirect) {
+            if (hStdOutRead) CloseHandle(hStdOutRead);
+            if (hStdErrRead) CloseHandle(hStdErrRead);
+        }
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return nullptr;
+    }
     CloseHandle(pi.hThread);
 
     if (redirect) {

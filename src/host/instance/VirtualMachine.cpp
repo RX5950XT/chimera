@@ -13,6 +13,8 @@ namespace chimera::instance {
 
 namespace {
 
+constexpr const char *kQuickBootSnapshotName = "chimera_quickboot";
+
 std::string emulatorGpuMode(const std::string &renderer) {
     if (renderer == "swiftshader" || renderer == "swiftshader_indirect") {
         return "swiftshader_indirect";
@@ -118,10 +120,11 @@ void applyAvdHardwareConfig(const VirtualMachineConfig &config) {
         lines.push_back(line);
     }
 
-    const std::map<std::string, std::string> updates = {
+    std::map<std::string, std::string> updates = {
         {"hw.cpu.ncore", std::to_string(std::max(1, config.cpus))},
         {"hw.gpu.enabled", "yes"},
         {"hw.gpu.mode", emulatorGpuMode(config.graphicsRenderer)},
+        {"hw.initialOrientation", (config.width >= config.height) ? "landscape" : "portrait"},
         {"hw.keyboard", "yes"},
         {"hw.lcd.density", std::to_string(std::max(120, config.dpi))},
         {"hw.lcd.height", std::to_string(std::max(480, config.height))},
@@ -130,6 +133,18 @@ void applyAvdHardwareConfig(const VirtualMachineConfig &config) {
         {"hw.ramSize", std::to_string(std::max(1024, config.ramMB)) + "M"},
         {"showDeviceFrame", "no"},
     };
+
+    const std::filesystem::path sdkRoot = config.emulatorPath.parent_path().parent_path();
+    const std::filesystem::path playStoreImage =
+        sdkRoot / "system-images" / "android-34" / "google_apis_playstore" / "x86_64";
+    if (std::filesystem::exists(playStoreImage, ec)) {
+        updates["PlayStore.enabled"] = "yes";
+        updates["image.sysdir.1"] = R"(system-images\android-34\google_apis_playstore\x86_64\)";
+        updates["tag.display"] = "Google Play";
+        updates["tag.id"] = "google_apis_playstore";
+    } else {
+        qWarning() << "Google Play system image not found; launcher Play entry will stay disabled";
+    }
 
     for (const auto &[key, value] : updates) {
         upsertIniValue(lines, key, value);
@@ -147,6 +162,114 @@ void applyAvdHardwareConfig(const VirtualMachineConfig &config) {
     if (!ec) {
         qDebug() << "AVD hardware config synced:" << QString::fromStdWString(path.wstring());
     }
+}
+
+std::filesystem::path adbPathForConfig(const VirtualMachineConfig &config) {
+    if (config.emulatorPath.empty()) return {};
+    return config.emulatorPath.parent_path().parent_path() / "platform-tools" / "adb.exe";
+}
+
+std::string adbSerialForConfig(const VirtualMachineConfig &config) {
+    return "emulator-" + std::to_string(config.qmpPort);
+}
+
+bool runAdbEmuCommand(const VirtualMachineConfig &config,
+                      const std::vector<std::string> &emuArgs,
+                      int timeoutMs) {
+    const auto adbPath = adbPathForConfig(config);
+    std::error_code ec;
+    if (adbPath.empty() || !std::filesystem::exists(adbPath, ec)) return false;
+
+    std::vector<std::string> args = {"-s", adbSerialForConfig(config), "emu"};
+    args.insert(args.end(), emuArgs.begin(), emuArgs.end());
+
+    HANDLE hProc = ProcessLauncher::runAsync(adbPath.string(), args, nullptr, nullptr, true);
+    if (!hProc) return false;
+    const DWORD waitResult = WaitForSingleObject(hProc, static_cast<DWORD>(timeoutMs));
+    if (waitResult == WAIT_OBJECT_0) {
+        DWORD exitCode = 1;
+        GetExitCodeProcess(hProc, &exitCode);
+        CloseHandle(hProc);
+        return exitCode == 0;
+    }
+    ProcessLauncher::terminate(hProc);
+    WaitForSingleObject(hProc, 2000);
+    CloseHandle(hProc);
+    return false;
+}
+
+std::vector<std::string> buildEmulatorArgsForConfig(const VirtualMachineConfig &config) {
+    std::vector<std::string> args;
+    args.push_back("-avd");
+    args.push_back(config.avdName.empty() ? config.name : config.avdName);
+
+    if (config.headless) {
+        args.push_back("-no-window");
+    }
+
+    args.push_back("-accel");
+    args.push_back("on");
+
+    args.push_back("-gpu");
+    args.push_back(emulatorGpuMode(config.graphicsRenderer));
+
+    // Do not force "-systemui-renderer skiavk"; GL via gfxstream/ANGLE is the
+    // stable path on hosts with Vulkan overlays or software ICD fallback.
+    args.push_back("-memory");
+    args.push_back(std::to_string(config.ramMB));
+
+    args.push_back("-cores");
+    args.push_back(std::to_string(config.cpus));
+
+    args.push_back("-no-skin");
+    args.push_back("-window-size");
+    args.push_back(std::to_string(config.width) + "x" + std::to_string(config.height));
+    args.push_back("-fixed-scale");
+
+    args.push_back("-vsync-rate");
+    args.push_back(std::to_string(std::clamp(config.maxFps, 30, 240)));
+
+    args.push_back("-netfast");
+
+    if (config.quickBoot) {
+        args.push_back("-snapshot");
+        args.push_back(kQuickBootSnapshotName);
+    } else {
+        args.push_back("-no-snapshot");
+    }
+    args.push_back("-no-boot-anim");
+    if (!config.enableAudio) {
+        args.push_back("-no-audio");
+    }
+    args.push_back("-no-metrics");
+
+    if (config.enableRoot) {
+        args.push_back("-writable-system");
+    }
+    args.push_back("-crash-report-mode");
+    args.push_back("never");
+
+    args.push_back("-ports");
+    args.push_back(std::to_string(config.qmpPort) + "," + std::to_string(config.adbPort));
+
+    if (config.enableGrpc) {
+        args.push_back("-grpc");
+        args.push_back(std::to_string(config.grpcPort));
+        args.push_back("-idle-grpc-timeout");
+        args.push_back("300");
+    }
+
+    args.push_back("-qemu");
+    if (config.enableVnc) {
+        const int display = (config.vncPort > 5900) ? (config.vncPort - 5900) : 0;
+        args.push_back("-display");
+        args.push_back("vnc=127.0.0.1:" + std::to_string(display));
+    }
+    if (config.enableAudio) {
+        args.push_back("-device");
+        args.push_back("virtio-snd-pci");
+    }
+    return args;
 }
 
 } // namespace
@@ -175,77 +298,6 @@ bool VirtualMachine::start() {
     removeStaleAvdLocks(m_config);
     applyAvdHardwareConfig(m_config);
 
-    std::vector<std::string> args;
-    args.push_back("-avd");
-    args.push_back(m_config.avdName.empty() ? m_config.name : m_config.avdName);
-
-    if (m_config.headless) {
-        args.push_back("-no-window");
-    }
-
-    args.push_back("-accel");
-    args.push_back("on");
-
-    args.push_back("-gpu");
-    args.push_back(emulatorGpuMode(m_config.graphicsRenderer));
-
-    args.push_back("-systemui-renderer");
-    args.push_back("skiavk");
-
-    args.push_back("-memory");
-    args.push_back(std::to_string(m_config.ramMB));
-
-    args.push_back("-cores");
-    args.push_back(std::to_string(m_config.cpus));
-
-    args.push_back("-no-skin");
-    args.push_back("-window-size");
-    args.push_back(std::to_string(m_config.width) + "x" + std::to_string(m_config.height));
-    args.push_back("-fixed-scale");
-
-    args.push_back("-vsync-rate");
-    args.push_back(std::to_string(std::clamp(m_config.maxFps, 30, 240)));
-
-    args.push_back("-netfast");
-
-    args.push_back("-no-snapshot");
-    args.push_back("-no-boot-anim");
-    if (!m_config.enableAudio) {
-        args.push_back("-no-audio");
-    }
-    args.push_back("-no-metrics");
-
-    // Root mode: enable a writable /system partition (google_apis only).
-    // After boot, call "adb root" to switch adbd to root user.
-    if (m_config.enableRoot) {
-        args.push_back("-writable-system");
-    }
-    args.push_back("-crash-report-mode");
-    args.push_back("never");
-
-    // Android Emulator console port IS the QMP interface.
-    // -ports console,adb  →  console=QMP, adb=ADB daemon
-    args.push_back("-ports");
-    args.push_back(std::to_string(m_config.qmpPort) + "," + std::to_string(m_config.adbPort));
-
-    if (m_config.enableGrpc) {
-        args.push_back("-grpc");
-        args.push_back(std::to_string(m_config.grpcPort));
-        args.push_back("-idle-grpc-timeout");
-        args.push_back("300");
-    }
-
-    // QEMU arg passthrough: VNC is disabled by default, but virtio-snd is kept
-    // for the future guest audio bridge. Host audio output remains muted by -no-audio.
-    args.push_back("-qemu");
-    if (m_config.enableVnc) {
-        const int display = (m_config.vncPort > 5900) ? (m_config.vncPort - 5900) : 0;
-        args.push_back("-display");
-        args.push_back("vnc=127.0.0.1:" + std::to_string(display));
-    }
-    args.push_back("-device");
-    args.push_back("virtio-snd-pci");
-
     auto onStdout = [](const std::string &line) {
         if (!line.empty()) qDebug() << "emulator:" << QString::fromStdString(line);
     };
@@ -253,14 +305,19 @@ bool VirtualMachine::start() {
         if (!line.empty()) qWarning() << "emulator:" << QString::fromStdString(line);
     };
 
-    HANDLE hProc = ProcessLauncher::runAsync(
-        m_config.emulatorPath.string(),
-        args,
-        onStdout,
-        onStderr,
-        /*startHidden=*/!m_config.headless
-    );
+    auto launch = [&](bool quickBoot) -> HANDLE {
+        VirtualMachineConfig launchConfig = m_config;
+        launchConfig.quickBoot = quickBoot;
+        return ProcessLauncher::runAsync(
+            m_config.emulatorPath.string(),
+            buildEmulatorArgsForConfig(launchConfig),
+            onStdout,
+            onStderr,
+            /*startHidden=*/!m_config.headless
+        );
+    };
 
+    HANDLE hProc = launch(m_config.quickBoot);
     if (!hProc) {
         m_state = VMState::Error;
         if (m_callback) m_callback(m_state);
@@ -268,9 +325,19 @@ bool VirtualMachine::start() {
     }
 
     if (ProcessLauncher::waitForExit(hProc, 1500) >= 0) {
-        m_state = VMState::Error;
-        if (m_callback) m_callback(m_state);
-        return false;
+        if (m_config.quickBoot) {
+            qWarning() << "Quick Boot launch exited early; retrying with full boot";
+            hProc = launch(false);
+            if (!hProc || ProcessLauncher::waitForExit(hProc, 1500) >= 0) {
+                m_state = VMState::Error;
+                if (m_callback) m_callback(m_state);
+                return false;
+            }
+        } else {
+            m_state = VMState::Error;
+            if (m_callback) m_callback(m_state);
+            return false;
+        }
     }
 
     m_processHandle = hProc;
@@ -278,8 +345,8 @@ bool VirtualMachine::start() {
     const DWORD rootPid = GetProcessId(hProc);
     ProcessLauncher::setProcessTreePriority(hProc, priorityClass);
     std::thread([rootPid, priorityClass]() {
-        for (int i = 0; i < 12; ++i) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        for (int i = 0; i < 60; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
             ProcessLauncher::setProcessTreePriorityById(rootPid, priorityClass);
         }
     }).detach();
@@ -292,8 +359,22 @@ bool VirtualMachine::start() {
 bool VirtualMachine::stop() {
     m_state = VMState::Stopping;
     if (m_processHandle) {
-        ProcessLauncher::terminate(static_cast<HANDLE>(m_processHandle));
-        ProcessLauncher::waitForExit(static_cast<HANDLE>(m_processHandle), 10000);
+        const HANDLE hProc = static_cast<HANDLE>(m_processHandle);
+        bool exited = false;
+        if (m_config.quickBoot) {
+            const bool saved = runAdbEmuCommand(
+                m_config, {"avd", "snapshot", "save", kQuickBootSnapshotName}, 30000);
+            if (!saved) {
+                qWarning() << "Quick Boot snapshot save failed; falling back to emulator kill";
+            }
+            if (runAdbEmuCommand(m_config, {"kill"}, 5000)) {
+                exited = ProcessLauncher::waitForExit(hProc, 15000) >= 0;
+            }
+        }
+        if (!exited) {
+            ProcessLauncher::terminate(hProc);
+            ProcessLauncher::waitForExit(hProc, 10000);
+        }
         m_processHandle = nullptr;
     }
     m_state = VMState::Stopped;
@@ -355,6 +436,10 @@ std::vector<std::string> VirtualMachine::buildQemuArgs() const {
         args.push_back("-drive"); args.push_back("file=" + m_config.systemImage.string() + ",format=raw,if=virtio");
     }
     return args;
+}
+
+std::vector<std::string> VirtualMachine::buildEmulatorArgs() const {
+    return buildEmulatorArgsForConfig(m_config);
 }
 
 void VirtualMachine::setStateCallback(StateCallback cb) {

@@ -12,11 +12,11 @@ enum class VMState { Stopped, Creating, Created, Starting, Running, Paused, Stop
 
 struct VirtualMachineConfig {
     std::string name;
-    int cpus = 4;
+    int cpus = 2;
     int ramMB = 2048;
-    int width = 1280;
-    int height = 720;
-    int dpi = 240;
+    int width = 1920;
+    int height = 1080;
+    int dpi = 320;
     std::string graphicsEngine = "angle";
     std::string graphicsRenderer = "host";
     int maxFps = 60;
@@ -35,8 +35,9 @@ struct VirtualMachineConfig {
     bool headless = false;               // -no-window flag; false enables native window embedding
     bool enableRoot = false;             // -writable-system (google_apis only; adb root post-boot)
     bool enableAudio = false;            // Remove -no-audio flag; emulator handles host audio natively
+    bool quickBoot = true;                // Load/save named emulator snapshot to reduce boot time
     std::string deviceProfile;           // Device spoofing profile name
-    std::string processPriority = "high";
+    std::string processPriority = "normal";
 };
 
 /**
@@ -61,6 +62,7 @@ public:
 
     // QEMU command-line builder
     std::vector<std::string> buildQemuArgs() const;
+    std::vector<std::string> buildEmulatorArgs() const;
 
     using StateCallback = std::function<void(VMState)>;
     void setStateCallback(StateCallback cb);

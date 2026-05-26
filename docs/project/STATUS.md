@@ -8,25 +8,25 @@
 **Review report**: `docs/project/CODE_REVIEW.md`
 
 ### Fixed in this review
-- Replaced the default screenshot-stream display path with native Android Emulator Win32 window embedding via `NativeEmulatorView`.
-- Kept gRPC/ADB display capture behind `--stream-capture` as fallback/debug mode instead of using it for normal gameplay.
-- Applied BlueStacks-inspired host-shell tuning: Qt Quick forced to D3D11 RHI and emulator/qemu process tree boosted to high priority during startup.
+- Default display path is now headless gRPC framebuffer streaming; native Android Emulator Win32 embedding is legacy opt-in via `--native-embed`.
+- Kept ADB raw display capture behind `--adb-display-fallback` as compatibility/debug mode because it is too slow for normal gameplay.
+- Applied BlueStacks-inspired host-shell tuning: Qt Quick forced to D3D11 RHI; emulator/qemu process priority is now normal to avoid host contention.
 - Added BlueStacks-style runtime shortcut coverage: recording, macro page, multi-instance page, and key mapping page toggles.
 - Hid Android Emulator auxiliary tool windows after native embedding; Chimera now keeps controls inside the main shell via a compact right-side status/action panel.
 - Cleaned the QML shell layout: removed duplicate FPS badges, removed clipped hover tooltips, and consolidated repeated toolbar actions into one right-side panel.
 - Added built-in Android navigation controls in the right panel: Back, Home, and Recents. These send Android semantic keyevents through `InputBridge`/ADB.
 - Replaced native-hidden QML dialogs/overlays with right-side panel pages for key mapping, multi-instance management, and macro management.
 - Fixed native display sizing by constraining the embedded emulator viewport to the guest 16:9 aspect ratio, preventing emulator-side letterboxing from arbitrary host panel sizes.
-- Added native-window recording support: `NativeEmulatorView` now captures the embedded child window and feeds `ScreenRecorder`, so recording works in the default native display path.
+- Added native-window recording support for the legacy `--native-embed` path; normal playback uses gRPC frames through `GuestDisplay`.
 - Made screenshot/recording relative paths stable by setting the process working directory to the project root at startup.
 - Increased ADB shell input timeout and log failures so Android navigation keyevents do not silently disappear under boot/load contention.
 - Added `Esc` fullscreen exit in addition to `F11`.
 - Synchronized AVD hardware config before boot: `1280x720`, `240 dpi`, 2048 MB RAM, host GPU, no device frame, and 60Hz vsync.
 - Added guest-side performance setup after boot: 60Hz min/peak refresh, disabled Android animation scales, and fixed performance mode where supported.
-- Switched SystemUI renderer to `skiavk` for the native path.
-- Disabled Android Emulator metrics/crash-report consent prompts (`-no-metrics`, `-crash-report-mode never`) so visible/native mode boots instead of stalling before QEMU/ADB starts.
+- Switched SystemUI renderer to `skiavk` for emulator.exe runs.
+- Disabled Android Emulator metrics/crash-report consent prompts (`-no-metrics`, `-crash-report-mode never`) so emulator boot does not stall before QEMU/ADB starts.
 - Added Traditional Chinese QML UI refresh and `--no-emulator` UI-only startup mode.
-- Added `GrpcFramebufferCapture` (`-grpc 8554`) with ADB raw fallback for `--stream-capture` debug/compatibility mode.
+- Added `GrpcFramebufferCapture` (`-grpc 8554`) as the default display path; ADB raw fallback is opt-in debug/compatibility mode.
 - Fixed pre-boot gRPC pending connection by restarting the stream until the first frame arrives.
 - Fixed gRPC frame orientation by copying emulator screenshot bytes as top-down; direct gRPC capture confirmed bottom-up copy is the inverted variant.
 - Switched gRPC stream from RGBA8888 to RGB888 to cut frame payload by 25%.
@@ -41,6 +41,37 @@
 - Lowered default runtime RAM to 2048 MB and display to 1280×720 to reduce memory, GPU, and screenshot-stream bandwidth.
 - Fixed performance monitor first-frame timing so boot delay is not counted as frame time.
 - Fixed `Framebuffer::writeBackBuffer()` resize deadlock and added `test-graphics-framebuffer`.
+- Fixed force-kill orphan emulator/qemu leakage by assigning async children to a kill-on-close Windows Job Object; force-killing `chimera-ui.exe` now removes the emulator tree.
+- Added Quick Boot snapshot support (`-snapshot chimera_quickboot`) with `CHIMERA_QUICK_BOOT=0` fallback; verified relaunch boot time improved from 44s to 10s.
+- Hardened Quick Boot startup: if snapshot launch exits immediately, Chimera automatically retries with full boot; latest snapshot smoke reached boot complete in 12s.
+- Added `scripts/verify-quick-boot.ps1` runtime smoke; latest run rebuilt `chimera_quickboot`, measured full boot 66.7s and Quick Boot 9.7s, and left no Chimera/emulator/qemu processes running.
+- Reverted native Win32 embed to opt-in only after runtime showed black viewport / toolbar leakage; default display is headless gRPC streaming.
+- Disabled ADB raw display fallback by default; it is now opt-in via `--adb-display-fallback` because it can collapse display to ~1 FPS.
+- Added landscape guest adaptation on boot: 1280x720, 240 dpi, 60Hz settings, orientation request ignore, animation scales off, and wake/dismiss-keyguard/HOME so the stream lands on a usable desktop.
+- Disabled Quick Boot by default after snapshot state caused ADB offline / empty-screen risk; set `CHIMERA_QUICK_BOOT=1` or use the verifier when intentionally testing snapshot boot.
+- Upgraded default guest adaptation to 1920x1080 landscape / 320 dpi while keeping gRPC raw capture capped at 800x450 for 60+ FPS on the current raw `getScreenshot` path.
+- Added emulator gRPC `sendTouch` and routed normal clicks/touches through it; runtime smoke confirmed tapping Settings brings `com.android.settings` foreground.
+- Replaced misleading single FPS counter with truthful `guestFps`, `streamFps`, `renderFps`, and duplicate-frame metrics; static screens no longer report capture-loop 60 FPS as guest FPS.
+- Reduced idle overhead by fingerprinting gRPC frames: duplicate frames update stream metrics only, skip QML repaint/recorder feed, and back off capture to 100ms until input or content changes.
+- Added a real Android HOME launcher (`com.chimera.launcher`) with a clean landscape app grid, plus `scripts/build-chimera-launcher.ps1` for APK build/sign/verify.
+- Host boot flow now installs Chimera Launcher after `sys.boot_completed=1`, attempts to set it as HOME, and starts the HOME intent.
+- Hardened Chimera Launcher against black-screen HOME states by removing forced immersive startup, adding visible title/empty-state content, and explicitly starting `com.chimera.launcher/.MainActivity` after install.
+- Simplified the right sidebar performance card to a single FPS number and moved detailed Guest/Stream/Render/Dup diagnostics out of the primary side panel.
+- Compacted the host shell chrome (46px top bar, narrower right panel) so the emulator viewport gets more usable space.
+- Updated Chimera Launcher to keep Android status bar visible, remove the thick top black band, and show only the required entries: Google Play, File Manager, Browser, and Settings.
+- Kept the single side-panel FPS as Stream FPS and restored 16ms capture cadence while still suppressing duplicate-frame QML repaint; steady Home streaming now verifies above 60 FPS.
+- Switched the default AVD hardware config to the installed Google Play system image when available, enabling real Play Store / Play services support.
+- Added support app provisioning for Material Files from `third_party/android-apps/material-files.apk`, giving Chimera a real file manager package instead of a non-launchable DocumentsUI shortcut.
+- Updated Chimera Launcher to keep the four required entries pinned while appending all launchable apps, so Google Play-installed apps appear on Home automatically.
+- Moved fullscreen into the compact FPS side card and replaced the white native Windows title bar with a frameless dark title bar that contains the Chimera logo.
+- Added built-in Chimera browser/file-manager fallback activities so fixed Home entries never ship as disabled grey placeholders when Chrome/Files are absent.
+- Tightened Home dynamic app scanning to append only user-installed packages and filter system remnants such as duplicate Settings and TMobile.
+- Reduced host audio stutter risk by lowering default emulator/qemu scheduling pressure: 2 vCPU, process priority not above Normal, no pre-boot gRPC capture, and no `virtio-snd-pci` device while guest audio is disabled.
+- Reduced mouse-wheel scroll jank by routing wheel input through emulator gRPC `sendTouchSwipe()` with 16ms throttle; ADB `input swipe` is now fallback-only.
+- Removed the host title-bar subtitle, kept the large `CHIMERA` logo, and switched the visible host UI copy to Traditional Chinese where this flow exposes it.
+- Changed the side-panel FPS to effective FPS (`min(Guest, Stream, Render)`) so Stream delivery can no longer masquerade as true visible smoothness.
+- Runtime dynamic-flow evidence still does not prove true 60 FPS: notification/scroll smoke reached Stream `61.3 FPS` while Guest/Render were only `8.9 FPS`; a longer flow reached Guest `13.9` / Render `12.9`. True 60+ now requires shared memory/shared texture capture and a scene graph texture renderer.
+- Retuned raw capture after app-switch smoke failures at 960x540 and intermittent 896x504 regressions: default is now 800x450, with latest runtime smoke Stream min 62.2 / avg 62.6 while launching Google Play, Files, Chrome, and Settings.
 - Fixed `InstanceManager` saved/live instance visibility, invalid iterator usage, saved-only start path, and instance name validation.
 - Fixed QMP auto-reconnect not starting after failed connection/socket error.
 - Fixed `MacroEngine` playback thread replacement risk.
@@ -48,14 +79,27 @@
 - Removed stale `main.moc` include warning from `src/host/ui/main.cpp`.
 
 ### Current known risks
-- Native window embedding is now the default path and Android reports `1280x720`, `240 dpi`, active display mode `60.00 Hz`, and `debug.hwui.renderer=skiavk`.
-- Latest toolbar smoke test attached the native emulator window and hid two external Android Emulator auxiliary windows; no visible emulator top-level windows remained.
-- Latest live boot test removed stale AVD locks, reached Android boot complete in about 33 seconds, attached the native emulator window, and did not start gRPC/ADB capture.
-- Visible/native boot depends on `-crash-report-mode never`; without it, Android Emulator can stall on a crash-report consent dialog before QEMU/ADB becomes available.
-- gRPC RGB888 stream improves display over ADB but remains fallback-only; latest 1280×720 stream-capture test peaked around 32 FPS.
+- gRPC streaming is the default display path; native window embedding remains opt-in only via `--native-embed` because it can black out the emulator Qt surface and leak the toolbar.
+- Latest live boot test removed stale AVD locks, reached Android boot complete, reported `1920x1080` / `320 dpi`, and ADB screenshot showed a usable landscape Home screen.
+- Emulator boot depends on `-crash-report-mode never`; without it, Android Emulator can stall on a crash-report consent dialog before QEMU/ADB becomes available.
+- gRPC RGB888 stream is the default display path; current 800×450 stream verification sustains min 62.2 / avg 62.6 FPS through app-switch smoke. Higher-fidelity 1080p capture still needs shared memory/shared texture rather than raw `getScreenshot`.
+- Perf metrics are now separated: `guestFps` means content-changing guest frames, `streamFps` means capture replies, `renderFps` means Qt paints, and `duplicateRate` exposes repeated frames. A static HOME screen should report Guest 0 FPS and high duplicate rate.
+- Runtime smoke verified `com.chimera.launcher` is installed and becomes HOME; launching Settings changes foreground to `com.android.settings`.
+- Latest launcher smoke verified UI tree contains `CHIMERA`, ADB screenshot is not black, and tapping Settings from the launcher opens `com.android.settings`.
+- Latest launcher smoke verified UI tree contains Google Play / 檔案管理 / 瀏覽器 / 設定, does not contain TMobile, and the ADB screenshot shows the Android status bar persistently visible.
+- Latest app provisioning smoke verified Google Play, Material Files, Chrome, and Settings all launch from Chimera Home into their expected foreground packages.
+- Latest Home smoke verified `TMobile` is absent, Settings is not duplicated, and there are no disabled fixed tiles; file/browser fall back to Chimera activities if Pixel/Chrome apps are missing.
+- Latest host-contention smoke verified qemu stays at `Normal` (not High), gRPC capture starts after Android boot complete, and no Chimera/qemu process remains afterward. Stream can still hit 60+, but the main UI now reports the lower effective FPS.
+- Latest steady FPS smoke after boot warm-up measured Stream FPS samples `61.9, 62.7, 63.1, 63.2, 62.4` (min 61.9, avg 62.7).
+- Full 1920×1080 raw `getScreenshot` currently drops to ~15-30 FPS; true full-res 60 FPS needs shared memory/shared texture capture instead of raw gRPC payloads.
 - ADB raw screencap fallback remains very slow and is intentionally throttled to avoid resource spikes.
-- Stable game-level 60 FPS still depends on the guest workload and emulator GPU renderer; current verification proves a 60Hz native display path, not every game at locked 60.
-- High process priority improves frame scheduling but can increase host contention under heavy load; keep an eye on desktop responsiveness during game profiling.
+- Stable game-level 60 FPS still depends on the guest workload and emulator GPU renderer; current verification proves only Stream delivery can hit roughly 60 FPS, while dynamic Guest/Render FPS on the raw path is still too low.
+- qemu/emulator must never be raised above `Normal` by default; host headroom should come from vCPU limits, delayed capture, and capture path efficiency rather than High priority.
+- `ProcessLauncher` now warns when Job Object assignment fails; if that warning appears, inspect for orphan `qemu-system*` before another launch.
+- Quick Boot snapshot is opt-in (`CHIMERA_QUICK_BOOT=1`) until snapshot state reliability is hardened; use full boot as the default when diagnosing display or ADB state.
+- Quick Boot runtime regression should use `scripts/verify-quick-boot.ps1 -MaxQuickBootSec 25`; the script does a clean local emulator run and removes stale AVD locks only after confirming no emulator/qemu process is alive.
+- Chimera Launcher is a clean HOME replacement, not yet a full custom ROM layer; deeper BlueStacks parity still needs package pruning, store/search UX, and keymap/game integrations.
+- Full app switching can still show short Stream FPS dips even when steady Home sits near 60 FPS; game workload profiling remains separate from Home/display smoke.
 - `Framebuffer::readFrontBuffer()` still returns an internal reference; long-term fix should return a snapshot or guard reads.
 - `ProcessLauncher` command-line quoting is not fully Windows-escaping-safe.
 - Clipboard sync still uses `CF_TEXT`; Unicode clipboard support is pending.
@@ -292,12 +336,12 @@
 - `VirtualMachine::start()` now launches actual `emulator.exe` via `ProcessLauncher::runAsync()`
 - `ProcessLauncher::runAsync()` fully implemented with `CreateProcessW`, pipe redirection, stdout/stderr reader threads
 - `InstanceManager::createInstance()` reads `configs/android_sdk.json` and passes emulator path + AVD name to `VirtualMachineConfig`
-- Current default emulator launch uses native window embedding with `-accel on -gpu host`, 60Hz display settings, and correct ADB/QMP port forwarding
+- Current default emulator launch uses headless gRPC streaming with `-accel on -gpu host`, 60Hz display settings, and correct ADB/QMP port forwarding
 - Verified: `chimera-ui.exe` starts emulator process (PID visible in task manager), ADB connects to `emulator-5555`
 
 #### 4.2 Display / Frame Capture
-- `main.cpp` defaults to native Android Emulator window embedding via `NativeEmulatorView`
-- `--stream-capture` starts `GrpcFramebufferCapture` against Android Emulator `-grpc 8554`
+- `main.cpp` defaults to headless gRPC framebuffer streaming via `GrpcFramebufferCapture`
+- `--native-embed` starts legacy Android Emulator window embedding via `NativeEmulatorView`
 - Persistent ADB raw screencap remains as fallback only; measured around 1 FPS on this machine
 - `GraphicsBridge::FrameCallback` delivers frames to `GuestDisplay` only in stream-capture mode
 
@@ -307,16 +351,16 @@
 - Registered to QML as `Chimera.UI.GuestDisplay`
 - `ChimeraWindow.qml` replaced nested `Window`/`ChimeraWindow` anti-pattern with proper `ApplicationWindow` containing `GuestDisplay`
 
-#### 4.4 Input Forwarding (InputBridge + ADB shell input)
-- `InputBridge` implements background worker thread + command queue for async ADB execution
+#### 4.4 Input Forwarding (InputBridge + emulator gRPC / fallback ADB)
+- `InputBridge` prefers emulator gRPC input for low-latency touch/key/text paths; ADB shell input is fallback-only.
 - `GuestDisplay` handles `keyPressEvent`, `keyReleaseEvent`, `mousePressEvent`, `mouseReleaseEvent`, `mouseMoveEvent`, `wheelEvent`
 - Mouse coordinates mapped from display item geometry to guest resolution (aspect-ratio aware)
 - Qt keycodes mapped to Android keycodes via lookup table (alphanumeric, arrows, function keys, modifiers)
 - Events forwarded as:
-  - **Tap**: `input tap x y`
-  - **Swipe/Move**: `input swipe x y x y 0`
-  - **Key**: `input keyevent <android_keycode>`
-  - **Wheel**: `input swipe 960 540 dx dy 100`
+  - **Tap/Touch**: emulator gRPC `sendTouch`
+  - **Wheel**: emulator gRPC `sendTouchSwipe()` with 16ms throttle
+  - **Key/Text**: emulator gRPC `sendKey` / `sendText`
+  - **Fallback**: ADB `input tap` / `input swipe` / `input keyevent`
 
 ### 5. Automation Scripts — COMPLETE
 - `scripts/setup-android-sdk.py` — Downloads command-line tools, emulator, system images, creates AVD
@@ -450,12 +494,23 @@ Test project D:/Workspace_cloud/Personal_Project/chimera/build
 
 ---
 
+## 2026-05-27 Update — Shared capture renderer
+
+- Host display renderer now uses Qt scene graph texture nodes instead of `QQuickPaintedItem`.
+- D3D11 RHI CPU-frame fallback now reuses a persistent texture and updates it with `UpdateSubresource()` instead of recreating a GPU texture every frame.
+- Added CPU-copy shared-memory framebuffer capture with seqlock metadata.
+- Added D3D11 named shared texture metadata capture and `GuestDisplay` native D3D11 texture render path via `QSGD3D11Texture::fromNative()`.
+- New verification: `test-shared-d3d11-texture-capture` creates a real named D3D11 shared texture and opens it from another D3D11 device.
+- `SharedD3D11TextureCapture` now waits for Win32 frame events on a worker thread and only counts new even sequences, so duplicate metadata ticks cannot inflate Stream FPS.
+- Added `shared_d3d11_texture_producer` runtime helper. Smoke test with `chimera-ui --no-emulator` measured `Guest/Stream/Render 59.6 FPS`, average `16.1ms`, `Dup: 0`, with no leftover processes.
+- Current status: host side is ready; Android/emulator producer is still missing, so true dynamic 1080p/60 FPS remains unproven until producer integration and runtime flow tests.
+
 ## Known Limitations
 
 | Limitation | Reason | Resolution Path |
 |------------|--------|----------------|
 | Native child window overlays QML content | Win32 child windows are composed above Qt Quick content | Main controls now stay in the right-side panel; viewport overlays remain stream-mode only |
-| Stream-capture mode below 60 FPS | Android Emulator screenshot/gRPC/ADB capture overhead remains | Native window path is default; native child-window recording exists, shared GPU texture/custom QEMU remains the long-term capture path |
+| Game workload can still drop below 60 FPS | Android Emulator screenshot/gRPC readback and guest workload overhead remain | Default gRPC path is stabilized for 60+ FPS on Home; shared GPU texture/custom QEMU remains the long-term capture path |
 | VirtIO audio not fully wired end-to-end | Emulator accepts `virtio-snd-pci`, but host/guest audio path still needs runtime validation | Custom QEMU / Android HAL integration |
 | QMP mouse input needs runtime validation | Current schema compiles but click/move behavior must be verified on emulator | Test against running emulator and adjust event payload |
 | Keyboard mapping drag-and-drop | Not yet implemented | Future polish |
@@ -467,7 +522,7 @@ Test project D:/Workspace_cloud/Personal_Project/chimera/build
 
 ### Critical Path (Gaming Performance)
 1. **Game-level 60 FPS profiling** — Verify real games with Android frame stats and isolate guest-side jank under workload
-2. **Native/shared capture path** — Keep native embedding for gameplay; add shared GPU texture or custom QEMU display path for recording/overlay without screenshot overhead
+2. **Shared capture path** — Keep gRPC streaming as default; add shared GPU texture or custom QEMU display path for recording/overlay without screenshot overhead
 3. **VirtIO Input** — Replace QMP/ADB with direct virtio-input HID injection (target: <10ms latency)
    - QMP is interim solution; virtio-input is the long-term open-source equivalent to BstkDrv.sys
 4. **VirtIO Audio** — Wire AudioBridge to QEMU `-device virtio-snd-pci`

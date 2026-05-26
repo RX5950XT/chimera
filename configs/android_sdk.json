@@ -5,5 +5,5 @@
   "adb": "D:/Workspace_cloud/Personal_Project/chimera/third_party/android-sdk/platform-tools/adb.exe",
   "api_level": 34,
   "abi": "x86_64",
-  "avd_name": "chimera_pie64"
+  "avd_name": "chimera_dev"
 }

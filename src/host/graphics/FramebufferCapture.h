@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QImage>
+#include <QSize>
 
 namespace chimera::graphics {
 
@@ -28,7 +29,12 @@ public:
     int intervalMs() const { return m_intervalMs; }
 
 signals:
+    void streamFrameReceived(bool contentChanged);
     void frameReady(const QImage &img);
+    void sharedD3D11TextureReady(const QString &textureName,
+                                 const QSize &size,
+                                 quint64 sequence,
+                                 bool hasAlpha);
     void captureError(const QString &message);
 
 protected:

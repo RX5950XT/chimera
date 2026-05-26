@@ -11,6 +11,7 @@
 #include <algorithm>
 
 #ifdef Q_OS_WIN
+#include <tlhelp32.h>
 #include <cmath>
 #include <cwctype>
 #include <string>
@@ -43,6 +44,40 @@ std::wstring windowText(HWND hwnd) {
     return text;
 }
 
+// Collect rootPid plus all descendant PIDs. The modern Android emulator.exe
+// is a thin launcher whose actual Qt GUI window belongs to a child process
+// (qemu-system-x86_64.exe), so the window we want to embed lives somewhere
+// in this tree rather than under the launcher PID itself.
+std::vector<DWORD> collectProcessTree(DWORD rootPid) {
+    std::vector<DWORD> result;
+    if (rootPid == 0) return result;
+    result.push_back(rootPid);
+
+    std::vector<std::pair<DWORD, DWORD>> processes;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return result;
+
+    PROCESSENTRY32W entry = {};
+    entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            processes.emplace_back(entry.th32ProcessID, entry.th32ParentProcessID);
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+
+    for (size_t i = 0; i < result.size(); ++i) {
+        const DWORD parent = result[i];
+        for (const auto &[pid, parentPid] : processes) {
+            if (parentPid == parent &&
+                std::find(result.begin(), result.end(), pid) == result.end()) {
+                result.push_back(pid);
+            }
+        }
+    }
+    return result;
+}
+
 std::wstring processImageName(DWORD pid) {
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!process) return {};
@@ -67,7 +102,7 @@ struct WindowSearch {
     std::wstring instanceName;
     std::wstring consolePort;
     HWND hostWindow = nullptr;
-    DWORD targetPid = 0;  // 0 = any; non-zero = must match
+    std::vector<DWORD> targetTree;  // empty = any; non-empty = pid must be in this set
     WindowCandidate best;
 };
 
@@ -76,6 +111,12 @@ struct AuxiliaryWindowSearch {
     DWORD processId = 0;
     std::vector<HWND> *hiddenWindows = nullptr;
 };
+
+std::wstring windowClassName(HWND hwnd) {
+    wchar_t cls[128] = {};
+    GetClassNameW(hwnd, cls, 128);
+    return toLower(cls);
+}
 
 int scoreWindow(HWND hwnd, const WindowSearch &search) {
     if (hwnd == search.hostWindow) return 0;
@@ -86,36 +127,57 @@ int scoreWindow(HWND hwnd, const WindowSearch &search) {
     GetWindowThreadProcessId(hwnd, &pid);
     if (pid == GetCurrentProcessId()) return 0;
 
-    // If we know which PID to expect, reject all others immediately.
+    // If we know which process tree to expect, reject windows outside it.
     // This prevents Chimera from accidentally stealing another emulator.exe
-    // (e.g. one launched by Android Studio on the same machine).
-    if (search.targetPid != 0 && pid != search.targetPid) return 0;
+    // (e.g. one launched by Android Studio on the same machine). The window
+    // may belong to a child process, so we match against the whole tree.
+    if (!search.targetTree.empty() &&
+        std::find(search.targetTree.begin(), search.targetTree.end(), pid) ==
+            search.targetTree.end()) {
+        return 0;
+    }
 
+    // The window must belong to an emulator/qemu process — never embed an
+    // unrelated application window.
     const std::wstring image = processImageName(pid);
-    const bool isKnownEmulator = containsText(image, L"\\emulator.exe") ||
-                                 containsText(image, L"\\qemu-system-x86_64");
+    const bool isEmulatorProc = containsText(image, L"\\emulator.exe") ||
+                                containsText(image, L"\\qemu-system-x86_64");
+    if (!isEmulatorProc) return 0;
 
-    // Score invisible windows only from known emulator processes; this lets us
-    // attach the window before it becomes visible, eliminating the flash.
-    if (!IsWindowVisible(hwnd) && !isKnownEmulator) return 0;
+    // Only ever embed a genuinely visible window. The emulator process owns a
+    // swarm of invisible helper windows (NVIDIA pbuffers, Qt screen-change
+    // observers, D3D temp windows, IME) — all of them are invisible, so this
+    // single check eliminates the entire class of wrong-window grabs. The real
+    // device UI window only appears once the emulator has finished setting up.
+    if (!IsWindowVisible(hwnd)) return 0;
+
+    // Reject GPU-driver / helper / IME / Qt-internal windows by class name.
+    const std::wstring cls = windowClassName(hwnd);
+    if (cls == L"nvogldc" || cls == L"nvopenglpbuffer" || cls == L"dummywin" ||
+        cls == L"default ime" || cls == L"msctfime ui" || cls == L"ime" ||
+        containsText(cls, L"screenchangeobserver") ||
+        containsText(cls, L"temp_d3d_window") ||
+        containsText(cls, L"crashpad") ||
+        containsText(cls, L"intermediate d3d")) {
+        return 0;
+    }
+
+    // A genuine GUI window has a real on-screen size.
+    RECT rect = {};
+    if (!GetWindowRect(hwnd, &rect)) return 0;
+    const int width  = rect.right - rect.left;
+    const int height = rect.bottom - rect.top;
+    if (width < 256 || height < 256) return 0;
 
     const std::wstring title = toLower(windowText(hwnd));
-    int score = 0;
-
-    if (containsText(image, L"\\emulator.exe")) score += 35;
-    if (containsText(image, L"\\qemu-system-x86_64")) score += 35;
-    if (containsText(title, L"android emulator")) score += 35;
-    if (containsText(title, search.instanceName)) score += 80;
-    if (containsText(title, search.consolePort)) score += 45;
-
-    if (IsWindowVisible(hwnd)) {
-        RECT rect = {};
-        if (GetWindowRect(hwnd, &rect)) {
-            const int width = rect.right - rect.left;
-            const int height = rect.bottom - rect.top;
-            if (width >= 320 && height >= 240) score += 10;
-        }
-    }
+    int score = 40;  // base: a real, visible, correctly-sized emulator window
+    if (containsText(title, L"emulator")) score += 30;
+    if (!search.instanceName.empty() && containsText(title, search.instanceName))
+        score += 60;
+    if (!search.consolePort.empty() && containsText(title, search.consolePort))
+        score += 45;
+    // Prefer the largest window (the device screen) over slim side toolbars.
+    score += (std::min)(width * height / 20000, 60);
     return score;
 }
 
@@ -329,6 +391,7 @@ void NativeEmulatorView::updateNativeGeometry() {
     const int h = static_cast<int>(std::round(sceneRect.height() * scale));
     const QRect targetRect(x, y, w, h);
     if (targetRect == m_lastNativeRect) return;
+    if (w < 16 || h < 16) return;  // ignore transient zero/tiny layout passes
 
     // Atomically position and show; SWP_SHOWWINDOW avoids the flicker from
     // calling ShowWindow then MoveWindow separately.
@@ -363,16 +426,17 @@ HWND NativeEmulatorView::findEmulatorWindow() const {
     search.instanceName = toLower(m_instanceName.toStdWString());
     search.consolePort = std::to_wstring(m_consolePort);
     search.hostWindow = window() ? reinterpret_cast<HWND>(window()->winId()) : nullptr;
-    search.targetPid = static_cast<DWORD>(m_emulatorPid);
+    if (m_emulatorPid != 0)
+        search.targetTree = collectProcessTree(static_cast<DWORD>(m_emulatorPid));
 
     EnumWindows(enumWindowsCallback, reinterpret_cast<LPARAM>(&search));
     if (!search.best.hwnd) return nullptr;
 
-    // Pre-visible windows: process-name match is sufficient (35 pts) when we know
-    // the target PID; without a PID we still require it to be our known emulator.
-    // Visible windows: require instance-name or port evidence (125 pts) so that
-    // any other emulator.exe window (e.g. Android Studio) is never stolen.
-    const int minScore = IsWindowVisible(search.best.hwnd) ? 125 : 35;
+    // When the emulator PID is known, any correctly-sized Qt window inside that
+    // exact process tree is unambiguously ours, so a low threshold is safe.
+    // Without a PID we require strong title evidence (instance name + port) so
+    // that an unrelated emulator window is never stolen.
+    const int minScore = search.targetTree.empty() ? 150 : 40;
     return search.best.score >= minScore ? search.best.hwnd : nullptr;
 }
 
@@ -413,12 +477,16 @@ void NativeEmulatorView::attachWindow(HWND hwnd) {
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 
     m_childWindow = hwnd;
-    qDebug() << "Native emulator window attached:" << QString::fromStdWString(windowText(hwnd));
+    qDebug() << "Native emulator window attached:"
+             << QString::fromStdWString(windowText(hwnd))
+             << "class" << QString::fromStdWString(windowClassName(hwnd));
     setAttached(true);
     m_probeTimer.stop();
-    hideAuxiliaryWindows();
-    m_auxiliaryWindowTimer.start();
     updateNativeGeometry();
+    // NOTE: the emulator's auxiliary windows (toolbar / extended controls) are
+    // deliberately NOT hidden. The modern Android emulator destroys its main
+    // device window when sibling windows in its group are hidden, which blanks
+    // the embedded display — so leaving them alone is required for rendering.
 }
 
 void NativeEmulatorView::detachWindow() {

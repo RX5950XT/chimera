@@ -21,12 +21,15 @@
 #include "ConfigManager.h"
 #include "InputBridge.h"
 #include "AndroidConsoleInput.h"
+#include "EmulatorGrpcInput.h"
 #include "GamepadManager.h"
 #include "QmpInput.h"
 #include "AudioBridge.h"
 #include "DeviceSpoofer.h"
 #include "AdbFramebufferCapture.h"
 #include "GrpcFramebufferCapture.h"
+#include "SharedD3D11TextureCapture.h"
+#include "SharedMemoryFramebufferCapture.h"
 #include "VncFramebufferCapture.h"
 #include "PerformanceMonitor.h"
 #include "QemuBackend.h"
@@ -38,6 +41,8 @@
 #include "ClipboardBridge.h"
 #include "SharedFolder.h"
 #include <nlohmann/json.hpp>
+#include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <filesystem>
 #include <memory>
@@ -347,6 +352,26 @@ static QString adbPathString() {
     return QString::fromStdString(g_adbPath.string());
 }
 
+static bool runAdbCommand(const QStringList &args, int timeoutMs = 5000) {
+    if (g_adbPath.empty()) return false;
+
+    QProcess proc;
+    proc.start(adbPathString(), args);
+    if (!proc.waitForFinished(timeoutMs)) {
+        proc.kill();
+        proc.waitForFinished(1000);
+        qWarning() << "ADB command timed out:" << args;
+        return false;
+    }
+    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0) {
+        const QString err = QString::fromUtf8(proc.readAllStandardError()).trimmed();
+        const QString out = QString::fromUtf8(proc.readAllStandardOutput()).trimmed();
+        qWarning() << "ADB command failed:" << args << (err.isEmpty() ? out : err);
+        return false;
+    }
+    return true;
+}
+
 static void runAdbShell(const QStringList &shellArgs, int timeoutMs = 1500) {
     if (g_adbPath.empty()) return;
 
@@ -358,9 +383,91 @@ static void runAdbShell(const QStringList &shellArgs, int timeoutMs = 1500) {
     proc.waitForFinished(timeoutMs);
 }
 
+static QByteArray runAdbOutput(const QStringList &args, int timeoutMs = 5000) {
+    if (g_adbPath.empty()) return {};
+
+    QProcess proc;
+    proc.start(adbPathString(), args);
+    if (!proc.waitForFinished(timeoutMs)) {
+        proc.kill();
+        proc.waitForFinished(1000);
+        qWarning() << "ADB output command timed out:" << args;
+        return {};
+    }
+    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0) {
+        return {};
+    }
+    return proc.readAllStandardOutput();
+}
+
+static bool adbPackageExists(const QString &packageName) {
+    const QString serial = QString::fromStdString(g_runtimeCfg.adbSerial);
+    const QByteArray output = runAdbOutput(
+        {"-s", serial, "shell", "pm", "path", packageName}, 5000);
+    return output.contains("package:");
+}
+
+static void installGuestSupportApps() {
+    const QString serial = QString::fromStdString(g_runtimeCfg.adbSerial);
+    const auto materialFilesApk = g_projectRoot / "third_party" / "android-apps" / "material-files.apk";
+    if (adbPackageExists(QStringLiteral("me.zhanghai.android.files"))) {
+        qDebug() << "Material Files already installed";
+        return;
+    }
+    if (!std::filesystem::exists(materialFilesApk)) {
+        qWarning() << "Material Files APK not found; expected"
+                   << QString::fromStdString(materialFilesApk.string());
+        return;
+    }
+
+    const QString apk = QString::fromStdString(materialFilesApk.string());
+    if (runAdbCommand({"-s", serial, "install", "-r", apk}, 30000)) {
+        qDebug() << "Material Files installed";
+    }
+}
+
+static void installChimeraLauncher() {
+    const auto apkPath = g_projectRoot / "build" / "launcher" / "chimera-launcher.apk";
+    if (!std::filesystem::exists(apkPath)) {
+        qWarning() << "Chimera launcher APK not found; run scripts/build-chimera-launcher.ps1";
+        return;
+    }
+
+    const QString serial = QString::fromStdString(g_runtimeCfg.adbSerial);
+    const QString apk = QString::fromStdString(apkPath.string());
+    if (!runAdbCommand({"-s", serial, "install", "-r", apk}, 20000))
+        return;
+
+    const QString component = QStringLiteral("com.chimera.launcher/.MainActivity");
+    bool homeSet = runAdbCommand({"-s", serial, "shell", "cmd", "package",
+                                  "set-home-activity", "--user", "0", component}, 15000);
+    if (!homeSet) {
+        homeSet = runAdbCommand({"-s", serial, "shell", "cmd", "package",
+                                 "set-home-activity", component}, 15000);
+    }
+    if (!homeSet) {
+        runAdbCommand({"-s", serial, "shell", "cmd", "role", "add-role-holder",
+                       "android.app.role.HOME", "com.chimera.launcher"}, 10000);
+    }
+    runAdbCommand({"-s", serial, "shell", "am", "force-stop",
+                   "com.chimera.launcher"}, 10000);
+    runAdbCommand({"-s", serial, "shell", "am", "start", "-n", component, "-a",
+                   "android.intent.action.MAIN", "-c",
+                   "android.intent.category.HOME"}, 10000);
+    runAdbCommand({"-s", serial, "shell", "am", "start", "-a",
+                   "android.intent.action.MAIN", "-c",
+                   "android.intent.category.HOME"}, 10000);
+    qDebug() << "Chimera launcher installed and HOME requested";
+}
+
 static void applyGuestPerformanceSettings() {
     // All guest tuning in one ADB round-trip.
     runAdbShell({
+        "wm", "size", "1920x1080", ";",
+        "wm", "density", "320", ";",
+        "settings", "put", "system", "accelerometer_rotation", "0", ";",
+        "settings", "put", "system", "user_rotation", "0", ";",
+        "cmd", "window", "set-ignore-orientation-request", "true", ";",
         "settings", "put", "system", "peak_refresh_rate", "60.0", ";",
         "settings", "put", "system", "min_refresh_rate", "60.0", ";",
         "settings", "put", "global", "window_animation_scale", "0", ";",
@@ -386,7 +493,13 @@ static void applyGuestFirstBootSetup() {
         "settings", "put", "global", "stay_on_while_plugged_in", "3", ";",
         // Disable annoying "Select home app" dialog by accepting the default
         "settings", "put", "secure", "default_input_method",
-            "com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME",
+            "com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME", ";",
+        // Present a usable desktop instead of leaving the stream on a mostly
+        // empty lock/loading surface after boot.
+        "input", "keyevent", "224", ";", // KEYCODE_WAKEUP
+        "wm", "dismiss-keyguard", ";",
+        "input", "keyevent", "82", ";",  // KEYCODE_MENU, unlock fallback
+        "input", "keyevent", "3",         // KEYCODE_HOME
     }, 8000);
     qDebug() << "Guest first-boot setup applied";
 }
@@ -426,6 +539,10 @@ int main(int argc, char *argv[]) {
         }
     }
     qInstallMessageHandler([](QtMsgType type, const QMessageLogContext &, const QString &msg) {
+        if (msg.contains(QStringLiteral("QNetworkReplyImpl: backend error: caching was enabled")) ||
+            msg.startsWith(QStringLiteral("setCachingEnabled:"))) {
+            return;
+        }
         const char *prefix = (type == QtWarningMsg) ? "WARN" :
                              (type == QtCriticalMsg || type == QtFatalMsg) ? "ERR " : "DBG ";
         QByteArray b = msg.toLocal8Bit();
@@ -444,8 +561,11 @@ int main(int argc, char *argv[]) {
     app.setOrganizationName("chimera-emulator");
     QQuickStyle::setStyle(QStringLiteral("Basic"));
     const bool noEmulator = app.arguments().contains(QStringLiteral("--no-emulator"));
-    const bool streamCapture = app.arguments().contains(QStringLiteral("--stream-capture"));
-    const bool nativeDisplayEnabled = !streamCapture;
+    // Display path: default to headless gRPC framebuffer streaming. The legacy
+    // native SetParent path can black out the emulator Qt surface and leak the
+    // toolbar as a separate window, so it remains opt-in only.
+    const bool nativeDisplayEnabled = app.arguments().contains(QStringLiteral("--native-embed"));
+    const bool streamCapture = !nativeDisplayEnabled;
     // v2: stock QEMU + VNC display + real QMP input (Phase 1-3)
     const bool cuttlefishMode  = app.arguments().contains(QStringLiteral("--cuttlefish"));
     const bool qemuBackendMode = cuttlefishMode ||
@@ -492,6 +612,11 @@ int main(int argc, char *argv[]) {
     qmlRegisterType<chimera::GuestDisplay>("Chimera.UI", 1, 0, "GuestDisplay");
     qmlRegisterType<chimera::NativeEmulatorView>("Chimera.UI", 1, 0, "NativeEmulatorView");
 
+    // Display-path flag for QML: true only when the legacy native window-embed
+    // path is requested. Default is gRPC streaming, so NativeEmulatorView stays
+    // dormant and GuestDisplay renders the streamed frames.
+    engine.rootContext()->setContextProperty("nativeEmbedEnabled", nativeDisplayEnabled);
+
     // Expose instance manager to QML
     chimera::QmlAndroidControls qmlAndroidControls;
     engine.rootContext()->setContextProperty("AndroidControls", &qmlAndroidControls);
@@ -515,13 +640,16 @@ int main(int argc, char *argv[]) {
     // Performance monitoring
     auto *perfMonitor = new chimera::graphics::PerformanceMonitor(&app);
     engine.rootContext()->setContextProperty("PerfMonitor", perfMonitor);
+    auto grpcCaptureForInput = std::make_shared<QPointer<chimera::graphics::GrpcFramebufferCapture>>();
 
     // Wire InputBridge events → visible latency tracking + macro recording
     // QPointer ensures no dangling access if perfMonitor is destroyed before InputBridge
     QPointer<chimera::graphics::PerformanceMonitor> weakPerf(perfMonitor);
     chimera::input::InputBridge::instance().setEventCallback(
-        [weakPerf](const chimera::input::InputBridge::Event &ev) {
+        [weakPerf, grpcCaptureForInput](const chimera::input::InputBridge::Event &ev) {
             if (weakPerf) weakPerf->onInputEvent();
+            if (grpcCaptureForInput && *grpcCaptureForInput)
+                (*grpcCaptureForInput)->notifyInputActivity();
 
             auto &macro = chimera::input::MacroEngine::instance();
             if (!macro.isRecording()) return;
@@ -544,8 +672,8 @@ int main(int argc, char *argv[]) {
         });
 
     bool emulatorStarted = false;
-    int grpcCaptureWidth = 960;
-    int grpcCaptureHeight = 0;
+    int grpcCaptureWidth = 800;
+    int grpcCaptureHeight = 450;
     QSize guestInputSize;
     chimera::input::QmpInput *qmpInput = nullptr;
 
@@ -678,14 +806,20 @@ int main(int argc, char *argv[]) {
         auto &mgr = InstanceManager::instance();
         InstanceConfig cfg;
         cfg.name = "chimera_dev";
-        cfg.cpus = 4;
+        cfg.cpus = 2;
         cfg.ramMB = 2048;
-        cfg.width = 1280;
-        cfg.height = 720;
+        cfg.width = 1920;
+        cfg.height = 1080;
+        cfg.dpi = 320;
         cfg.deviceProfile = "Samsung Galaxy S24 Ultra"; // Unlock high FPS/quality in games
         cfg.graphicsRenderer = "host";
         cfg.headless = !nativeDisplayEnabled;
-        cfg.processPriority = "high";
+        const char *quickBootEnv = std::getenv("CHIMERA_QUICK_BOOT");
+        cfg.quickBoot = quickBootEnv && std::string(quickBootEnv) == "1";
+        // Keep emulator/qemu below foreground desktop/audio work. Boot and
+        // screenshot readback can otherwise preempt normal-priority media
+        // threads and cause music stutter or crackle on the host.
+        cfg.processPriority = "normal";
         cfg.dataDir = (g_projectRoot / "instances" / cfg.name).make_preferred();
         guestInputSize = QSize(cfg.width, cfg.height);
 
@@ -740,6 +874,14 @@ int main(int argc, char *argv[]) {
             qDebug() << "[main] Android Console input wired (CHIMERA_INPUT_BACKEND="
                      << inputBackend.c_str() << ")";
 
+            // Emulator gRPC keyboard input — the console has no working
+            // keyboard channel, so physical keys and IME text go via gRPC.
+            auto *grpcInput = new chimera::input::EmulatorGrpcInput(
+                QStringLiteral("127.0.0.1"), g_runtimeCfg.grpcPort, &app);
+            chimera::input::InputBridge::instance().setGrpcInput(grpcInput);
+            qDebug() << "[main] Emulator gRPC keyboard input wired (port"
+                     << g_runtimeCfg.grpcPort << ")";
+
             // Wire LocationSimulator → geo fix via the same console connection
             chimera::integration::LocationSimulator::instance().setGeoSink(
                 [consoleInput](double lon, double lat, double alt) {
@@ -785,8 +927,21 @@ int main(int argc, char *argv[]) {
         });
         gpsRouteTimer->start(1000);
 
-        grpcCaptureWidth = cfg.width > cfg.height ? 960 : 540;
-        grpcCaptureHeight = 0; // Preserve guest aspect ratio.
+        // Keep the Android guest and input coordinate space at 1080p, but cap
+        // the gRPC raw-frame pipe near the default viewport size. 1080p RGB888
+        // is >6 MB per frame and the emulator's getScreenshot path drops to
+        // ~15-30 FPS on this host; 800x450 is the highest raw getScreenshot
+        // default that has repeatedly survived app-switch smoke at 60+ on this
+        // machine. Higher-quality 1080p output needs a shared texture/memory
+        // capture backend instead of polling raw screenshots.
+        grpcCaptureWidth = 800;
+        grpcCaptureHeight = 450;
+        if (const char *captureWidthEnv = std::getenv("CHIMERA_CAPTURE_WIDTH")) {
+            grpcCaptureWidth = (std::max)(320, std::atoi(captureWidthEnv));
+        }
+        if (const char *captureHeightEnv = std::getenv("CHIMERA_CAPTURE_HEIGHT")) {
+            grpcCaptureHeight = (std::max)(180, std::atoi(captureHeightEnv));
+        }
     }
 
     const QUrl url(QStringLiteral("qrc:/ChimeraWindow.qml"));
@@ -837,10 +992,16 @@ int main(int argc, char *argv[]) {
 
     auto currentDisplaySize = std::make_shared<QSize>();
     auto logicalGuestSize = std::make_shared<QSize>(guestInputSize);
-    auto wireCapture = [&](chimera::graphics::FramebufferCapture *cap) {
+    auto wireCapture = [&](chimera::graphics::FramebufferCapture *cap,
+                           bool streamMetricsFromBackend = false) {
+        if (streamMetricsFromBackend) {
+            QObject::connect(cap, &chimera::graphics::FramebufferCapture::streamFrameReceived,
+                             perfMonitor, &chimera::graphics::PerformanceMonitor::onFrameReceived);
+        }
         QObject::connect(cap, &chimera::graphics::FramebufferCapture::frameReady,
-                         &engine, [guestDisplay, &screenRecorder, perfMonitor, qmpInput, currentDisplaySize, logicalGuestSize](const QImage &img) {
-            perfMonitor->onFrameReceived();
+                         &engine, [guestDisplay, &screenRecorder, perfMonitor, qmpInput, currentDisplaySize, logicalGuestSize, streamMetricsFromBackend](const QImage &img) {
+            if (!streamMetricsFromBackend)
+                perfMonitor->onFrameReceived(true);
             const QSize inputSize = logicalGuestSize->isValid() ? *logicalGuestSize : img.size();
             if (*currentDisplaySize != inputSize) {
                 *currentDisplaySize = inputSize;
@@ -850,6 +1011,23 @@ int main(int argc, char *argv[]) {
             if (guestDisplay) {
                 guestDisplay->setFrame(img);
                 screenRecorder.feedFrame(img);
+            }
+        });
+        QObject::connect(cap, &chimera::graphics::FramebufferCapture::sharedD3D11TextureReady,
+                         &engine, [guestDisplay, perfMonitor, qmpInput, currentDisplaySize, logicalGuestSize, streamMetricsFromBackend](const QString &textureName,
+                                                                                                                              const QSize &size,
+                                                                                                                              quint64 sequence,
+                                                                                                                              bool hasAlpha) {
+            if (!streamMetricsFromBackend)
+                perfMonitor->onFrameReceived(true);
+            const QSize inputSize = logicalGuestSize->isValid() ? *logicalGuestSize : size;
+            if (*currentDisplaySize != inputSize) {
+                *currentDisplaySize = inputSize;
+                chimera::input::InputBridge::instance().setDisplaySize(inputSize.width(), inputSize.height());
+                if (qmpInput) qmpInput->setDisplaySize(inputSize.width(), inputSize.height());
+            }
+            if (guestDisplay) {
+                guestDisplay->setSharedD3D11Texture(textureName, size, sequence, hasAlpha);
             }
         });
         QObject::connect(cap, &chimera::graphics::FramebufferCapture::captureError,
@@ -904,12 +1082,96 @@ int main(int argc, char *argv[]) {
     // v1: gRPC / ADB capture
     chimera::graphics::AdbFramebufferCapture *adbCapture = nullptr;
     chimera::graphics::GrpcFramebufferCapture *grpcCapture = nullptr;
+    chimera::graphics::SharedD3D11TextureCapture *sharedTextureCapture = nullptr;
+    chimera::graphics::SharedMemoryFramebufferCapture *sharedMemoryCapture = nullptr;
+    auto sharedTextureReceivedFrame = std::make_shared<bool>(false);
+    auto shmemReceivedFrame = std::make_shared<bool>(false);
+    const QString sharedTextureMetadataName = QString::fromLocal8Bit(
+        std::getenv("CHIMERA_D3D11_TEXTURE_METADATA") ? std::getenv("CHIMERA_D3D11_TEXTURE_METADATA") : "");
+    const QString sharedTextureEvent = QString::fromLocal8Bit(
+        std::getenv("CHIMERA_D3D11_TEXTURE_EVENT") ? std::getenv("CHIMERA_D3D11_TEXTURE_EVENT") : "");
+    const QString shmemName = QString::fromLocal8Bit(
+        std::getenv("CHIMERA_SHMEM_FRAME_NAME") ? std::getenv("CHIMERA_SHMEM_FRAME_NAME") : "");
+    const QString shmemEvent = QString::fromLocal8Bit(
+        std::getenv("CHIMERA_SHMEM_FRAME_EVENT") ? std::getenv("CHIMERA_SHMEM_FRAME_EVENT") : "");
+
+    if (streamCapture && !sharedTextureMetadataName.isEmpty()) {
+        sharedTextureCapture = new chimera::graphics::SharedD3D11TextureCapture(
+            sharedTextureMetadataName, sharedTextureEvent, &app);
+        sharedTextureCapture->setIntervalMs(16);
+        wireCapture(sharedTextureCapture, true);
+        QObject::connect(sharedTextureCapture, &chimera::graphics::FramebufferCapture::sharedD3D11TextureReady,
+                         &app, [sharedTextureReceivedFrame]() {
+            *sharedTextureReceivedFrame = true;
+        });
+
+        auto *sharedTextureRetryTimer = new QTimer(&app);
+        sharedTextureRetryTimer->setInterval(500);
+        QObject::connect(sharedTextureRetryTimer, &QTimer::timeout, &app,
+                         [sharedTextureCapture, sharedTextureRetryTimer]() {
+            if (sharedTextureCapture->isRunning()) {
+                sharedTextureRetryTimer->stop();
+                return;
+            }
+            if (sharedTextureCapture->start()) {
+                qDebug() << "Shared D3D11 texture display capture started";
+                sharedTextureRetryTimer->stop();
+            }
+        });
+        sharedTextureRetryTimer->start();
+    }
+
+    if (streamCapture && !shmemName.isEmpty() && !sharedTextureCapture) {
+        sharedMemoryCapture = new chimera::graphics::SharedMemoryFramebufferCapture(
+            shmemName, shmemEvent, &app);
+        sharedMemoryCapture->setIntervalMs(16);
+        wireCapture(sharedMemoryCapture, true);
+        QObject::connect(sharedMemoryCapture, &chimera::graphics::FramebufferCapture::frameReady,
+                         &app, [shmemReceivedFrame]() {
+            *shmemReceivedFrame = true;
+        });
+
+        auto *shmemRetryTimer = new QTimer(&app);
+        shmemRetryTimer->setInterval(500);
+        QObject::connect(shmemRetryTimer, &QTimer::timeout, &app,
+                         [sharedMemoryCapture, shmemRetryTimer]() {
+            if (sharedMemoryCapture->isRunning()) {
+                shmemRetryTimer->stop();
+                return;
+            }
+            if (sharedMemoryCapture->start()) {
+                qDebug() << "Shared-memory display capture started";
+                shmemRetryTimer->stop();
+            }
+        });
+        shmemRetryTimer->start();
+    }
+
     if (!hcsBackendMode && !qemuBackendMode && !noEmulator && emulatorStarted && streamCapture) {
         grpcCapture = new chimera::graphics::GrpcFramebufferCapture(
             QStringLiteral("127.0.0.1"), 8554, grpcCaptureWidth, grpcCaptureHeight, &app);
-        wireCapture(grpcCapture);
+        // Pace capture to ~60 FPS (16ms). Without this the pipeline busy-polls
+        // getScreenshot as fast as it completes, saturating the CPU.
+        grpcCapture->setIntervalMs(16);
+        if (!sharedMemoryCapture && !sharedTextureCapture)
+            *grpcCaptureForInput = grpcCapture;
+        wireCapture(grpcCapture, true);
+        if (sharedTextureCapture) {
+            QObject::connect(sharedTextureCapture, &chimera::graphics::FramebufferCapture::sharedD3D11TextureReady,
+                             &app, [grpcCapture]() {
+                if (grpcCapture->isRunning())
+                    grpcCapture->stop();
+            });
+        }
+        if (sharedMemoryCapture) {
+            QObject::connect(sharedMemoryCapture, &chimera::graphics::FramebufferCapture::frameReady,
+                             &app, [grpcCapture]() {
+                if (grpcCapture->isRunning())
+                    grpcCapture->stop();
+            });
+        }
 
-        if (!g_adbPath.empty()) {
+        if (!g_adbPath.empty() && app.arguments().contains(QStringLiteral("--adb-display-fallback"))) {
             adbCapture = new chimera::graphics::AdbFramebufferCapture(
                 QString::fromStdString(g_adbPath.string()), 5555, false, &app);
             adbCapture->setIntervalMs(1000);
@@ -917,11 +1179,13 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    auto androidBootReady = std::make_shared<bool>(false);
+
     if (!hcsBackendMode && !qemuBackendMode && !noEmulator && emulatorStarted && !g_adbPath.empty()) {
         auto *guestPerfTimer = new QTimer(&app);
         guestPerfTimer->setInterval(2000);
         guestPerfTimer->setProperty("attempts", 0);
-        QObject::connect(guestPerfTimer, &QTimer::timeout, [guestPerfTimer]() {
+        QObject::connect(guestPerfTimer, &QTimer::timeout, [guestPerfTimer, androidBootReady]() {
             int attempts = guestPerfTimer->property("attempts").toInt() + 1;
             guestPerfTimer->setProperty("attempts", attempts);
             if (attempts >= 60) { guestPerfTimer->stop(); return; }
@@ -931,12 +1195,15 @@ int main(int argc, char *argv[]) {
                         QStringList() << "-s" << QString::fromStdString(g_runtimeCfg.adbSerial)
                                       << "shell" << "getprop" << "sys.boot_completed");
             QObject::connect(proc, &QProcess::finished, proc,
-                             [proc, guestPerfTimer](int, QProcess::ExitStatus) {
+                             [proc, guestPerfTimer, androidBootReady](int, QProcess::ExitStatus) {
                 const QString booted = QString::fromLocal8Bit(proc->readAllStandardOutput()).trimmed();
                 proc->deleteLater();
                 if (booted == QStringLiteral("1")) {
+                    *androidBootReady = true;
                     guestPerfTimer->stop();
                     applyGuestPerformanceSettings();
+                    installGuestSupportApps();
+                    installChimeraLauncher();
                     applyGuestFirstBootSetup();
                 }
             });
@@ -947,10 +1214,14 @@ int main(int argc, char *argv[]) {
     // Log FPS every 5 seconds
     auto *perfTimer = new QTimer(&app);
     QObject::connect(perfTimer, &QTimer::timeout, [perfMonitor]() {
-        qDebug() << QStringLiteral("[Perf] FPS: %1 | Avg: %2ms | Max: %3ms | Dropped: %4 / %5")
+        qDebug() << QStringLiteral("[Perf] Guest: %1 FPS | Stream: %2 FPS | Render: %3 FPS | Avg: %4ms | Max: %5ms | Dup: %6 (%7%) | Dropped: %8 / %9")
                     .arg(perfMonitor->fps(), 0, 'f', 1)
+                    .arg(perfMonitor->streamFps(), 0, 'f', 1)
+                    .arg(perfMonitor->renderFps(), 0, 'f', 1)
                     .arg(perfMonitor->averageFrameTimeMs(), 0, 'f', 1)
                     .arg(perfMonitor->maxFrameTimeMs(), 0, 'f', 1)
+                    .arg(perfMonitor->duplicateFrames())
+                    .arg(perfMonitor->duplicateRate() * 100.0, 0, 'f', 0)
                     .arg(perfMonitor->droppedFrames())
                     .arg(perfMonitor->totalFrames());
     });
@@ -1004,14 +1275,34 @@ int main(int argc, char *argv[]) {
         grpcRetryTimer->setInterval(1000);
         grpcRetryTimer->setProperty("attempts", 0);
         QObject::connect(grpcRetryTimer, &QTimer::timeout,
-                         [grpcCapture, grpcRetryTimer, grpcReceivedFrame, startAdbFallback]() {
+                         [grpcCapture, grpcRetryTimer, grpcReceivedFrame, startAdbFallback,
+                          androidBootReady, sharedMemoryCapture, shmemReceivedFrame,
+                          sharedTextureCapture, sharedTextureReceivedFrame]() {
             if (*grpcReceivedFrame) {
                 grpcRetryTimer->stop();
+                return;
+            }
+            if (sharedMemoryCapture && *shmemReceivedFrame) {
+                grpcRetryTimer->stop();
+                if (grpcCapture->isRunning())
+                    grpcCapture->stop();
+                return;
+            }
+            if (sharedTextureCapture && *sharedTextureReceivedFrame) {
+                grpcRetryTimer->stop();
+                if (grpcCapture->isRunning())
+                    grpcCapture->stop();
+                return;
+            }
+            if (!*androidBootReady) {
                 return;
             }
 
             int attempts = grpcRetryTimer->property("attempts").toInt() + 1;
             grpcRetryTimer->setProperty("attempts", attempts);
+            if ((sharedMemoryCapture || sharedTextureCapture) && attempts < 3) {
+                return;
+            }
             if (!grpcCapture->isRunning()) {
                 qDebug() << "Starting gRPC screen capture stream";
                 grpcCapture->start();
@@ -1030,7 +1321,7 @@ int main(int argc, char *argv[]) {
             }
         });
         grpcRetryTimer->start();
-    } else if (!hcsBackendMode && !qemuBackendMode && streamCapture) {
+    } else if (!hcsBackendMode && !qemuBackendMode && streamCapture && !sharedMemoryCapture && !sharedTextureCapture) {
         startAdbFallback();
     }
 

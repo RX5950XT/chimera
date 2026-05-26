@@ -62,6 +62,7 @@ Thumbs.db
 # Third-party SDKs and tools (downloaded during setup)
 /third_party/android-sdk/
 /third_party/android-avd/
+/third_party/android-apps/
 /third_party/ffmpeg/
 /third_party/angle/bin/
 

@@ -1,10 +1,10 @@
 {
   "instances": [
     {
-      "cpus": 4,
+      "cpus": 2,
       "dataDir": "D:\\Workspace_cloud\\Personal_Project\\chimera\\instances\\chimera_dev",
       "deviceProfile": "Samsung Galaxy S24 Ultra",
-      "dpi": 240,
+      "dpi": 320,
       "enableAudio": false,
       "enableRoot": false,
       "enableVsync": false,
@@ -12,13 +12,14 @@
       "graphicsRenderer": "host",
       "gridCol": 0,
       "gridRow": 0,
-      "headless": false,
-      "height": 720,
+      "headless": true,
+      "height": 1080,
       "maxFps": 60,
       "name": "chimera_dev",
-      "processPriority": "high",
+      "processPriority": "normal",
+      "quickBoot": false,
       "ramMB": 2048,
-      "width": 1280
+      "width": 1920
     }
   ]
 }

@@ -1,9 +1,11 @@
 #pragma once
 
-#include <QQuickPaintedItem>
+#include <QQuickItem>
 #include <QImage>
 #include <QSize>
 #include <QPointF>
+#include <QString>
+#include <memory>
 #include "CoordinateMapper.h"
 
 namespace chimera {
@@ -11,11 +13,11 @@ namespace chimera {
 /**
  * @brief QML item that renders the Android guest display framebuffer.
  *
- * Receives QImage updates from the graphics bridge and paints them
- * scaled to fit the item geometry.
+ * Receives frame updates from the graphics bridge and uploads them directly
+ * as Qt scene graph textures, avoiding the QQuickPaintedItem/QPainter path.
  * Forwards mouse/keyboard events to InputBridge → ADB.
  */
-class GuestDisplay : public QQuickPaintedItem {
+class GuestDisplay : public QQuickItem {
     Q_OBJECT
     Q_PROPERTY(QImage frame READ frame WRITE setFrame NOTIFY frameChanged)
     Q_PROPERTY(bool hasFrame READ hasFrame NOTIFY frameChanged)
@@ -24,10 +26,14 @@ class GuestDisplay : public QQuickPaintedItem {
 
 public:
     explicit GuestDisplay(QQuickItem *parent = nullptr);
+    ~GuestDisplay() override;
 
     QImage frame() const;
     void setFrame(const QImage &img);
     bool hasFrame() const;
+    void setNativeD3D11Texture(void *texture, const QSize &size, quint64 sequence, bool hasAlpha);
+    void setSharedD3D11Texture(const QString &textureName, const QSize &size, quint64 sequence, bool hasAlpha);
+    void clearNativeD3D11Texture();
     void setGuestSize(const QSize &size);
     void setRotation(int degrees);
 
@@ -48,7 +54,7 @@ signals:
     void cursorModeChanged();
 
 protected:
-    void paint(QPainter *painter) override;
+    QSGNode *updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) override;
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
@@ -62,6 +68,15 @@ protected:
 
 private:
     QImage m_frame;
+    quint64 m_frameSequence = 0;
+    void  *m_nativeD3D11Texture = nullptr;
+    QSize  m_nativeD3D11TextureSize;
+    quint64 m_nativeD3D11TextureSequence = 0;
+    bool   m_nativeD3D11TextureHasAlpha = false;
+    QString m_sharedD3D11TextureName;
+    struct NativeD3D11TextureState;
+    std::unique_ptr<NativeD3D11TextureState> m_nativeD3D11State;
+    std::unique_ptr<NativeD3D11TextureState> m_uploadD3D11State;
     QSize  m_guestSize;
     chimera::input::CoordinateMapper m_mapper;
     bool   m_mouseLocked = false;

@@ -1,21 +1,38 @@
 #include "PerformanceMonitor.h"
 #include <QDebug>
 #include <algorithm>
+#include <cmath>
 
 using namespace chimera::graphics;
 
 PerformanceMonitor::PerformanceMonitor(QObject *parent)
     : QObject(parent) {
-    m_frameTimer.start();
+    m_guestFrameTimer.start();
     m_fpsTimer.start();
+    m_recalcTimer.setInterval(250);
+    connect(&m_recalcTimer, &QTimer::timeout, this, &PerformanceMonitor::recalculate);
+    m_recalcTimer.start();
 }
 
-void PerformanceMonitor::onFrameReceived() {
-    qint64 elapsed = m_frameTimer.restart();
-    if (!m_hasLastFrame) {
-        m_hasLastFrame = true;
-        ++m_totalFrames;
-        ++m_framesInInterval;
+void PerformanceMonitor::onFrameReceived(bool contentChanged) {
+    ++m_totalFrames;
+    ++m_streamFramesInInterval;
+
+    if (!contentChanged) {
+        ++m_duplicateFrames;
+        ++m_duplicateFramesInInterval;
+        ++m_consecutiveDuplicateFrames;
+        if (m_consecutiveDuplicateFrames >= 6)
+            m_hasLastGuestFrame = false;
+        recalculate();
+        return;
+    }
+
+    m_consecutiveDuplicateFrames = 0;
+    qint64 elapsed = m_guestFrameTimer.restart();
+    if (!m_hasLastGuestFrame) {
+        m_hasLastGuestFrame = true;
+        ++m_guestFramesInInterval;
         recalculate();
         return;
     }
@@ -26,8 +43,7 @@ void PerformanceMonitor::onFrameReceived() {
     if (m_frameTimes.size() > kMaxSamples)
         m_frameTimes.dequeue();
 
-    ++m_totalFrames;
-    ++m_framesInInterval;
+    ++m_guestFramesInInterval;
     updateTargetHitRate(frameTime);
     recalculate();
 }
@@ -70,6 +86,7 @@ void PerformanceMonitor::onRenderEnd() {
 }
 
 void PerformanceMonitor::onFrameRendered() {
+    ++m_renderFramesInInterval;
     if (m_inputPending) {
         m_visibleLatencyMs = static_cast<double>(m_inputTimer.elapsed());
         m_inputPending = false;
@@ -98,30 +115,53 @@ void PerformanceMonitor::updateTargetHitRate(double frameTimeMs) {
 void PerformanceMonitor::reset() {
     m_frameTimes.clear();
     m_fps = 0.0;
+    m_streamFps = 0.0;
+    m_renderFps = 0.0;
     m_droppedFrames = 0;
     m_totalFrames = 0;
-    m_framesInInterval = 0;
+    m_duplicateFrames = 0;
+    m_streamFramesInInterval = 0;
+    m_guestFramesInInterval = 0;
+    m_renderFramesInInterval = 0;
+    m_duplicateFramesInInterval = 0;
+    m_consecutiveDuplicateFrames = 0;
     m_framesOnTime = 0;
     m_framesForRate = 0;
-    m_hasLastFrame = false;
+    m_hasLastGuestFrame = false;
     m_inputPending = false;
     m_visibleLatencyMs = -1.0;
     m_captureLatencyMs = 0.0;
     m_decodeLatencyMs  = 0.0;
     m_renderLatencyMs  = 0.0;
     m_targetHitRate    = 0.0;
-    m_frameTimer.start();
+    m_duplicateRate    = 0.0;
+    m_guestFrameTimer.start();
     m_fpsTimer.start();
+    emit fpsChanged(m_fps);
+    emit metricsChanged();
 }
 
 void PerformanceMonitor::recalculate() {
-    if (m_fpsTimer.elapsed() >= 1000) {
-        m_fps = static_cast<double>(m_framesInInterval) * 1000.0 / m_fpsTimer.elapsed();
-        emit fpsChanged(m_fps);
-        m_framesInInterval = 0;
-        m_fpsTimer.restart();
-        emit metricsChanged();
-    }
+    const qint64 elapsed = m_fpsTimer.elapsed();
+    if (elapsed < 1000) return;
+
+    const double elapsedSeconds = static_cast<double>(elapsed) / 1000.0;
+    m_fps = static_cast<double>(m_guestFramesInInterval) / elapsedSeconds;
+    m_streamFps = static_cast<double>(m_streamFramesInInterval) / elapsedSeconds;
+    m_renderFps = static_cast<double>(m_renderFramesInInterval) / elapsedSeconds;
+    m_duplicateRate = (m_streamFramesInInterval > 0)
+        ? static_cast<double>(m_duplicateFramesInInterval)
+              / static_cast<double>(m_streamFramesInInterval)
+        : 0.0;
+
+    m_streamFramesInInterval = 0;
+    m_guestFramesInInterval = 0;
+    m_renderFramesInInterval = 0;
+    m_duplicateFramesInInterval = 0;
+    m_fpsTimer.restart();
+
+    emit fpsChanged(m_fps);
+    emit metricsChanged();
 }
 
 double PerformanceMonitor::averageFrameTimeMs() const {
