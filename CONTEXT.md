@@ -1845,3 +1845,79 @@ HANDLE acquireKillOnCloseJob() {
 ### 狀態
 
 - 這輪修多開原生 emulator 與 stale VM 疊加的防線；true 1080p/60 仍需 matching SDK gfxstream shared texture producer。
+
+---
+
+## Session 71 — gfxstream Vulkan bridge diagnostics + manifest ABI gate（2026-06-13）
+
+### 修正
+
+- gfxstream Vulkan bridge 補低頻 `enabled` / `recordCopy` / `publishFrame` 診斷與 1920x1080 runtime floor：bridge enabled 但無 surface 時仍可進 `DisplayVk` producer path。
+- `write-chimera-gfxstream-runtime-manifest.ps1` 補 build ID 嚴格相等 gate：`gfxstreamSourceSnapBuildId` 必須等於 `baseEmulatorBuildId`，否則拒絕寫 manifest，避免 mixed ABI runtime 建立 `ready` 訊號。
+- manifest gate 實測正確拒絕 `sdk-release` build 13278158 對 SDK emulator 15261927 的組合。
+
+### 驗證
+
+- patch/build parser PASS；targeted build PASS；targeted `ctest` 2/2 PASS；完整 non-integration `ctest` 20/20 PASS。
+- 結束後無 Chimera/emulator/qemu/adb/ffmpeg 殘留。
+
+### 狀態
+
+- ABI gate 正確 fail-closed；custom gfxstream runtime 尚未有符合 SDK 15261927 build ID 的 matching source。
+
+---
+
+## Session 72 — gfxstream proxy log analyzer（2026-06-13）
+
+### 修正
+
+- 新增 `scripts\analyze-gfxstream-proxy-log.ps1`：離線分類 stock-ABI proxy log，只把 1920x1080 GPU display/resource signal（`stream_renderer_flush`、`stream_renderer_resource_create`）當下一步 hook 候選；`android_onPost` CPU readback 訊號正確拒絕。
+- 合成 log 驗證：1080p `stream_renderer_flush` PASS；`android_onPost` 如預期 FAIL。
+
+### 驗證
+
+- proxy runtime build PASS，348 exports；non-integration `ctest` 20/20 PASS。
+- 既有 proxy logs 沒有 1920x1080 GPU signal；子代理研究因額度限制失敗，無可採用結論。
+
+### 狀態
+
+- 分析器工具就位；仍需 stock-ABI GPU display-post signal 或 matching gfxstream source 才能前進 producer。
+
+---
+
+## Session 73 — initLibrary ABI crash 修正（2026-06-13）
+
+### 修正
+
+- 根因：`gfxstream_proxy.c` 用 `void*(void*)` C shim 承接 `gfxstream::RenderLibPtr`（non-trivial C++ return value）→ ABI 邊界 AV crash。
+- 修法：移除 C shim；在 `gfxstream_proxy_renderlib.cpp` 改為 `extern "C" __declspec(dllexport) gfxstream::RenderLibPtr initLibrary()`（exact C++ signature pure forward）。
+- analyzer 同時計數 `renderlib_wrapper initLibrary` 與 `forward name=initLibrary`；build script 過時註解同步修正；gate 未放寬。
+
+### 驗證
+
+- proxy build PASS（348 exports）；headless smoke boot 完成：`initLibrary=1 androidSetOpenglesRenderer=1 rendererVtable=1`。
+- analyzer 正確 FAIL `no 1920x1080 GPU display/resource signal`；`no_residual_processes=OK`。
+
+### 狀態
+
+- proxy 跨過 `initLibrary` ABI 關卡；renderer 初始化可觀測；仍無 GPU display-post signal。
+
+---
+
+## Session 74 — GrpcOnly verify mode + ABI empirical test（2026-06-13）
+
+### 修正
+
+- 新增 `verify-true-1080p60.ps1 -GrpcOnly`：驗證 production gRPC path（stock SDK + headless，62-67 FPS 1920x1080），不要求 custom shared texture runtime；`Assert-True1080p60GrpcLog` require stream start / reject D3D11+ADB fallback / require FPS≥60 dup≤5%。
+- 新增 `-AllowMismatchedBuildId` R&D flag（verifier + manifest writer）；`CHIMERA_GFXSTREAM_SKIP_BUILD_ID_CHECK` bypass 加入 InstanceManager。
+- **ABI 不相容 EMPIRICALLY CONFIRMED**：`sdk-release` gfxstream DLL (build 13278158) 在 SDK emulator 15261927 實測：DLL 載入、gfxstream backend 啟動，Vulkan bridge `ensureInitialized` 因 struct layout 不符 AV crash → emulator exit → Chimera exit 4。
+
+### 驗證
+
+- syntax PASS；parse-only 合成 log pass/fail 兩路 PASS。
+- ABI crash 實測：log 確認 `Graphics backend: gfxstream` 正常，之後 `Emulator process tree exited unexpectedly`（exit 4）。
+
+### 狀態
+
+- blockers 實測確認：gfxstream shared texture → Vulkan struct ABI mismatch（非假設）；EmuGL → HAXM/WHPX absent。
+- production gRPC path（`-GrpcOnly`）是目前可驗最佳 display path；true shared texture 1080p/60 待 SDK 15261927 matching gfxstream source。

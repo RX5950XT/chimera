@@ -26,7 +26,9 @@ param(
     [string]$RuntimePath = "",
     [string]$ParseOnlyLog = "",
     [switch]$NoCleanStart,
-    [switch]$GrpcOnly
+    [switch]$GrpcOnly,
+    # R&D only: bypass gfxstream source build ID check for ABI compatibility testing.
+    [switch]$AllowMismatchedBuildId
 )
 
 $ErrorActionPreference = "Stop"
@@ -332,6 +334,7 @@ $savedEnv = @{
     CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE = $env:CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE
     CHIMERA_ENABLE_GFXSTREAM_SHARED_TEXTURE = $env:CHIMERA_ENABLE_GFXSTREAM_SHARED_TEXTURE
     CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE = $env:CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE
+    CHIMERA_GFXSTREAM_SKIP_BUILD_ID_CHECK = $env:CHIMERA_GFXSTREAM_SKIP_BUILD_ID_CHECK
     CHIMERA_QUICK_BOOT = $env:CHIMERA_QUICK_BOOT
     CHIMERA_GRPC_TRANSPORT = $env:CHIMERA_GRPC_TRANSPORT
     CHIMERA_VIDEO_TRANSPORT = $env:CHIMERA_VIDEO_TRANSPORT
@@ -364,6 +367,12 @@ try {
         $env:CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE = "1"
         Remove-Item Env:\CHIMERA_ENABLE_EMUGL_SHARED_TEXTURE -ErrorAction SilentlyContinue
         Remove-Item Env:\CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE -ErrorAction SilentlyContinue
+        if ($AllowMismatchedBuildId) {
+            $env:CHIMERA_GFXSTREAM_SKIP_BUILD_ID_CHECK = "1"
+            Write-Host "WARNING: R&D mode — build ID check bypassed for ABI compatibility testing"
+        } else {
+            Remove-Item Env:\CHIMERA_GFXSTREAM_SKIP_BUILD_ID_CHECK -ErrorAction SilentlyContinue
+        }
         $env:CHIMERA_EMULATOR_PATH = (Resolve-Path -LiteralPath $ResolvedRuntime).Path
         $runtimeArg = "--gfxstream-shared-texture"
     } else {
@@ -424,6 +433,7 @@ finally {
     if ($savedEnv.CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE -eq $null) { Remove-Item Env:\CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE -ErrorAction SilentlyContinue } else { $env:CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE = $savedEnv.CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE }
     if ($savedEnv.CHIMERA_ENABLE_GFXSTREAM_SHARED_TEXTURE -eq $null) { Remove-Item Env:\CHIMERA_ENABLE_GFXSTREAM_SHARED_TEXTURE -ErrorAction SilentlyContinue } else { $env:CHIMERA_ENABLE_GFXSTREAM_SHARED_TEXTURE = $savedEnv.CHIMERA_ENABLE_GFXSTREAM_SHARED_TEXTURE }
     if ($savedEnv.CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE -eq $null) { Remove-Item Env:\CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE -ErrorAction SilentlyContinue } else { $env:CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE = $savedEnv.CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE }
+    if ($savedEnv.CHIMERA_GFXSTREAM_SKIP_BUILD_ID_CHECK -eq $null) { Remove-Item Env:\CHIMERA_GFXSTREAM_SKIP_BUILD_ID_CHECK -ErrorAction SilentlyContinue } else { $env:CHIMERA_GFXSTREAM_SKIP_BUILD_ID_CHECK = $savedEnv.CHIMERA_GFXSTREAM_SKIP_BUILD_ID_CHECK }
     if ($savedEnv.CHIMERA_QUICK_BOOT -eq $null) { Remove-Item Env:\CHIMERA_QUICK_BOOT -ErrorAction SilentlyContinue } else { $env:CHIMERA_QUICK_BOOT = $savedEnv.CHIMERA_QUICK_BOOT }
     if ($savedEnv.CHIMERA_GRPC_TRANSPORT -eq $null) { Remove-Item Env:\CHIMERA_GRPC_TRANSPORT -ErrorAction SilentlyContinue } else { $env:CHIMERA_GRPC_TRANSPORT = $savedEnv.CHIMERA_GRPC_TRANSPORT }
     if ($savedEnv.CHIMERA_VIDEO_TRANSPORT -eq $null) { Remove-Item Env:\CHIMERA_VIDEO_TRANSPORT -ErrorAction SilentlyContinue } else { $env:CHIMERA_VIDEO_TRANSPORT = $savedEnv.CHIMERA_VIDEO_TRANSPORT }

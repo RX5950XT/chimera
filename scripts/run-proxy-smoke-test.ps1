@@ -4,6 +4,7 @@ param(
     [string]$LogPath = "",
     [int]$BootTimeoutSec = 180,
     [int]$FrameCollectionSec = 20,
+    [string]$GpuMode = "host",
     [switch]$EnableFrameListener,
     [switch]$EnableVtableHook,
     [switch]$SkipAnalysis
@@ -69,7 +70,7 @@ foreach ($lf in $lockFiles) {
 Write-Host "=== Chimera Proxy Smoke Test ==="
 Write-Host "proxyRuntime=$ProxyRuntimeDir"
 Write-Host "logPath=$LogPath"
-Write-Host "frameListener=$EnableFrameListener vtableHook=$EnableVtableHook"
+Write-Host "gpuMode=$GpuMode frameListener=$EnableFrameListener vtableHook=$EnableVtableHook"
 Write-Host ""
 
 # Prepend lib64 and emulator dir to PATH
@@ -93,7 +94,7 @@ $emulatorArgs = @(
     "-avd", "chimera_dev",
     "-no-window",
     "-accel", "on",
-    "-gpu", "host",
+    "-gpu", $GpuMode,
     "-memory", "2048",
     "-cores", "2",
     "-no-skin",

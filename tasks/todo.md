@@ -12,15 +12,20 @@
 - [x] 修改 `Require-File` 在 GrpcOnly 跳過 custom runtime 檢查。
 - [x] 修改 try 主體：GrpcOnly 不設 CHIMERA_EMULATOR_PATH 與 shared texture env，不帶 `--gfxstream/emugl-shared-texture` 旗標。
 - [x] 語法驗證 PASS；parse-only pass/fail 兩個合成 log 邏輯 PASS。
+- [x] 加入 `-AllowMismatchedBuildId` R&D flag 到 verifier 與 manifest writer。
+- [x] 加入 `CHIMERA_GFXSTREAM_SKIP_BUILD_ID_CHECK` bypass 到 `InstanceManager.cpp`（R&D）。
+- [x] 把 `sdk-release` build (13278158) 的 patched DLL 複製進 `chimera-gfxstream-runtime`，生成 manifest。
+- [x] 實測 ABI 相容性：`sdk-release` DLL 載入 SDK emulator 15261927 → Vulkan bridge 初始化 crash（exit code 4）。
 - [x] 同步 `tasks/todo.md`、`tasks/lessons.md`、`CONTEXT.md`、`CLAUDE.md`。
 
 ### Review
 
-- **GrpcOnly 模式**：允許在不需要 custom gfxstream/EmuGL runtime 的情況下，驗證 production gRPC path（stock SDK emulator + headless + gRPC 62-67 FPS）。
-- 既有 shared texture gate 沒有放水：`-GrpcOnly` 完全走不同分支；不設 CHIMERA_REQUIRE_*，也不帶 shared texture CLI 旗標，不會讓 stock runtime 觸發 fail-closed。
-- production gRPC 路徑已在 Session 6/7 runtime 驗證達到 62-67 FPS 1920x1080；`-GrpcOnly` 的 parse-only 測試確認正確 PASS。
-- **blockers 現況**：gfxstream shared texture — 沒有 public source 符合 SDK build ID 15261927；EmuGL shared texture — legacy QEMU emulator 只支援 HAXM，不支援 WHPX，無法在本機啟動。
-- 使用方式：`scripts\verify-true-1080p60.ps1 -GrpcOnly`（需要 chimera-ui.exe + Android boot）。
+- **GrpcOnly 模式**：允許驗證 production gRPC path（stock SDK emulator + headless，62-67 FPS 1920x1080），不需 custom shared texture runtime。
+- 既有 shared texture gate 完全不受影響。
+- **ABI 不相容 EMPIRICALLY CONFIRMED**：`sdk-release` gfxstream DLL (build 13278158) 在 SDK emulator 15261927 下：DLL 成功載入並初始化至 gfxstream backend 啟動，但 Vulkan bridge `ensureInitialized` 過程中因 struct layout 不符發生 crash，emulator process tree exit。此為 Vulkan-level ABI mismatch，不是 export 解析失敗。
+- `emu-main-dev` build 缺少 SDK imports（libandroid-emu-agents/protos/metrics），無法載入。
+- `CHIMERA_GFXSTREAM_SKIP_BUILD_ID_CHECK` bypass 保留在 InstanceManager 作為未來 R&D 工具。
+- **結論**：gfxstream shared texture 1080p/60 仍待 SDK build ID 15261927 的 matching source；gRPC 62-67 FPS 是目前可驗的最高品質 display path。
 
 ---
 

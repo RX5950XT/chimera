@@ -2,7 +2,11 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$RuntimeDir,
 
-    [string]$SourceDir = ""
+    [string]$SourceDir = "",
+
+    # R&D only: allow mismatched gfxstream source build ID vs SDK emulator build ID.
+    # This bypasses the ABI safety gate. Use only for exploratory testing.
+    [switch]$AllowMismatchedBuildId
 )
 
 $ErrorActionPreference = "Stop"
@@ -135,7 +139,10 @@ if ([string]::IsNullOrWhiteSpace($gfxstreamSourceSnapBuildId)) {
     throw "gfxstream source snapshot build id is missing; pass -SourceDir pointing at the matching gfxstream checkout"
 }
 if ($gfxstreamSourceSnapBuildId -ne $baseEmulatorBuildId) {
-    throw "gfxstream source snapshot build id $gfxstreamSourceSnapBuildId does not match base emulator build id $baseEmulatorBuildId; refusing crash-prone mixed ABI runtime"
+    if (-not $AllowMismatchedBuildId) {
+        throw "gfxstream source snapshot build id $gfxstreamSourceSnapBuildId does not match base emulator build id $baseEmulatorBuildId; refusing crash-prone mixed ABI runtime (use -AllowMismatchedBuildId for R&D testing only)"
+    }
+    Write-Warning "R&D: allowing mismatched build IDs: gfxstream=$gfxstreamSourceSnapBuildId emulator=$baseEmulatorBuildId"
 }
 
 $gitCommit = $null

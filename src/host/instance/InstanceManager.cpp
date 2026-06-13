@@ -183,11 +183,18 @@ static bool hasValidSharedTextureManifest(
                     runtimePathBaseOk;
                 const std::string snapBuildId = manifest.value("gfxstreamSourceSnapBuildId", "");
                 const std::string manifestBaseBuildId = manifest.value("baseEmulatorBuildId", "");
+                // R&D bypass: CHIMERA_GFXSTREAM_SKIP_BUILD_ID_CHECK=1 allows testing
+                // mismatched gfxstream source vs emulator build IDs. Empirically tested:
+                // sdk-release build 13278158 crashes in emulator 15261927 during Vulkan init.
+                const bool buildIdBypass =
+                    std::getenv("CHIMERA_GFXSTREAM_SKIP_BUILD_ID_CHECK") != nullptr &&
+                    std::string(std::getenv("CHIMERA_GFXSTREAM_SKIP_BUILD_ID_CHECK")) == "1";
                 const bool buildIdOk =
-                    !baseEmulatorBuildId.empty() &&
-                    !snapBuildId.empty() &&
-                    snapBuildId == baseEmulatorBuildId &&
-                    (manifestBaseBuildId.empty() || manifestBaseBuildId == baseEmulatorBuildId);
+                    buildIdBypass ||
+                    (!baseEmulatorBuildId.empty() &&
+                     !snapBuildId.empty() &&
+                     snapBuildId == baseEmulatorBuildId &&
+                     (manifestBaseBuildId.empty() || manifestBaseBuildId == baseEmulatorBuildId));
                 if (matchingGfxstreamBuildId) *matchingGfxstreamBuildId = buildIdOk;
                 if (!buildIdOk && identityOk && floorOk && runtimePathBaseOk &&
                     mismatchedGfxstreamBuildId) {

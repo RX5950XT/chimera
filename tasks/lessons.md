@@ -1,5 +1,12 @@
 # Chimera Lessons
 
+## 2026-06-13 — gfxstream ABI 不相容必須實測而非假設
+
+- "Build ID 不一致 = ABI 不相容" 只是 gate 邏輯，不代表實際已測。實測方法：加 bypass env var、複製 patched DLL、跑 verifier，觀察是否 crash。
+- `sdk-release` (13278158) DLL 在 SDK emulator 15261927 下：export 解析成功、gfxstream backend 啟動，但 Vulkan bridge 初始化時 crash（struct layout 不符 → AV）。這是 Vulkan-level ABI mismatch，比 export-level mismatch 更難繞過。
+- `emu-main-dev` build 缺 SDK imports（libandroid-emu-agents/protos/metrics.dll），根本無法在 SDK emulator 的 lib64/ 環境下載入，必須先查 import list 再嘗試。
+- R&D bypass flag 要加在 InstanceManager 和 manifest writer 兩層，且要透過 verifier 的 savedEnv 正確管理，避免殘留汙染後續測試。
+
 ## 2026-06-13 — verify script 新增模式要同步更新 parse-only 分支
 
 - `ParseOnlyLog` 分支用同一套 assert 函式：新增 `-GrpcOnly` 這類模式切換時，parse-only 與 live run 都要走新分支，否則離線 log 驗證會使用舊規則。

@@ -228,10 +228,11 @@ QEMU/debug logs、R&D throwaway scripts、runtime output dirs。
 
 - 新增 `scripts\verify-true-1080p60.ps1 -GrpcOnly` 模式，驗證 production gRPC path（stock SDK emulator + headless，62-67 FPS 1920x1080）而不要求 custom shared texture runtime。
 - `Assert-True1080p60GrpcLog`：require "Starting .+ screen capture stream"，reject D3D11 / ADB fallback，require effective FPS ≥ 60 / dup ≤ 5%。
-- 既有 shared texture gate 完全不受影響；`-GrpcOnly` 走獨立分支，不設 `CHIMERA_REQUIRE_*_SHARED_TEXTURE`，不帶 `--gfxstream/emugl-shared-texture`。
-- 驗證：syntax PASS；parse-only pass log / fail log 兩個合成測試邏輯 PASS。
-- **blockers 明確**：gfxstream shared texture — 無符合 SDK build ID 15261927 的 public source；EmuGL shared texture — legacy QEMU emulator 不支援 WHPX（只有 HAXM/KVM），本機無法啟動。
-- production gRPC 路徑（stock SDK emulator + headless + gRPC 62-67 FPS）是目前可驗證的最佳 display path；true shared texture 1080p/60 待 matching SDK gfxstream source。
+- 新增 `-AllowMismatchedBuildId` R&D flag（verifier + manifest writer）；`CHIMERA_GFXSTREAM_SKIP_BUILD_ID_CHECK` bypass 加入 InstanceManager，供實測時繞過 ABI gate。
+- **ABI 不相容 EMPIRICALLY CONFIRMED**：`sdk-release` gfxstream DLL (build 13278158) 在 SDK emulator 15261927 實測：DLL 載入成功、`Graphics backend: gfxstream` 正常出現，但 Vulkan bridge `ensureInitialized` 因 struct layout 不符發生 AV crash，emulator process tree 退出（Chimera exit 4）。非假設，是實測。
+- `emu-main-dev` DLL 缺 SDK imports（`libandroid-emu-agents/protos/metrics.dll`），連載入都不行；不值得實測。
+- **blockers 實測確認**：gfxstream shared texture → Vulkan struct ABI mismatch；EmuGL shared texture → HAXM required / WHPX absent。
+- production gRPC 路徑（stock SDK + headless + gRPC 62-67 FPS）是目前可驗證的最佳 display path；`verify-true-1080p60.ps1 -GrpcOnly` 是對應驗證器。
 
 ---
-*Updated: 2026-06-13 — Session 74（GrpcOnly verify mode）*
+*Updated: 2026-06-13 — Session 74（GrpcOnly verify + ABI empirical test）*
