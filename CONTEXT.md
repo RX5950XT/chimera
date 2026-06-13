@@ -6,14 +6,22 @@
 
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 
-## 最新狀態（2026-06-13 Session 73）
+## 最新狀態（2026-06-13 Session 74）
+
+- Session 74 新增 `scripts\verify-true-1080p60.ps1 -GrpcOnly`：驗證 production gRPC path（stock SDK emulator headless，62-67 FPS 1920x1080）而不要求 custom shared texture runtime。
+- `Assert-True1080p60GrpcLog`：require "Starting .+ screen capture stream"，reject D3D11 / ADB fallback，require effective FPS ≥ 60 / dup ≤ 5%；既有 `Assert-True1080p60Log`（shared texture gate）完全不受影響。
+- `ParseOnlyLog` 分支依 `-GrpcOnly` 選擇對應 assert；`Require-File` 在 GrpcOnly 跳過 custom runtime 檢查；try 主體不設 CHIMERA_EMULATOR_PATH 與 `CHIMERA_REQUIRE_*_SHARED_TEXTURE`，不帶 `--gfxstream/emugl-shared-texture`。
+- 驗證：syntax PASS；pass/fail 合成 log parse-only 邏輯 PASS。
+- **blockers 明確化**：gfxstream shared texture — 無 public source 符合 SDK build ID 15261927；EmuGL shared texture — legacy QEMU emulator 僅支援 HAXM/KVM，本機 Hyper-V 環境不可用。
+- production gRPC（stock SDK + headless + gRPC 62-67 FPS）是目前最佳可驗 display path；true 1080p/60 shared texture 待 matching gfxstream source。
+
+## 歷史狀態（2026-06-13 Session 73）
 
 - Session 73 修正 `initLibrary` ABI crash 根因：`gfxstream_proxy.c` 用 `void*(void*)` C 假簽名承接 `gfxstream::RenderLibPtr`（`std::unique_ptr<RenderLib>`），在 x64 Windows 下 ABI 不相容，是 boot 前 `-1073741819 (AV)` 的根源。
 - 改為 `extern "C" __declspec(dllexport) gfxstream::RenderLibPtr initLibrary()` 放在 `gfxstream_proxy_renderlib.cpp`，exact C++ signature pure forward，`#pragma warning(suppress: 4190)` 壓 MSVC C4190。
 - 從 `gfxstream_proxy.c` 刪除 C shim；build script 過時註解同步修正；analyzer 同時計數 `renderlib_wrapper initLibrary` 與 `forward name=initLibrary` 兩種格式。
 - 驗證：build PASS（348 exports，gate 通過）；headless smoke boot 完成，`initLibrary=1 androidSetOpenglesRenderer=1 rendererVtable=1`；analyzer 正確 FAIL `no 1920x1080 GPU display/resource signal`；`no_residual_processes=OK`。
 - 目前 stock headless emulator 沒有 GPU display-post signal；analyzer FAIL 是預期行為（gate 未放寬）。
-- 下一步：仍需 matching SDK gfxstream source 的 `DisplayVk::postImpl()` GPU post hook，才能在 stock ABI proxy 上觀察第一個 GPU display signal，進而接 D3D11 shared texture producer。
 
 ## 歷史狀態（2026-06-13 Session 72）
 

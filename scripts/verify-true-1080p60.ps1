@@ -25,7 +25,8 @@ param(
     [string]$RuntimeKind = "Gfxstream",
     [string]$RuntimePath = "",
     [string]$ParseOnlyLog = "",
-    [switch]$NoCleanStart
+    [switch]$NoCleanStart,
+    [switch]$GrpcOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -208,6 +209,48 @@ function Assert-True1080p60Log {
     Write-Host ("duplicate_pct_max={0:N0}" -f $maxDup)
 }
 
+function Assert-True1080p60GrpcLog {
+    param([string]$LogText)
+
+    if ([string]::IsNullOrWhiteSpace($LogText)) {
+        throw "log is empty; cannot prove gRPC 1080p60"
+    }
+
+    if ($LogText -notmatch "Starting .+ screen capture stream") {
+        throw "gRPC screen capture stream did not start"
+    }
+    if ($LogText -match "Shared D3D11 texture display capture started") {
+        throw "shared D3D11 texture path was active; use Gfxstream/EmuGL mode instead"
+    }
+    if ($LogText -match "ADB raw screen capture fallback started|ADB H\.264 screenrecord display capture selected") {
+        throw "ADB raw/screenrecord fallback was used; not a valid gRPC 1080p60 proof"
+    }
+    if ($LogText -match "Required shared texture capture (was not configured|did not start|did not produce a frame)") {
+        throw "shared texture was required but failed — unset CHIMERA_REQUIRE_*_SHARED_TEXTURE before running GrpcOnly"
+    }
+
+    $samples = @(Get-PerfSamples -LogText $LogText)
+    if ($samples.Count -le $WarmupPerfSamples) {
+        throw "not enough perf samples after warmup: $($samples.Count)"
+    }
+    $steady = @($samples | Select-Object -Skip $WarmupPerfSamples)
+    $minEffective = ($steady | Measure-Object -Property Effective -Minimum).Minimum
+    $avgEffective = ($steady | Measure-Object -Property Effective -Average).Average
+    $maxDup = ($steady | Measure-Object -Property DuplicatePercent -Maximum).Maximum
+
+    if ($minEffective -lt $MinEffectiveFps) {
+        throw "effective FPS below threshold: min=$minEffective threshold=$MinEffectiveFps"
+    }
+    if ($maxDup -gt 5.0) {
+        throw "duplicate rate too high during dynamic proof: maxDup=${maxDup}%"
+    }
+
+    Write-Host "perf_samples=$($steady.Count)"
+    Write-Host ("effective_fps_min={0:N1}" -f $minEffective)
+    Write-Host ("effective_fps_avg={0:N1}" -f $avgEffective)
+    Write-Host ("duplicate_pct_max={0:N0}" -f $maxDup)
+}
+
 function Wait-AndroidBoot {
     param(
         [Parameter(Mandatory = $true)][int]$TimeoutSec,
@@ -260,14 +303,21 @@ function Exercise-DynamicGuest {
 }
 
 if (-not [string]::IsNullOrWhiteSpace($ParseOnlyLog)) {
-    Assert-True1080p60Log -LogText (Read-LogText -Path $ParseOnlyLog)
+    $logForParse = Read-LogText -Path $ParseOnlyLog
+    if ($GrpcOnly) {
+        Assert-True1080p60GrpcLog -LogText $logForParse
+    } else {
+        Assert-True1080p60Log -LogText $logForParse
+    }
     Write-Host "result=pass"
     return
 }
 
 Require-File -Path $AppExe -Name "chimera-ui.exe"
 Require-File -Path $Adb -Name "adb.exe"
-Require-File -Path $ResolvedRuntime -Name "Chimera $RuntimeKind emulator runtime"
+if (-not $GrpcOnly) {
+    Require-File -Path $ResolvedRuntime -Name "Chimera $RuntimeKind emulator runtime"
+}
 
 $env:PATH = "$QtBin;$env:PATH"
 $logDir = Join-Path $RepoRoot "tmp"
@@ -302,22 +352,30 @@ try {
         Remove-StaleAvdLocks
     }
 
-    if ($RuntimeKind -eq "Gfxstream") {
+    if ($GrpcOnly) {
+        Remove-Item Env:\CHIMERA_ENABLE_GFXSTREAM_SHARED_TEXTURE -ErrorAction SilentlyContinue
+        Remove-Item Env:\CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE -ErrorAction SilentlyContinue
+        Remove-Item Env:\CHIMERA_ENABLE_EMUGL_SHARED_TEXTURE -ErrorAction SilentlyContinue
+        Remove-Item Env:\CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE -ErrorAction SilentlyContinue
+        Remove-Item Env:\CHIMERA_EMULATOR_PATH -ErrorAction SilentlyContinue
+        $runtimeArg = ""
+    } elseif ($RuntimeKind -eq "Gfxstream") {
         $env:CHIMERA_ENABLE_GFXSTREAM_SHARED_TEXTURE = "1"
         $env:CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE = "1"
         Remove-Item Env:\CHIMERA_ENABLE_EMUGL_SHARED_TEXTURE -ErrorAction SilentlyContinue
         Remove-Item Env:\CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE -ErrorAction SilentlyContinue
+        $env:CHIMERA_EMULATOR_PATH = (Resolve-Path -LiteralPath $ResolvedRuntime).Path
         $runtimeArg = "--gfxstream-shared-texture"
     } else {
         $env:CHIMERA_ENABLE_EMUGL_SHARED_TEXTURE = "1"
         $env:CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE = "1"
         Remove-Item Env:\CHIMERA_ENABLE_GFXSTREAM_SHARED_TEXTURE -ErrorAction SilentlyContinue
         Remove-Item Env:\CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE -ErrorAction SilentlyContinue
+        $env:CHIMERA_EMULATOR_PATH = (Resolve-Path -LiteralPath $ResolvedRuntime).Path
         $runtimeArg = "--emugl-shared-texture"
     }
     $env:CHIMERA_QUICK_BOOT = "0"
     $env:CHIMERA_LOG_PATH = $messageLog
-    $env:CHIMERA_EMULATOR_PATH = (Resolve-Path -LiteralPath $ResolvedRuntime).Path
     Remove-Item Env:\CHIMERA_GRPC_TRANSPORT -ErrorAction SilentlyContinue
     Remove-Item Env:\CHIMERA_VIDEO_TRANSPORT -ErrorAction SilentlyContinue
     Remove-Item Env:\CHIMERA_ENABLE_NATIVE_EMBED -ErrorAction SilentlyContinue
@@ -327,7 +385,8 @@ try {
     Remove-Item Env:\CHIMERA_ALLOW_UNSAFE_VISIBLE_EMULATOR_WINDOW -ErrorAction SilentlyContinue
     Remove-Item Env:\CHIMERA_EMULATOR_START_VISIBLE -ErrorAction SilentlyContinue
 
-    $cmdLine = "$(Quote-CmdArgument -Value $AppExe) $runtimeArg 1>$(Quote-CmdArgument -Value $stdoutLog) 2>$(Quote-CmdArgument -Value $stderrLog)"
+    $appArgs = if ([string]::IsNullOrWhiteSpace($runtimeArg)) { "" } else { " $runtimeArg" }
+    $cmdLine = "$(Quote-CmdArgument -Value $AppExe)$appArgs 1>$(Quote-CmdArgument -Value $stdoutLog) 2>$(Quote-CmdArgument -Value $stderrLog)"
     $cmdArgs = "/d /s /c `"$cmdLine`""
     $process = Start-Process -FilePath "cmd.exe" `
         -ArgumentList $cmdArgs `
@@ -353,7 +412,11 @@ try {
     if ([string]::IsNullOrWhiteSpace($logText)) {
         $logText = Read-LogText -Path $stderrLog
     }
-    Assert-True1080p60Log -LogText $logText
+    if ($GrpcOnly) {
+        Assert-True1080p60GrpcLog -LogText $logText
+    } else {
+        Assert-True1080p60Log -LogText $logText
+    }
     Write-Host "result=pass"
 }
 finally {

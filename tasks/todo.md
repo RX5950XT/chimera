@@ -2,6 +2,28 @@
 
 ---
 
+## 2026-06-13 Session 74 — GrpcOnly verify mode
+
+### Plan
+
+- [x] 新增 `Assert-True1080p60GrpcLog`：require "Starting .+ screen capture stream"，reject D3D11/ADB fallback，require effective FPS ≥ 60，dup ≤ 5%。
+- [x] 新增 `-GrpcOnly` switch 參數。
+- [x] 修改 `ParseOnlyLog` 分支依 `-GrpcOnly` 選擇對應 assert 函式。
+- [x] 修改 `Require-File` 在 GrpcOnly 跳過 custom runtime 檢查。
+- [x] 修改 try 主體：GrpcOnly 不設 CHIMERA_EMULATOR_PATH 與 shared texture env，不帶 `--gfxstream/emugl-shared-texture` 旗標。
+- [x] 語法驗證 PASS；parse-only pass/fail 兩個合成 log 邏輯 PASS。
+- [x] 同步 `tasks/todo.md`、`tasks/lessons.md`、`CONTEXT.md`、`CLAUDE.md`。
+
+### Review
+
+- **GrpcOnly 模式**：允許在不需要 custom gfxstream/EmuGL runtime 的情況下，驗證 production gRPC path（stock SDK emulator + headless + gRPC 62-67 FPS）。
+- 既有 shared texture gate 沒有放水：`-GrpcOnly` 完全走不同分支；不設 CHIMERA_REQUIRE_*，也不帶 shared texture CLI 旗標，不會讓 stock runtime 觸發 fail-closed。
+- production gRPC 路徑已在 Session 6/7 runtime 驗證達到 62-67 FPS 1920x1080；`-GrpcOnly` 的 parse-only 測試確認正確 PASS。
+- **blockers 現況**：gfxstream shared texture — 沒有 public source 符合 SDK build ID 15261927；EmuGL shared texture — legacy QEMU emulator 只支援 HAXM，不支援 WHPX，無法在本機啟動。
+- 使用方式：`scripts\verify-true-1080p60.ps1 -GrpcOnly`（需要 chimera-ui.exe + Android boot）。
+
+---
+
 ## 2026-06-13 Session 73 — initLibrary ABI fix + proxy smoke PASS
 
 ### Plan

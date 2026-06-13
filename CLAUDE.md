@@ -224,5 +224,14 @@ QEMU/debug logs、R&D throwaway scripts、runtime output dirs。
 - 驗證：proxy build PASS（348 exports）；headless smoke boot 完成，`initLibrary=1 androidSetOpenglesRenderer=1 rendererVtable=1`；analyzer 正確 FAIL `no 1920x1080 GPU display/resource signal`；`no_residual_processes=OK`。
 - true 1080p/60 尚未完成；下一步仍是 matching SDK gfxstream `DisplayVk::postImpl()` GPU post hook。
 
+## 2026-06-13 — Session 74
+
+- 新增 `scripts\verify-true-1080p60.ps1 -GrpcOnly` 模式，驗證 production gRPC path（stock SDK emulator + headless，62-67 FPS 1920x1080）而不要求 custom shared texture runtime。
+- `Assert-True1080p60GrpcLog`：require "Starting .+ screen capture stream"，reject D3D11 / ADB fallback，require effective FPS ≥ 60 / dup ≤ 5%。
+- 既有 shared texture gate 完全不受影響；`-GrpcOnly` 走獨立分支，不設 `CHIMERA_REQUIRE_*_SHARED_TEXTURE`，不帶 `--gfxstream/emugl-shared-texture`。
+- 驗證：syntax PASS；parse-only pass log / fail log 兩個合成測試邏輯 PASS。
+- **blockers 明確**：gfxstream shared texture — 無符合 SDK build ID 15261927 的 public source；EmuGL shared texture — legacy QEMU emulator 不支援 WHPX（只有 HAXM/KVM），本機無法啟動。
+- production gRPC 路徑（stock SDK emulator + headless + gRPC 62-67 FPS）是目前可驗證的最佳 display path；true shared texture 1080p/60 待 matching SDK gfxstream source。
+
 ---
-*Updated: 2026-06-13 — Session 73（initLibrary ABI fix + proxy smoke PASS）*
+*Updated: 2026-06-13 — Session 74（GrpcOnly verify mode）*

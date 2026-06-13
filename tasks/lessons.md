@@ -1,5 +1,11 @@
 # Chimera Lessons
 
+## 2026-06-13 — verify script 新增模式要同步更新 parse-only 分支
+
+- `ParseOnlyLog` 分支用同一套 assert 函式：新增 `-GrpcOnly` 這類模式切換時，parse-only 與 live run 都要走新分支，否則離線 log 驗證會使用舊規則。
+- verify gate 的「require」與「reject」條件是互斥的：gRPC mode 要求看到 "Starting .+ screen capture stream"，同時拒絕 D3D11；shared texture mode 相反。兩個 assert 函式不可共用同一組 pattern，避免誤判。
+- 合成 log 測試要同時跑 pass case 和 fail case：只驗 pass 容易漏掉 false positive；must-reject 條件也要有負向測試覆蓋。
+
 ## 2026-06-13 — std::unique_ptr 回傳值不可用 C 假簽名轉發
 
 - `gfxstream::RenderLibPtr` 是 `std::unique_ptr<RenderLib>`；在 x64 Windows，`unique_ptr` 以 RAX 返回（單指標），而 `std::shared_ptr` 以 RCX 隱藏指標返回。兩者都不能用 `void*(void*)` 的 C 假簽名包裝，否則 RCX 被誤用或 stack layout 出錯，導致 `-1073741819 (AV)`。
