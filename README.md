@@ -115,9 +115,9 @@ Chimera (Host Windows)
 - 預設顯示路徑已改為 `NativeEmulatorView`，直接嵌入 Android Emulator Win32 視窗，避開 screenshot/gRPC 每幀複製瓶頸。
 - Android Emulator 原生直式工具列會在嵌入後自動隱藏；Chimera 改用主視窗內建右側狀態/操作面板，包含返回、首頁、最近使用等 Android 導航鍵。
 - 介面只保留一個 FPS 狀態區，移除重複 FPS 顯示與會被裁切的 hover tooltip；鍵位、多開、巨集改成右側面板內頁，避免 Win32 native child window 蓋住 QML 彈窗。
-- 顯示框固定 16:9 適配目前 1280×720 guest，避免非 16:9 容器造成 Android Emulator 內部黑邊。
-- Qt shell 啟動時強制使用 D3D11 RHI；emulator/qemu process tree 預設套用 high priority，降低遊戲幀時間尖峰。
-- Live smoke 已驗證 Android 實際 `1280x720`、`240 dpi`、SurfaceFlinger `60.00 Hz`、native window attach 成功。
+- 顯示框固定 16:9；guest/window/capture 入口都必須維持至少 `1920x1080`，避免用降解析度換取假 FPS。
+- Qt shell 啟動時強制使用 D3D11 RHI；emulator/qemu process tree 啟動期套用低優先級與 power throttling，避免干擾主機背景音樂。
+- Live smoke 需驗證 Android 實際 `1920x1080`、`320 dpi`、SurfaceFlinger `60.00 Hz`，並分開檢查 Guest/Stream/Render FPS。
 - `--stream-capture` 才會啟用 gRPC/ADB 畫面擷取；gRPC/ADB 現在是 fallback/除錯路徑，不是主要遊玩路徑。
 
 ### 基本操作

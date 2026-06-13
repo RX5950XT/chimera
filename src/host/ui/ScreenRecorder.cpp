@@ -1,4 +1,5 @@
 #include "ScreenRecorder.h"
+#include "LowInterferenceProcess.h"
 #include <QCoreApplication>
 #include <QStandardPaths>
 #include <QDir>
@@ -143,6 +144,7 @@ bool ScreenRecorder::startFFmpegProcess() {
     m_ffmpegProcess->setProgram(m_ffmpegPath);
     m_ffmpegProcess->setArguments(args);
     m_ffmpegProcess->start();
+    utils::applyLowInterferencePriority(m_ffmpegProcess);
     if (m_ffmpegProcess->waitForStarted(3000)) return true;
 
     delete m_ffmpegProcess;

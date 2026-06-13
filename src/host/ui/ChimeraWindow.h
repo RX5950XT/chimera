@@ -10,7 +10,8 @@ namespace chimera {
  * @brief Main application window embedding the Android guest display.
  *
  * Renders the guest framebuffer (from QEMU/VirtIO-GPU) into a Qt Quick scene.
- * Handles window resize, fullscreen toggle, and input event forwarding.
+ * Handles window resize and fullscreen toggle. Guest input is handled by
+ * GuestDisplay so events are mapped to Android coordinates exactly once.
  */
 class ChimeraWindow : public QQuickWindow {
     Q_OBJECT
@@ -35,15 +36,6 @@ signals:
     void fullscreenChanged(bool isFullscreen);
     void requestScreenshot();
     void requestShowInputMapper();
-
-protected:
-    void keyPressEvent(QKeyEvent *event) override;
-    void keyReleaseEvent(QKeyEvent *event) override;
-    void mousePressEvent(QMouseEvent *event) override;
-    void mouseReleaseEvent(QMouseEvent *event) override;
-    void mouseMoveEvent(QMouseEvent *event) override;
-    void wheelEvent(QWheelEvent *event) override;
-    void resizeEvent(QResizeEvent *event) override;
 
 private:
     class Impl;

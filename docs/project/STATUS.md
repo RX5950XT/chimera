@@ -21,7 +21,7 @@
 - Made screenshot/recording relative paths stable by setting the process working directory to the project root at startup.
 - Increased ADB shell input timeout and log failures so Android navigation keyevents do not silently disappear under boot/load contention.
 - Added `Esc` fullscreen exit in addition to `F11`.
-- Synchronized AVD hardware config before boot: `1280x720`, `240 dpi`, 2048 MB RAM, host GPU, no device frame, and 60Hz vsync.
+- Historical: synchronized AVD hardware config before boot at `1280x720`, `240 dpi`; current policy supersedes this and clamps guest/window/capture to at least `1920x1080`, `320 dpi`.
 - Added guest-side performance setup after boot: 60Hz min/peak refresh, disabled Android animation scales, and fixed performance mode where supported.
 - Switched SystemUI renderer to `skiavk` for emulator.exe runs.
 - Disabled Android Emulator metrics/crash-report consent prompts (`-no-metrics`, `-crash-report-mode never`) so emulator boot does not stall before QEMU/ADB starts.
@@ -29,8 +29,8 @@
 - Added `GrpcFramebufferCapture` (`-grpc 8554`) as the default display path; ADB raw fallback is opt-in debug/compatibility mode.
 - Fixed pre-boot gRPC pending connection by restarting the stream until the first frame arrives.
 - Fixed gRPC frame orientation by copying emulator screenshot bytes as top-down; direct gRPC capture confirmed bottom-up copy is the inverted variant.
-- Switched gRPC stream from RGBA8888 to RGB888 to cut frame payload by 25%.
-- Lowered default guest resolution to 1280×720 and gRPC stream width to 960px; added logical guest-size mapping so keyboard/mouse coordinates still target the real guest resolution.
+- Historical: gRPC stream was temporarily switched from RGBA8888 to RGB888 to cut payload size; this was later superseded because RGB888 forced render-path conversion at 1080p.
+- Historical: default guest resolution was temporarily lowered to 1280x720 and stream width to 960px; this is no longer valid because current policy clamps guest/window/capture to at least 1920x1080.
 - Added stale AVD lock cleanup when no emulator/qemu process is running.
 - Fixed `ProcessLauncher::terminate()` to terminate emulator child processes, preventing orphaned `qemu-system-x86_64-headless.exe` resource leaks.
 - Added emulator `-vsync-rate 60` and `-netfast` launch flags.
@@ -38,17 +38,18 @@
 - Fixed QMP mouse button/absolute-position payload generation and auto-reconnect handoff.
 - Fixed FFmpeg screen recorder argument construction and delayed encoder startup until first frame.
 - Disabled guest startup audio with `-no-audio`.
-- Lowered default runtime RAM to 2048 MB and display to 1280×720 to reduce memory, GPU, and screenshot-stream bandwidth.
+- Historical: default runtime RAM/display were once lowered to reduce screenshot bandwidth; display lowering is no longer allowed and every active path must stay at least `1920x1080`.
 - Fixed performance monitor first-frame timing so boot delay is not counted as frame time.
 - Fixed `Framebuffer::writeBackBuffer()` resize deadlock and added `test-graphics-framebuffer`.
 - Fixed force-kill orphan emulator/qemu leakage by assigning async children to a kill-on-close Windows Job Object; force-killing `chimera-ui.exe` now removes the emulator tree.
-- Added Quick Boot snapshot support (`-snapshot chimera_quickboot`) with `CHIMERA_QUICK_BOOT=0` fallback; verified relaunch boot time improved from 44s to 10s.
+- Added Quick Boot snapshot support (`-snapshot chimera_quickboot`); it is currently opt-in via `CHIMERA_QUICK_BOOT=1` after host-audio regressions from snapshot load/save I/O.
 - Hardened Quick Boot startup: if snapshot launch exits immediately, Chimera automatically retries with full boot; latest snapshot smoke reached boot complete in 12s.
 - Added `scripts/verify-quick-boot.ps1` runtime smoke; latest run rebuilt `chimera_quickboot`, measured full boot 66.7s and Quick Boot 9.7s, and left no Chimera/emulator/qemu processes running.
 - Reverted native Win32 embed to opt-in only after runtime showed black viewport / toolbar leakage; default display is headless gRPC streaming.
 - Disabled ADB raw display fallback by default; it is now opt-in via `--adb-display-fallback` because it can collapse display to ~1 FPS.
-- Added landscape guest adaptation on boot: 1280x720, 240 dpi, 60Hz settings, orientation request ignore, animation scales off, and wake/dismiss-keyguard/HOME so the stream lands on a usable desktop.
-- Disabled Quick Boot by default after snapshot state caused ADB offline / empty-screen risk; set `CHIMERA_QUICK_BOOT=1` or use the verifier when intentionally testing snapshot boot.
+- Historical: added landscape guest adaptation on boot; current boot adaptation is `1920x1080`, `320 dpi`, 60Hz settings, orientation request ignore, animation scales off, and wake/dismiss-keyguard/HOME.
+- Quick Boot was once disabled after snapshot state caused ADB offline / empty-screen risk; it is now opt-in again via `CHIMERA_QUICK_BOOT=1`, while snapshot saving is opt-in via `CHIMERA_SAVE_QUICK_BOOT=1` to avoid startup/shutdown I/O contention.
+- Hardened snapshot/audio shutdown behavior again: default full boot now passes `-no-snapstorage -no-snapshot -no-snapshot-load -no-snapshot-save`; normal `VirtualMachine::stop()` and `verify-true-1080p60.ps1` cleanup no longer send `adb emu kill`, so emulator shutdown cannot quietly trigger `default_boot` snapshot I/O unless `CHIMERA_SAVE_QUICK_BOOT=1` is explicitly enabled.
 - Upgraded default guest adaptation to 1920x1080 landscape / 320 dpi, and later removed the 800x450 gRPC capture cap so capture requests are clamped to at least 1920x1080.
 - Added emulator gRPC `sendTouch` and routed normal clicks/touches through it; runtime smoke confirmed tapping Settings brings `com.android.settings` foreground.
 - Replaced misleading single FPS counter with truthful `guestFps`, `streamFps`, `renderFps`, and duplicate-frame metrics; static screens no longer report capture-loop 60 FPS as guest FPS.
@@ -59,7 +60,7 @@
 - Simplified the right sidebar performance card to a single FPS number and moved detailed Guest/Stream/Render/Dup diagnostics out of the primary side panel.
 - Compacted the host shell chrome (46px top bar, narrower right panel) so the emulator viewport gets more usable space.
 - Updated Chimera Launcher to keep Android status bar visible, remove the thick top black band, and show only the required entries: Google Play, File Manager, Browser, and Settings.
-- Kept the single side-panel FPS as Stream FPS and restored 16ms capture cadence while still suppressing duplicate-frame QML repaint; steady Home streaming now verifies above 60 FPS.
+- Historical: the side-panel FPS briefly showed Stream FPS; current UI must show effective FPS (`min(Guest, Stream, Render)`) so delivery cadence cannot masquerade as visible smoothness.
 - Switched the default AVD hardware config to the installed Google Play system image when available, enabling real Play Store / Play services support.
 - Added support app provisioning for Material Files from `third_party/android-apps/material-files.apk`, giving Chimera a real file manager package instead of a non-launchable DocumentsUI shortcut.
 - Updated Chimera Launcher to keep the four required entries pinned while appending all launchable apps, so Google Play-installed apps appear on Home automatically.
@@ -72,6 +73,44 @@
 - Changed the side-panel FPS to effective FPS (`min(Guest, Stream, Render)`) so Stream delivery can no longer masquerade as true visible smoothness.
 - Runtime dynamic-flow evidence still does not prove true 60 FPS: notification/scroll smoke reached Stream `61.3 FPS` while Guest/Render were only `8.9 FPS`; a longer flow reached Guest `13.9` / Render `12.9`. True 60+ now requires shared memory/shared texture capture and a scene graph texture renderer.
 - Removed the low-resolution raw capture default after user feedback: lowering capture below 1920x1080 is no longer allowed as a performance shortcut.
+- Added experimental gRPC MMAP `streamScreenshot` capture behind `CHIMERA_GRPC_TRANSPORT=mmap`; fixed top-down orientation and removed full-frame hash cost, but kept it opt-in because latest stock emulator smoke only reached about 12 FPS at 1920x1080.
+- Strengthened host audio/resource guard after regression: qemu priority `below_normal` before child resume, EcoQoS for low-priority emulator processes, Quick Boot load/save both opt-in, guest audio disabled by default, and gRPC idle duplicate cadence lowered to 250ms.
+- Changed raw gRPC/MMAP fallback requests back to RGBA8888 at 1920x1080 so Qt D3D11 texture upload no longer pays RGB888 -> RGBA conversion in the render path.
+- Added a stricter startup isolation pass for host audio: emulator/qemu now starts under idle startup priority for the first 30 seconds, then returns to below-normal steady priority; low-priority processes also receive memory priority and power throttling hints.
+- Extracted `SharedD3D11TexturePublisher` as the reusable producer contract for named D3D11 shared texture metadata; `shared_d3d11_texture_producer` now uses it and defaults to 1920x1080/60.
+- Added an EmuGL-side `ChimeraSharedTextureBridge` hook in `libOpenglRender::FrameBuffer::post()`; when it publishes a shared texture frame successfully, the old `ColorBuffer::readback()` callback is skipped.
+- Added host runtime opt-in for modified EmuGL shared texture transport through `--emugl-shared-texture` / `CHIMERA_ENABLE_EMUGL_SHARED_TEXTURE=1`; host now auto-synchronizes `CHIMERA_D3D11_TEXTURE_*` and `CHIMERA_EMUGL_D3D11_TEXTURE_*` names before emulator launch.
+- Added `CHIMERA_EMULATOR_PATH` to run a custom emulator without replacing the stock SDK runtime; Chimera prepends the custom emulator's `lib64/`, `lib/`, and binary directory to `PATH` before launch.
+- Added `scripts/verify-true-1080p60.ps1` as a fail-closed runtime gate: it requires custom EmuGL shared texture, Android `wm size >= 1920x1080`, dynamic-flow `CHIMERA_PERF effective >= 60`, and rejects raw gRPC/ADB/screenrecord fallback.
+- Added `CHIMERA_LOG_PATH` and `CHIMERA_PERF guest=... stream=... render=... effective=...` log output so runtime performance gates do not depend on UI screenshots or human-readable FPS text.
+- Added modern gfxstream shared texture runtime probing: stock `libgfxstream_backend.dll` is now explicitly rejected as `stock gfxstream runtime; Chimera gfxstream bridge will not load`, while modified runtimes require a valid `chimera-gfxstream-shared-texture.json` manifest.
+- Added `--gfxstream-shared-texture`, `CHIMERA_ENABLE_GFXSTREAM_SHARED_TEXTURE=1`, and `CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE=1`; strict gfxstream mode fails closed instead of falling back to raw gRPC/ADB or stock emulator HWND.
+- Added `scripts/write-chimera-gfxstream-runtime-manifest.ps1` and unit coverage for stock/modified/invalid gfxstream runtime detection.
+- Hardened modified gfxstream attestation: manifest alone is no longer trusted. `InstanceManager::probeEmulatorRuntime()` and `scripts/write-chimera-gfxstream-runtime-manifest.ps1` now require `libgfxstream_backend.dll` to contain the `ChimeraGfxstreamSharedTextureBridge` marker and a compatible SDK ABI export such as `gfxstream_backend_set_screen_background` before a runtime can be treated as Chimera shared texture capable.
+- Updated `scripts/verify-true-1080p60.ps1` to default to `-RuntimeKind Gfxstream`, with `-RuntimeKind EmuGL` only for explicit legacy checks. This prevents the Android 34 Play Store path from accidentally validating the old classic EmuGL artifact.
+- Tightened the legacy EmuGL renderer hook for host-audio safety: strict shared texture mode now suppresses `m_onPost` / `ColorBuffer::readback()` fallback, and hard shared texture initialization failures are latched so the renderer does not retry and emit errors every frame.
+- Reduced ADB H.264 fallback overhead by removing redundant ffmpeg scaling, applying low-interference helper process policy, and publishing decoded BGRA frames through `SharedD3D11TexturePublisher` before falling back to QImage.
+- Locked the product launch path to headless: `InstanceConfig` / `VirtualMachineConfig` now default to `-no-window`, old `headless=false` instance settings normalize back to headless, and `--native-embed` requires `--allow-unsafe-native-window`.
+- Hardened headless launch at the Windows process layer: formal emulator starts now request hidden process windows as well as `-no-window`, so the stock Android Emulator UI/toolbars cannot briefly appear in the product path.
+- Hardened the unsafe native-window gate: legacy unsafe display environment variables are ignored, and the 1080p/60 verifier clears them before launch so it cannot accidentally expose a stock Android Emulator window.
+- Added a second hard gate for visible stock Android Emulator windows: even unsafe native/window-capture CLI paths now require `CHIMERA_ALLOW_UNSAFE_VISIBLE_EMULATOR_WINDOW=1`, and `InstanceManager` normalizes accidental visible-window configs back to headless.
+- Tightened the visible-window gate again: `CHIMERA_ALLOW_UNSAFE_VISIBLE_EMULATOR_WINDOW=1` is now only an allowance, not a launcher. The same Chimera CLI invocation must explicitly enable unsafe native embed/window capture so `CHIMERA_VISIBLE_EMULATOR_DIAGNOSTICS_SESSION=1` is set; otherwise `InstanceManager` normalizes back to headless.
+- Added a headless visible-window watchdog: after emulator launch, Chimera inspects the emulator/qemu process tree for visible Win32 windows and terminates the tree if a native Android Emulator window leaks into the formal headless path.
+- Added strict shared-texture watchdog behavior: required EmuGL/gfxstream shared texture mode now exits with code 3 after Android boot if the capture is not configured, the metadata mapping never appears, or no first frame is produced. The 1080p/60 verifier rejects these failures and no longer leaves black-screen/0 FPS states to linger.
+- Confirmed current public source mismatch: SDK Emulator 36.5.11 reports build id `15261927`, while local `sdk-release` gfxstream source is `13278158` and `emu-36-1-release` is `12579432`. Neither source snapshot can be treated as a matching modified runtime for true 1080p/60.
+- Added an SDK 36.5.11 gfxstream proxy runtime probe. The proxy preserves the stock backend ABI, boots the Play Store AVD through Chimera's headless path at 1920x1080 / 320 dpi, and confirms the active initialization hooks are `initLibrary` and `android_setOpenglesRenderer`; it is still a probe (`sharedTextureProducer=false`), not a 1080p/60 producer.
+- Expanded the stock gfxstream proxy with typed, low-risk C export probes for natural `stream_renderer_*` resource lifecycle calls and `gfxstream_backend_*` screen/window signals. These probes only log observed calls and return codes; they do not map/read/export handles proactively and remain marked `sharedTextureProducer=false`.
+- Added `scripts/prepare-chimera-gfxstream-deps.ps1` and updated `scripts/build-chimera-gfxstream-runtime.ps1` so modified gfxstream can be built from `tmp\aosp\hardware\google\gfxstream` with MSVC.
+- Added the MSVC compatibility patch set for upstream gfxstream/AEMU into `scripts/apply-chimera-gfxstream-patch.ps1`, including GNU attributes/atomics, designated initializers, compound literals, `__PRETTY_FUNCTION__`, and `offsetof` name-collision fixes.
+- Built and packaged experimental `build\chimera-gfxstream-runtime*` artifacts, but the standalone-built gfxstream DLL is not ABI-compatible with SDK Emulator 36.5.11 and must not be used as completion evidence.
+- Verified by direct boot comparison: stock SDK emulator boots the same AVD in about 36 seconds, while the standalone modified gfxstream runtime leaves QEMU alive but produces no ADB device after 180+ seconds.
+- Tightened the standalone gfxstream runtime gate again after a bad-runtime probe: SDK 36.5.11-compatible gfxstream runtimes must now include SDK runtime imports (`libandroid-emu-agents.dll`, `libandroid-emu-protos.dll`, `libandroid-emu-metrics.dll`) in addition to Chimera markers, manifest, and ABI exports.
+- Verified the bad-runtime fail-closed path: `chimera-ui --gfxstream-shared-texture` exits with code 3 when the custom runtime is missing SDK imports, logs `SDK runtime imports are missing`, and leaves no Chimera/emulator/qemu/adb processes running.
+- Hardened `VirtualMachine` state monitoring by making VM state atomic so the background emulator/qemu process-tree monitor cannot race start/stop/state queries while enforcing fail-closed behavior.
+- Tightened modified gfxstream attestation again: manifests now record `gfxstreamSourceSnapBuildId` and `baseEmulatorBuildId`, and the host/runtime writer rejects runtimes whose source snapshot build id does not match the SDK emulator build id.
+- Verified the current `sdk-release` gfxstream artifact is crash-prone mixed ABI: source snapshot build id `13278158` does not match SDK Emulator 36.5.11 build id `15261927`; direct runtime probe can load the DLL but exits with `0xC0000005` during gfxstream backend initialization.
+- Reduced gRPC MMAP fallback UI/audio pressure by publishing RGBA8888 frames through `SharedD3D11TexturePublisher` before falling back to QImage; diagnostic smoke confirmed the D3D11 publisher starts at `1920x1080`, but effective FPS remains about `29.4`, so it is not a 1080p/60 proof.
+- Added `LowInterferenceProcess` and applied it to direct adb/ffmpeg `QProcess` launch paths in boot/setup, QML Android controls, ADB raw fallback, and screen recording so helper processes do not bypass the emulator/qemu resource policy.
 - Fixed `InstanceManager` saved/live instance visibility, invalid iterator usage, saved-only start path, and instance name validation.
 - Fixed QMP auto-reconnect not starting after failed connection/socket error.
 - Fixed `MacroEngine` playback thread replacement risk.
@@ -79,24 +118,34 @@
 - Removed stale `main.moc` include warning from `src/host/ui/main.cpp`.
 
 ### Current known risks
-- gRPC streaming is the default display path; native window embedding remains opt-in only via `--native-embed` because it can black out the emulator Qt surface and leak the toolbar.
+- gRPC streaming is the default display path; native window embedding remains unsafe opt-in only via `--native-embed --allow-unsafe-native-window` because it can black out the emulator Qt surface and leak the toolbar.
 - Latest live boot test removed stale AVD locks, reached Android boot complete, reported `1920x1080` / `320 dpi`, and ADB screenshot showed a usable landscape Home screen.
 - Emulator boot depends on `-crash-report-mode never`; without it, Android Emulator can stall on a crash-report consent dialog before QEMU/ADB becomes available.
-- gRPC RGB888 stream is still available, but capture requests are clamped to at least 1920x1080. Full-resolution performance must be solved through shared memory/shared texture/custom producer work, not by downscaling the capture request.
+- gRPC raw fallback now requests RGBA8888 and capture requests are clamped to at least 1920x1080. Full-resolution performance must be solved through shared memory/shared texture/custom producer work, not by downscaling the capture request or hiding conversion cost in the render path.
 - Perf metrics are now separated: `guestFps` means content-changing guest frames, `streamFps` means capture replies, `renderFps` means Qt paints, and `duplicateRate` exposes repeated frames. A static HOME screen should report Guest 0 FPS and high duplicate rate.
 - Runtime smoke verified `com.chimera.launcher` is installed and becomes HOME; launching Settings changes foreground to `com.android.settings`.
 - Latest launcher smoke verified UI tree contains `CHIMERA`, ADB screenshot is not black, and tapping Settings from the launcher opens `com.android.settings`.
 - Latest launcher smoke verified UI tree contains Google Play / 檔案管理 / 瀏覽器 / 設定, does not contain TMobile, and the ADB screenshot shows the Android status bar persistently visible.
 - Latest app provisioning smoke verified Google Play, Material Files, Chrome, and Settings all launch from Chimera Home into their expected foreground packages.
 - Latest Home smoke verified `TMobile` is absent, Settings is not duplicated, and there are no disabled fixed tiles; file/browser fall back to Chimera activities if Pixel/Chrome apps are missing.
-- Latest host-contention smoke verified qemu stays at `Normal` (not High), gRPC capture starts after Android boot complete, and no Chimera/qemu process remains afterward. Stream can still hit 60+, but the main UI now reports the lower effective FPS.
+- Latest host-contention smoke verified qemu starts at `BelowNormal`, guest audio is disabled by default, guest resolution remains `1920x1080`, and gRPC capture starts after Android boot complete. Stream can still hit 60+, but the main UI reports the lower effective FPS.
 - Latest steady FPS smoke after boot warm-up measured Stream FPS samples `61.9, 62.7, 63.1, 63.2, 62.4` (min 61.9, avg 62.7).
-- Full 1920×1080 raw `getScreenshot` currently drops to ~15-30 FPS; true full-res 60 FPS needs shared memory/shared texture capture instead of raw gRPC payloads.
+- Full 1920×1080 raw `getScreenshot` / MMAP capture currently is not a proven 60 FPS path; true full-res 60 FPS needs Android/emulator shared D3D11 texture production instead of CPU screenshot/readback payloads.
+- Android/emulator producer integration is still incomplete at runtime: QEMU/EmuGL source now has a `FrameBuffer::post()` shared texture hook and host opt-in env wiring, but it still requires a custom emulator build/load and dynamic-flow validation before it counts as true 1080p/60.
+- The latest custom EmuGL runtime artifact rebuild completed with the strict bridge present in `lib64OpenglRender.dll`; only `emulator.exe -help` was run, not a full Android boot.
+- True Android 1080p/60 is now gated by `scripts\verify-true-1080p60.ps1`; stock SDK gfxstream runtime correctly fails because it lacks the Chimera bridge, and the standalone modified gfxstream runtime correctly fails ABI/boot validation. There is still no PASS evidence for the full objective.
+- Modified gfxstream runtime artifacts are build/probe evidence only. The next production path must use SDK 36.5.11-compatible source/ABI or a stock-ABI wrapper, then pass full Android dynamic-flow verifier without raw gRPC/ADB/screenrecord fallback.
+- Current standalone `sdk-release` and `emu36` gfxstream artifacts both lack SDK runtime imports and stop before `FrameBuffer::initialize()`; do not use them as runtime candidates.
+- Current `sdk-release` source snapshot build id `13278158` also does not match SDK Emulator 36.5.11 build id `15261927`; even if a custom DLL loads, it must fail closed unless the source snapshot/build id matches.
+- `CHIMERA_GFXSTREAM_PROXY_WRAP_RENDERLIB=1` / `CHIMERA_GFXSTREAM_PROXY_WRAP_RENDERER=1` remain probe-only. A CPU `android_setPostCallback` path would be readback and is not an acceptable 1080p/60 solution.
+- Full self-written Android VM is not the near-term plan: it would duplicate WHPX/QEMU/ranchu/virtio/gfxstream/Play image/ADB/snapshot/audio/input. Current architecture keeps Android compatibility through a fork/modified Android Emulator runtime while replacing the host shell, headless display producer, input, and resource policy where needed. The product path must stay headless and must not expose or multi-open the native Android Emulator window.
+- Modified gfxstream shared texture is the next production-runtime direction for Android 34 Play Store images; classic EmuGL artifacts remain build/probe evidence only because they do not boot the modern `kernel-ranchu` image.
+- Fixed `initLibrary` ABI crash: the C shim `void*(void*)` in `gfxstream_proxy.c` was replaced with `extern "C" __declspec(dllexport) gfxstream::RenderLibPtr initLibrary()` in `gfxstream_proxy_renderlib.cpp`. Boot-before `-1073741819 AV` no longer occurs; proxy smoke confirms `initLibrary=1 androidSetOpenglesRenderer=1 rendererVtable=1`. Analyzer gate unchanged — `no 1920x1080 GPU display/resource signal` still FAIL until a GPU display-post hook is present.
 - ADB raw screencap fallback remains very slow and is intentionally throttled to avoid resource spikes.
 - Stable game-level 60 FPS still depends on the guest workload and emulator GPU renderer; current verification proves only Stream delivery can hit roughly 60 FPS, while dynamic Guest/Render FPS on the raw path is still too low.
-- qemu/emulator must never be raised above `Normal` by default; host headroom should come from vCPU limits, delayed capture, and capture path efficiency rather than High priority.
+- qemu/emulator must never be raised above `Normal` by default; current startup path uses `Idle` for the first 30 seconds, then `BelowNormal` + memory priority / power throttling to protect foreground browser/audio, with host headroom coming from vCPU limits, delayed capture, and capture path efficiency rather than High priority.
 - `ProcessLauncher` now warns when Job Object assignment fails; if that warning appears, inspect for orphan `qemu-system*` before another launch.
-- Quick Boot snapshot is opt-in (`CHIMERA_QUICK_BOOT=1`) until snapshot state reliability is hardened; use full boot as the default when diagnosing display or ADB state.
+- Quick Boot is default-off to protect host audio from snapshot load/save I/O spikes; set `CHIMERA_QUICK_BOOT=1` only when explicitly validating a known-good snapshot. Snapshot save/rebuild is opt-in through `scripts/verify-quick-boot.ps1` or `CHIMERA_SAVE_QUICK_BOOT=1`, not a default startup/shutdown task. Default full boot must keep `-no-snapstorage`, and normal stop/verifier cleanup must not use `adb emu kill`.
 - Quick Boot runtime regression should use `scripts/verify-quick-boot.ps1 -MaxQuickBootSec 25`; the script does a clean local emulator run and removes stale AVD locks only after confirming no emulator/qemu process is alive.
 - Chimera Launcher is a clean HOME replacement, not yet a full custom ROM layer; deeper BlueStacks parity still needs package pruning, store/search UX, and keymap/game integrations.
 - Full app switching can still show short Stream FPS dips even when steady Home sits near 60 FPS; game workload profiling remains separate from Home/display smoke.
@@ -507,12 +556,104 @@ Test project D:/Workspace_cloud/Personal_Project/chimera/build
 - Latest 1920x1080 shared texture smoke measured `Guest/Stream/Render 59.9 FPS`, average `16.3ms`, `Dup: 0`, with no leftover processes.
 - Current status: host side is ready; Android/emulator producer is still missing, so true dynamic 1080p/60 FPS remains unproven until producer integration and runtime flow tests.
 
+## 2026-05-31 Update — Audio regression containment
+
+- Reconfirmed the low-interference defaults: 2 vCPU, guest audio disabled, emulator/qemu `below_normal` priority with EcoQoS before child resume, Quick Boot load/save opt-in.
+- Unary gRPC `getScreenshot` remains a fallback only; default pacing is conservative and must not use 16ms 1080p readback as a pseudo-60 FPS path.
+- Added opt-in `CHIMERA_VIDEO_TRANSPORT=screenrecord` for ADB H.264 diagnostics, with low-frequency restart and adb/ffmpeg stderr tails in capture errors.
+- Verification: `chimera-ui` and `test-grpc-framebuffer-capture` build passed; non-integration unit tests are 19/19 PASS; `chimera-ui --no-emulator` smoke left no Chimera/emulator/qemu/ffmpeg processes.
+- Current status: this fixes host audio regression risk; it does not prove true Android dynamic 1080p/60 FPS.
+
+## 2026-06-01 Update — Custom runtime gate
+
+- Added `InstanceManager::probeEmulatorRuntime()` so shared texture opt-in distinguishes stock gfxstream, legacy EmuGL, and Chimera-manifested custom EmuGL runtimes.
+- Stock Android SDK emulator is now explicitly classified as unsupported for `ChimeraSharedTextureBridge` because it has `libgfxstream_backend.dll` and no legacy `lib64OpenglRender.dll`.
+- `--emugl-shared-texture` sets a runtime request marker; unsupported runtimes set `CHIMERA_EMUGL_SHARED_TEXTURE_RUNTIME_READY=0`, and the host skips EmuGL shared texture capture instead of pretending a producer exists.
+- Added `CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE=1` for fail-fast validation when raw fallback is not acceptable.
+- Added `scripts/write-chimera-emugl-runtime-manifest.ps1` to stamp a custom legacy EmuGL runtime only when `lib64/lib64OpenglRender.dll` is present; it refuses stock gfxstream runtimes.
+- Verification: targeted `test-instance-manager` + `test-grpc-framebuffer-capture` are 2/2 PASS; full non-integration unit tests are 19/19 PASS; manifest script rejects stock runtime and writes a valid 1920x1080/60 manifest for a fake legacy runtime.
+
+## 2026-06-01 Update — Custom EmuGL build probe
+
+- Added `scripts/build-chimera-emugl-runtime.ps1 [-AospPrebuiltsDir <path>]` to run the legacy emulator build through WSL without converting the checked-out qemu subtree line endings.
+- Installed WSL `mingw-w64`; `x86_64-w64-mingw32-gcc` is now available.
+- The build wrapper now converts CRLF text files in a temporary copy, then runs `android-rebuild.sh --mingw --no-tests`.
+- Current blocker is confirmed: this repo has only the qemu subtree and is missing the full AOSP `prebuilts/gcc` tree required by `android-configure.sh`.
+- The wrapper exits with code `3` on that blocker and does not write a runtime manifest, so a missing custom runtime cannot be mistaken for a working shared texture path.
+
+## 2026-06-01 Update — Resolution floor hardening
+
+- Extended the 1920x1080 floor beyond capture requests: AVD hardware config now clamps `hw.lcd.width/height` to at least 1920x1080.
+- Emulator launch args now clamp `-window-size` to at least `1920x1080`, so a low saved config cannot silently boot a lower-resolution guest.
+- Instance configs are now normalized on load/create/save, so low historical or UI-provided sizes cannot remain as valid saved settings.
+- Added `test-virtual-machine` coverage proving `VirtualMachineConfig{width=800,height=450}` still emits `-window-size 1920x1080`.
+- Added `test-instance-manager` coverage proving `InstanceConfig{width=800,height=450}` is saved/read back as `1920x1080`.
+
+## 2026-06-01 Update — Startup audio regression guard
+
+- Default instance/VM process priority is now `below_normal`; saved configs normalize empty priority to `below_normal` and cap `high/gaming/above_normal/realtime` to `normal`.
+- `VirtualMachine` no longer maps any config to High/Realtime priority, and `ProcessLauncher` caps high priority requests to Normal before applying process priority.
+- Emulator startup now reapplies process-tree priority/EcoQoS every 50ms for the first 5 seconds, then continues at 1s cadence, covering qemu children that appear after the parent resumes.
+- The UI screen-size presets no longer include sub-1080p entries, and `QmlAndroidControls::setScreenSize()` clamps ADB `wm size` requests to at least 1920x1080.
+- Verification: targeted priority/resolution tests passed; full non-integration unit tests were 19/19 PASS at that point. Full Android boot was intentionally not run in this pass to avoid disturbing host audio again.
+
+## 2026-06-01 Update — Legacy backend 1080p floor
+
+- Legacy QEMU and HCS paths now follow the same no-downscale rule as the production emulator path.
+- `QemuInstanceConfig` defaults to `1920x1080`, and `QemuBackend` normalizes lower display sizes before building `virtio-gpu-pci,xres/yres`.
+- `main.cpp` clamps `qemu.json` and `cuttlefish.json` display settings to at least `1920x1080`.
+- HCS synthetic video monitor JSON now uses `HorizontalResolution=1920` and `VerticalResolution=1080`.
+- `scripts/test-vnc-display.ps1` now uses `virtio-gpu-pci,xres=1920,yres=1080` for R&D VNC smoke runs.
+- Added `test-qemu-backend` coverage for QEMU/HCS resolution floors; full non-integration unit tests are now 20/20 PASS.
+
+## 2026-06-01 Update — gRPC fallback RGBA render path
+
+- Unary `GrpcFramebufferCapture` now requests RGBA8888 instead of RGB888, matching the Qt D3D11 texture upload format.
+- `GrpcFramebufferCapture::imageFromTopDown()` always returns `QImage::Format_RGBA8888`; RGB888 responses remain supported but are expanded in the capture layer, not in `GuestDisplay::updatePaintNode()`.
+- Experimental `GrpcMmapFramebufferCapture` now requests RGBA8888 as well and uses `.rgba` mmap temp files.
+- Verification: `test-grpc-framebuffer-capture` is 1/1 PASS, and the full non-integration suite is 20/20 PASS. Full Android runtime was not launched in this pass to avoid host audio disturbance.
+
+## 2026-06-01 Update — Host audio startup isolation
+
+- Rechecked the startup path: default raw gRPC/MMAP/H.264 capture remains gated behind Android `sys.boot_completed=1`, so this pass targets emulator/qemu startup contention.
+- `VirtualMachine::start()` now launches emulator under startup priority instead of steady priority. For the default below-normal config, startup priority is `IDLE_PRIORITY_CLASS`.
+- The emulator process tree is re-applied every 50ms for the first 30 seconds, covering qemu children that appear after the parent resumes; then it tracks the steady below-normal priority for another 90 seconds.
+- `ProcessLauncher::applyPriority()` now applies memory priority and `ProcessPowerThrottling` for below-normal/idle processes, including ignore timer resolution where available.
+- Verification: `test-process-launcher`, `test-virtual-machine`, and `test-instance-manager` are 3/3 PASS; the full non-integration suite is 20/20 PASS.
+- Controlled runtime smoke launched `chimera-ui.exe` hidden for 12 seconds and confirmed `emulator.exe` plus `qemu-system-x86_64-headless.exe` both ran at Windows priority `4` (Idle); force-stopping the host left no Chimera/emulator/qemu process behind.
+
+## 2026-06-01 Update — No-downscale cleanup
+
+- Shared D3D11 producer and capture metadata now reject dimensions below `1920x1080`; shared texture cannot be used as a hidden low-resolution fast path.
+- CPU shared-memory framebuffer metadata now follows the same floor: frames below `1920x1080` are rejected and do not emit `frameReady()`.
+- `configs/qemu.json`, `configs/cuttlefish.json`, `scripts/run.py`, and the HCS diagnostic scripts now enforce or default to at least `1920x1080`.
+- Documentation and lessons now mark older `800x450`, `960x540`, `1024x576`, and `1280x720` performance shortcuts as historical/superseded, not acceptable completion evidence.
+- Verification: targeted no-downscale/capture tests are PASS, the full non-integration suite is 20/20 PASS, touched Python scripts compile, and low-resolution shared-memory/D3D11 producers do not emit usable frames.
+- Status remains PARTIAL for true FPS: no-downscale guardrails are stronger, but Android dynamic `Guest/Stream/Render` 60+ still requires a working custom/shared texture producer runtime.
+
+## 2026-06-01 Update — Custom EmuGL runtime artifact gate
+
+- Runtime readiness now requires the complete legacy EmuGL DLL set, not just `lib64OpenglRender.dll`: `lib64EGL_translator.dll`, `lib64GLES_CM_translator.dll`, and `lib64GLES_V2_translator.dll` are required too.
+- `chimera-emugl-shared-texture.json` must have a valid schema with `ChimeraSharedTextureBridge`, `D3D11SharedTexture`, at least `1920x1080`, and `targetFps>=60`.
+- The manifest writer refuses incomplete runtimes, and the runtime build script copies the full required DLL set or fails the build artifact step.
+- Verification: `test-instance-manager` is PASS, the full non-integration suite is 20/20 PASS, manifest script rejects missing translator DLLs, and PowerShell parser checks passed.
+- Status remains PARTIAL: `scripts\build-chimera-emugl-runtime.ps1` can now build the full legacy EmuGL DLL-only artifact through WSL system MinGW, but there is still no custom `emulator.exe` / runtime manifest, so Android dynamic 60 FPS validation remains blocked.
+
+## 2026-06-02 Update — Classic EmuGL executable probe
+
+- `scripts\build-chimera-emugl-runtime.ps1` now packages a classic `emulator.exe` / `emulator64-x86.exe`, the full legacy EmuGL DLL set, MinGW runtime DLLs, and `chimera-emugl-shared-texture.json`.
+- Host startup now marks this runtime as `useClassicEmuglRuntime` and removes unsupported modern emulator flags such as `-grpc`, `-window-size`, `-fixed-scale`, `-vsync-rate`, `-no-metrics`, and `-crash-report-mode`.
+- `scripts\verify-true-1080p60.ps1` defaults to `build\chimera-emugl-runtime\emulator.exe`, so strict EmuGL verification no longer accidentally tests the stock SDK emulator.
+- Verification: parser checks, manifest writer, parse-only verifier, `emulator64-x86.exe -help`, targeted build, and `ctest -R "test-virtual-machine|test-instance-manager"` passed.
+- Runtime status remains blocked for true Android 1080p/60: the classic runtime cannot boot the current Android 34 `google_apis_playstore/x86_64` AVD because the image provides `kernel-ranchu`, while the classic path expects/parses `kernel-qemu`. The next production path is a modern ranchu/gfxstream shared texture bridge, not stock emulator HWND capture.
+
 ## Known Limitations
 
 | Limitation | Reason | Resolution Path |
 |------------|--------|----------------|
 | Native child window overlays QML content | Win32 child windows are composed above Qt Quick content | Main controls now stay in the right-side panel; viewport overlays remain stream-mode only |
-| Game workload can still drop below 60 FPS | Android Emulator screenshot/gRPC readback and guest workload overhead remain | Default gRPC path is stabilized for 60+ FPS on Home; shared GPU texture/custom QEMU remains the long-term capture path |
+| Game workload can still drop below 60 FPS | Android Emulator screenshot/gRPC readback and guest workload overhead remain | gRPC/raw readback is only a conservative fallback; true 1080p/60 requires shared GPU texture/custom emulator runtime |
+| Stock emulator HWND capture is not product-ready | It exposes the native Android Emulator window/toolbars and failed runtime smoke | `--window-capture` is unsafe opt-in only; production must use headless backend + custom shared texture runtime |
 | VirtIO audio not fully wired end-to-end | Emulator accepts `virtio-snd-pci`, but host/guest audio path still needs runtime validation | Custom QEMU / Android HAL integration |
 | QMP mouse input needs runtime validation | Current schema compiles but click/move behavior must be verified on emulator | Test against running emulator and adjust event payload |
 | Keyboard mapping drag-and-drop | Not yet implemented | Future polish |
@@ -582,7 +723,7 @@ Test project D:/Workspace_cloud/Personal_Project/chimera/build
 
 ## Optimizations Applied
 
-1. **Frame capture payload**: gRPC switched from RGBA8888 to RGB888 and 960px stream width; ADB fallback throttled to 1s compatibility mode
+1. **Frame capture payload**: current gRPC raw fallback requests RGBA8888 at a 1920x1080 floor to match Qt D3D11 upload; older low-res/RGB888 shortcuts are no longer valid completion evidence
 2. **Error recovery**: `AdbFramebufferCapture` skips frame if previous `QProcess` still running
 3. **QMP port fix**: `-ports qmpPort,adbPort` correctly maps console/QMP and ADB
 4. **Dynamic DLL loading**: ANGLE (`libEGL.dll`) and HCS (`computecore.dll`) loaded at runtime via `QLibrary`
@@ -601,3 +742,68 @@ D:\Workspace_cloud\Personal_Project\chimera\
 ---
 
 *Report generated automatically by build agent.*
+
+## 2026-06-12 — Session 66
+
+- 架構邊界固定：不從零重寫完整 Android VM；保留 Android Emulator/QEMU/ranchu/gfxstream/Play image 相容核心，但正式產品只能是 Chimera 單一視窗 + headless backend。
+- raw gRPC/MMAP/screenrecord/ADB fallback 改為 CLI-only 診斷；舊 `CHIMERA_ALLOW_RAW_CAPTURE_FALLBACK` 只警告不生效。
+- `write-chimera-gfxstream-runtime-manifest.ps1` 現在會先刪 stale manifest，再做 marker / manifest / SDK ABI / SDK imports gate，避免不合格 runtime 假 ready。
+- `QemuBackend` 預設低干擾：2 vCPU、2048MB、hidden launch、startup `Idle`，暖機後 `BelowNormal`。
+- `ChimeraWindow` 不再轉發 input；mouse/wheel/key 只由 `GuestDisplay` 映射成 guest 座標後送出，避免雙送造成滾輪/點擊卡頓。
+- `apply-chimera-gfxstream-patch.ps1` 補 headless Vulkan display-post producer patch，bridge enabled 且無 surface 時仍能走 `recordCopy()` / `publishFrame()`。
+- 驗證：`chimera-ui` build PASS；targeted tests 5/5 PASS；完整 non-integration `ctest` 20/20 PASS；fail-closed smoke exit 3 且無殘留 process。
+- `verify-true-1080p60.ps1` 仍未 PASS，正確失敗於 `incompatible gfxstream runtime ABI; required screen background export is missing`。目前不能宣稱效能達標；下一步是補齊 custom gfxstream runtime SDK 36 ABI/imports。
+## 2026-06-06 — Session 61
+
+- 收緊 gfxstream shared texture gate：舊 GL bridge marker 不再能產生或通過 gfxstream manifest。
+- gfxstream runtime ready 需要 Vulkan display-post 證據：`ChimeraGfxstreamVulkanSharedTextureBridge`、`renderPath=VulkanDisplayVkPost`、`abi=sdk-emulator-36`、SDK ABI export。
+- `build\chimera-gfxstream-runtime-sdk-release` 目前 verifier 仍失敗：Android/ADB 未起、FPS 為 0；不可當 true 1080p/60 證據。
+- 驗證：`test-instance-manager` PASS；完整 non-integration `ctest` 20/20 PASS。
+- 下一個 blocker：實作 source-patched gfxstream Vulkan `DisplayVk::postImpl` shared D3D11 producer，並讓 `scripts\verify-true-1080p60.ps1` 實跑 PASS。
+
+## 2026-06-06 — Session 62
+
+- 確認不採「從零自研 Android 模擬器」作為短期修法；正式架構是 Chimera shell + headless Android Emulator/QEMU/gfxstream 相容核心 + custom display producer。
+- `build\chimera-gfxstream-proxy-runtime` 可重建，保留 stock SDK 36.5.11 ABI，proxy backend export count 348。
+- `RenderLib` C++ wrapper 已撤回；stock backend 未輸出必要 C++ 內部符號，跨 DLL virtual wrapper 不穩定。
+- headless smoke 通過：emulator/qemu 均帶 `-no-window -no-audio`，未外露原生 Emulator 視窗，結束後無殘留 process。
+- true 1080p/60 尚未以 shared texture verifier 證明；下一步仍是 modern gfxstream Vulkan display-post shared D3D11 producer。
+
+## 2026-06-06 — Session 63
+
+- 重新確認架構邊界：不從零寫完整 Android VM；保留 Android 相容核心，但正式產品面只允許 Chimera 單一視窗。
+- 重新驗證 headless visible-window gate：`-no-window`、hidden process launch、visible HWND watchdog、Job Object cleanup 皆存在。
+- 驗證：`test-process-launcher` / `test-virtual-machine` 2/2 PASS，`chimera-ui` build 通過。
+- 殘留程序檢查：沒有 `chimera-ui` / `emulator` / `qemu-system*` / `adb`。
+
+## 2026-06-06 — Session 64
+
+- 新增 gfxstream proxy RenderLib/Renderer C++ wrapper probe；`FeatureSet` copy/assign 已在 proxy object 內補齊。
+- wrapper 預設關閉：`initLibrary` 只 forward stock `RenderLibPtr`，避免影響 bootable baseline。
+- `CHIMERA_GFXSTREAM_PROXY_WRAP_RENDERER=1` 實測會讓 emulator 早退，不可當正式 shared texture 接線點。
+- 驗證：proxy runtime build PASS；default hidden/no-audio probe 達 `sys.boot_completed=1`，boot completed in 29283 ms，`leftoverCount=0`。
+
+## 2026-06-13 — Session 70
+
+- `VirtualMachine::start()` 啟動前會清理佔住 Chimera ports `5554/5555/8554` 且 process 名稱為 `emulator.exe` / `qemu-system*` 的 stale VM tree，降低雙 VM、多開原生視窗與 host audio 卡頓回歸風險。
+- `NativeEmulatorView` 只在 unsafe native embed diagnostics 啟用時 pin PID / 可見；預設正式路徑維持 `GuestDisplay` + headless backend。
+- 驗證：targeted tests 3/3 PASS；Release build PASS；完整 non-integration `ctest` 20/20 PASS；`--no-emulator` smoke 無 native pin log。
+- true 1080p/60 尚未完成；仍需 matching SDK gfxstream shared texture producer。
+
+## 2026-06-13 — Session 71
+
+- 架構邊界固定：不從零重寫完整 Android VM；Chimera 應保留 Android Emulator/QEMU/gfxstream 作 headless 相容核心，改寫 host shell、display producer、input 與 resource policy。正式路徑只允許 Chimera 單一視窗。
+- gfxstream Vulkan bridge 已補低頻 runtime 診斷：bridge enabled、`recordCopy()` unavailable/ok、`publishFrame()` failure 會低頻記錄；producer extent 低於 1920x1080 會拒絕。
+- source-patched gfxstream build 已編過 `ChimeraGfxstreamVulkanSharedTextureBridge.cpp` 與 `DisplayVk.cpp`；最後由 manifest gate 正確 fail-closed，因 `sdk-release` source build id `13278158` 不等於 SDK emulator build id `15261927`。
+- 驗證：PowerShell parser PASS；targeted build PASS；targeted `ctest` 2/2 PASS；完整 non-integration `ctest` 20/20 PASS；結束後無 `chimera-ui` / `emulator` / `qemu-system*` / `adb` / `ffmpeg` 殘留。
+- true 1080p/60 尚未完成；不能用 mixed ABI runtime、raw fallback、或原生 Android Emulator 視窗當完成證據。
+
+## 2026-06-13 — Session 72
+
+- 新增 `scripts\analyze-gfxstream-proxy-log.ps1`，用於離線分類 stock-ABI gfxstream proxy log，不啟動 emulator。
+- 分析器只把 1920x1080 `stream_renderer_flush` / `stream_renderer_resource_create` / `gfxstream_backend_setup_window` 視為 GPU display/resource signal；`android_onPost`、`renderer_hook getScreenshot`、`transfer_read_iov` 會標為 CPU readback 風險。
+- 驗證：PowerShell parser PASS；正向合成 log PASS；只有 `android_onPost` 的負向合成 log如預期 fail；proxy runtime build PASS，348 exports；non-integration `ctest` 20/20 PASS。
+- 既有 proxy logs 沒有 1920x1080 GPU display/resource signal，不能當 1080p/60 證據。
+- 子代理研究 matching source / hook 線索因額度限制失敗，沒有可採用結論。
+- 本輪沒有啟動 Android runtime；結束後無 `chimera-ui` / `emulator` / `qemu-system*` / `adb` / `ffmpeg` 殘留。
+- true 1080p/60 尚未完成；下一步仍是 matching SDK gfxstream source/ABI，或用 stock-ABI proxy 找到穩定 GPU display-post hook，再接 D3D11 shared texture producer。

@@ -23,16 +23,34 @@ struct InstanceConfig {
     bool enableVsync = false;
     bool enableRoot = false;
     bool enableAudio = false;            // Enables host audio output via WASAPI
-    bool quickBoot = true;               // Use emulator snapshot quick boot
-    bool headless = false;
+    bool quickBoot = false;              // Opt-in emulator snapshot quick boot
+    bool headless = true;
+    bool allowVisibleEmulatorWindow = false; // unsafe diagnostics only; production keeps emulator headless
     std::string deviceProfile;           // Device spoofing profile name
-    std::string processPriority = "normal";
+    std::string processPriority = "below_normal";
     int qmpPort = 5554;
     std::filesystem::path dataDir;
 
     // Grid position in the multi-instance manager UI
     int gridRow = 0;
     int gridCol = 0;
+};
+
+struct EmulatorRuntimeCapabilities {
+    std::filesystem::path runtimeDir;
+    bool hasLegacyOpenglRender = false;
+    bool hasRequiredEmuglRuntimeDlls = false;
+    bool hasGfxstreamBackend = false;
+    bool hasChimeraSharedTextureManifest = false;
+    bool hasChimeraGfxstreamSharedTextureManifest = false;
+    bool hasChimeraGfxstreamBridgeMarker = false;
+    bool hasCompatibleGfxstreamAbi = false;
+    bool hasSdkGfxstreamRuntimeImports = false;
+    bool hasMatchingGfxstreamBuildId = false;
+    bool hasMismatchedGfxstreamBuildId = false;
+    bool supportsChimeraEmuglSharedTexture = false;
+    bool supportsChimeraGfxstreamSharedTexture = false;
+    std::string status;
 };
 
 /**
@@ -86,6 +104,11 @@ public:
 
     // Returns the OS process ID of the running emulator for an instance (0 if not running)
     uint32_t emulatorProcessId(const std::string &name) const;
+
+    // Probe whether an emulator runtime can load Chimera's modified shared texture
+    // producer. Stock gfxstream runtimes are explicitly not enough.
+    static EmulatorRuntimeCapabilities probeEmulatorRuntime(
+        const std::filesystem::path &emulatorPath);
 
     // Callbacks
     using StateCallback = std::function<void(const std::string &name, VMState state)>;

@@ -16,7 +16,7 @@
       "height": 1080,
       "maxFps": 60,
       "name": "chimera_dev",
-      "processPriority": "normal",
+      "processPriority": "below_normal",
       "quickBoot": false,
       "ramMB": 2048,
       "width": 1920

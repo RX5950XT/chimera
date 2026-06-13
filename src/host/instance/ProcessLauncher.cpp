@@ -5,7 +5,9 @@
 #include <thread>
 #include <array>
 #include <cstdlib>
+#include <mutex>
 #include <tlhelp32.h>
+#include <unordered_set>
 
 namespace chimera::instance {
 
@@ -68,10 +70,96 @@ void terminateProcessId(DWORD pid) {
     CloseHandle(process);
 }
 
+std::string wideToUtf8(const std::wstring &wide) {
+    if (wide.empty()) return {};
+    const int len = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return {};
+    std::string out(static_cast<size_t>(len - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, out.data(), len, nullptr, nullptr);
+    return out;
+}
+
+struct VisibleWindowEnumContext {
+    std::unordered_set<DWORD> processIds;
+    std::vector<std::string> titles;
+};
+
+BOOL CALLBACK collectVisibleWindowTitles(HWND hwnd, LPARAM lParam) {
+    auto *context = reinterpret_cast<VisibleWindowEnumContext *>(lParam);
+    if (!context || !IsWindowVisible(hwnd)) return TRUE;
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == 0 || context->processIds.find(pid) == context->processIds.end()) return TRUE;
+
+    wchar_t title[512] = {};
+    GetWindowTextW(hwnd, title, static_cast<int>(std::size(title)));
+    std::wstring text(title);
+    if (text.empty()) {
+        wchar_t className[256] = {};
+        GetClassNameW(hwnd, className, static_cast<int>(std::size(className)));
+        text = className;
+    }
+    if (!text.empty()) {
+        context->titles.push_back(wideToUtf8(text));
+    }
+    return TRUE;
+}
+
+DWORD safePriorityClass(DWORD priorityClass) {
+    if (priorityClass == IDLE_PRIORITY_CLASS ||
+        priorityClass == BELOW_NORMAL_PRIORITY_CLASS ||
+        priorityClass == NORMAL_PRIORITY_CLASS) {
+        return priorityClass;
+    }
+    return NORMAL_PRIORITY_CLASS;
+}
+
+void warnPolicyFailureOnce(const char* operation, DWORD pid, DWORD error) {
+    static std::mutex mutex;
+    static std::unordered_set<std::string> seen;
+    std::string key = std::string(operation) + ":" + std::to_string(pid) + ":" + std::to_string(error);
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!seen.insert(key).second) {
+            return;
+        }
+    }
+    qWarning() << "[ProcessLauncher]" << operation << "failed:" << error << "pid" << pid;
+}
+
 void applyPriority(DWORD pid, DWORD priorityClass) {
+    priorityClass = safePriorityClass(priorityClass);
     HANDLE process = OpenProcess(PROCESS_SET_INFORMATION, FALSE, pid);
     if (!process) return;
-    SetPriorityClass(process, priorityClass);
+    const bool lowInterference =
+        priorityClass == BELOW_NORMAL_PRIORITY_CLASS || priorityClass == IDLE_PRIORITY_CLASS;
+    if (!SetPriorityClass(process, priorityClass)) {
+        warnPolicyFailureOnce("SetPriorityClass", pid, GetLastError());
+    }
+#ifdef MEMORY_PRIORITY_LOW
+    MEMORY_PRIORITY_INFORMATION memoryPriority = {};
+    memoryPriority.MemoryPriority = lowInterference ? MEMORY_PRIORITY_LOW : MEMORY_PRIORITY_NORMAL;
+    if (!SetProcessInformation(process, ProcessMemoryPriority,
+                               &memoryPriority, sizeof(memoryPriority))) {
+        warnPolicyFailureOnce("SetProcessInformation(ProcessMemoryPriority)", pid, GetLastError());
+    }
+#endif
+#ifdef PROCESS_POWER_THROTTLING_CURRENT_VERSION
+    PROCESS_POWER_THROTTLING_STATE throttling = {};
+    throttling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    throttling.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    if (lowInterference)
+        throttling.StateMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+#ifdef PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
+    throttling.ControlMask |= PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+    if (lowInterference)
+        throttling.StateMask |= PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+#endif
+    if (!SetProcessInformation(process, ProcessPowerThrottling, &throttling, sizeof(throttling))) {
+        warnPolicyFailureOnce("SetProcessInformation(ProcessPowerThrottling)", pid, GetLastError());
+    }
+#endif
     CloseHandle(process);
 }
 
@@ -250,7 +338,8 @@ ProcessLauncher::Result ProcessLauncher::runSync(const std::string &exe, const s
 
 HANDLE ProcessLauncher::runAsync(const std::string &exe, const std::vector<std::string> &args,
                                   OutputCallback onStdout, OutputCallback onStderr,
-                                  bool startHidden) {
+                                  bool startHidden,
+                                  DWORD initialPriorityClass) {
     // Build command line — use proper quoting unless legacy mode requested
     std::wstring cmdLine;
     if (useLegacyLauncher()) {
@@ -334,6 +423,8 @@ HANDLE ProcessLauncher::runAsync(const std::string &exe, const std::vector<std::
                    << "child process will not be killed automatically on host exit";
     }
 
+    applyPriority(pi.dwProcessId, initialPriorityClass);
+
     if (ResumeThread(pi.hThread) == static_cast<DWORD>(-1)) {
         qWarning() << "[ProcessLauncher] ResumeThread failed:" << GetLastError();
         TerminateProcess(pi.hProcess, 1);
@@ -408,11 +499,16 @@ bool ProcessLauncher::isRunning(HANDLE hProcess) {
 
 bool ProcessLauncher::terminate(HANDLE hProcess) {
     if (!hProcess || hProcess == INVALID_HANDLE_VALUE) return false;
-    const DWORD rootPid = GetProcessId(hProcess);
+    return terminateProcessTreeById(GetProcessId(hProcess));
+}
+
+bool ProcessLauncher::terminateProcessTreeById(DWORD rootPid) {
+    if (rootPid == 0) return false;
     auto children = collectChildProcesses(rootPid);
     for (auto it = children.rbegin(); it != children.rend(); ++it)
         terminateProcessId(*it);
-    return TerminateProcess(hProcess, 1) == TRUE;
+    terminateProcessId(rootPid);
+    return true;
 }
 
 int ProcessLauncher::waitForExit(HANDLE hProcess, int timeoutMs) {
@@ -439,6 +535,17 @@ void ProcessLauncher::setProcessTreePriorityById(DWORD rootPid, DWORD priorityCl
     applyPriority(rootPid, priorityClass);
     for (DWORD childPid : collectChildProcesses(rootPid))
         applyPriority(childPid, priorityClass);
+}
+
+std::vector<std::string> ProcessLauncher::visibleWindowTitlesInProcessTreeById(DWORD rootPid) {
+    if (rootPid == 0) return {};
+    VisibleWindowEnumContext context;
+    context.processIds.insert(rootPid);
+    for (DWORD childPid : collectChildProcesses(rootPid)) {
+        context.processIds.insert(childPid);
+    }
+    EnumWindows(collectVisibleWindowTitles, reinterpret_cast<LPARAM>(&context));
+    return context.titles;
 }
 
 } // namespace chimera::instance

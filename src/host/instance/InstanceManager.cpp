@@ -1,8 +1,11 @@
 #include "InstanceManager.h"
 #include "VirtualMachine.h"
 #include "DeviceSpoofer.h"
+#include <QDebug>
+#include <QString>
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <fstream>
 #include <set>
 #include <nlohmann/json.hpp>
@@ -23,6 +26,46 @@ static bool isValidInstanceName(const std::string &name) {
     return std::all_of(name.begin(), name.end(), [](unsigned char ch) {
         return std::isalnum(ch) || ch == '_' || ch == '-' || ch == '.';
     });
+}
+
+static std::string envValue(const char *name) {
+    const char *value = std::getenv(name);
+    return value ? std::string(value) : std::string();
+}
+
+static bool truthyEnvValue(const char *name) {
+    std::string value = envValue(name);
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return !value.empty() && value != "0" && value != "false" && value != "off";
+}
+
+static bool unsafeVisibleWindowDiagnosticsAllowed() {
+    return truthyEnvValue("CHIMERA_ALLOW_UNSAFE_VISIBLE_EMULATOR_WINDOW") &&
+           truthyEnvValue("CHIMERA_VISIBLE_EMULATOR_DIAGNOSTICS_SESSION");
+}
+
+static InstanceConfig normalizedInstanceConfig(InstanceConfig config) {
+    config.width = (std::max)(config.width, 1920);
+    config.height = (std::max)(config.height, 1080);
+    if (config.allowVisibleEmulatorWindow && !unsafeVisibleWindowDiagnosticsAllowed()) {
+        qWarning() << "Visible Android Emulator window requested but blocked; "
+                      "use explicit unsafe diagnostics flags in this Chimera launch";
+        config.allowVisibleEmulatorWindow = false;
+    }
+    if (!config.allowVisibleEmulatorWindow) {
+        config.headless = true;
+    }
+    if (config.processPriority.empty()) {
+        config.processPriority = "below_normal";
+    } else if (config.processPriority == "high" ||
+               config.processPriority == "gaming" ||
+               config.processPriority == "above_normal" ||
+               config.processPriority == "realtime") {
+        config.processPriority = "normal";
+    }
+    return config;
 }
 
 static std::filesystem::path getProjectRoot() {
@@ -49,6 +92,154 @@ static nlohmann::json loadAndroidSdkConfig() {
         return nlohmann::json::object();
     }
     return j;
+}
+
+static void prependPathEnv(const std::filesystem::path &path) {
+    if (path.empty() || !std::filesystem::exists(path)) return;
+    const std::string current = envValue("PATH");
+    const std::string entry = path.string();
+    if (current.find(entry) != std::string::npos) return;
+    const std::string updated = entry + (current.empty() ? "" : ";" + current);
+    _putenv_s("PATH", updated.c_str());
+}
+
+static void prepareEmulatorRuntimePath(const std::filesystem::path &emulatorPath) {
+    if (emulatorPath.empty()) return;
+    const auto dir = emulatorPath.parent_path();
+    prependPathEnv(dir / "lib64");
+    prependPathEnv(dir / "lib");
+    prependPathEnv(dir);
+}
+
+static bool existsAny(const std::vector<std::filesystem::path> &paths) {
+    std::error_code ec;
+    return std::any_of(paths.begin(), paths.end(), [&ec](const auto &path) {
+        ec.clear();
+        return std::filesystem::exists(path, ec);
+    });
+}
+
+static bool fileExists(const std::filesystem::path &path) {
+    std::error_code ec;
+    return std::filesystem::exists(path, ec);
+}
+
+static std::filesystem::path firstExistingPath(const std::vector<std::filesystem::path> &paths) {
+    for (const auto &path : paths) {
+        if (fileExists(path)) return path;
+    }
+    return {};
+}
+
+static bool hasCompleteEmuglRuntimeDllSet(const std::filesystem::path &dir) {
+    if (dir.empty()) return false;
+    return fileExists(dir / "lib64OpenglRender.dll") &&
+           fileExists(dir / "lib64EGL_translator.dll") &&
+           fileExists(dir / "lib64GLES_CM_translator.dll") &&
+           fileExists(dir / "lib64GLES_V2_translator.dll");
+}
+
+static std::string readSourceProperty(const std::filesystem::path &path, const std::string &key) {
+    std::ifstream input(path);
+    if (!input.is_open()) return {};
+    std::string line;
+    const std::string prefix = key + "=";
+    while (std::getline(input, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.rfind(prefix, 0) == 0) {
+            return line.substr(prefix.size());
+        }
+    }
+    return {};
+}
+
+static bool hasValidSharedTextureManifest(
+    const std::vector<std::filesystem::path> &paths,
+    const char *producerName,
+    const std::string &baseEmulatorBuildId,
+    bool *matchingGfxstreamBuildId = nullptr,
+    bool *mismatchedGfxstreamBuildId = nullptr) {
+    if (matchingGfxstreamBuildId) *matchingGfxstreamBuildId = false;
+    if (mismatchedGfxstreamBuildId) *mismatchedGfxstreamBuildId = false;
+    for (const auto &path : paths) {
+        if (!fileExists(path)) continue;
+        try {
+            std::ifstream f(path);
+            nlohmann::json manifest;
+            f >> manifest;
+            const bool identityOk =
+                manifest.value("producer", "") == producerName &&
+                manifest.value("transport", "") == "D3D11SharedTexture";
+            const bool floorOk =
+                manifest.value("minWidth", 0) >= 1920 &&
+                manifest.value("minHeight", 0) >= 1080 &&
+                manifest.value("targetFps", 0) >= 60;
+            bool runtimePathOk = true;
+            if (std::string(producerName) == "ChimeraGfxstreamSharedTextureBridge") {
+                const bool runtimePathBaseOk =
+                    manifest.value("renderPath", "") == "VulkanDisplayVkPost" &&
+                    manifest.value("abi", "") == "sdk-emulator-36";
+                runtimePathOk =
+                    runtimePathBaseOk;
+                const std::string snapBuildId = manifest.value("gfxstreamSourceSnapBuildId", "");
+                const std::string manifestBaseBuildId = manifest.value("baseEmulatorBuildId", "");
+                const bool buildIdOk =
+                    !baseEmulatorBuildId.empty() &&
+                    !snapBuildId.empty() &&
+                    snapBuildId == baseEmulatorBuildId &&
+                    (manifestBaseBuildId.empty() || manifestBaseBuildId == baseEmulatorBuildId);
+                if (matchingGfxstreamBuildId) *matchingGfxstreamBuildId = buildIdOk;
+                if (!buildIdOk && identityOk && floorOk && runtimePathBaseOk &&
+                    mismatchedGfxstreamBuildId) {
+                    *mismatchedGfxstreamBuildId = true;
+                }
+                runtimePathOk = runtimePathOk && buildIdOk;
+            }
+            if (identityOk && floorOk && runtimePathOk) return true;
+        } catch (...) {
+            return false;
+        }
+    }
+    return false;
+}
+
+static bool fileContainsMarker(const std::filesystem::path &path, const std::string &marker) {
+    if (path.empty() || marker.empty()) return false;
+    std::ifstream input(path, std::ios::binary);
+    if (!input.is_open()) return false;
+
+    std::string window;
+    window.reserve(marker.size() * 2);
+    char buffer[4096] = {};
+    while (input.read(buffer, sizeof(buffer)) || input.gcount() > 0) {
+        window.append(buffer, static_cast<size_t>(input.gcount()));
+        if (window.find(marker) != std::string::npos) return true;
+        if (window.size() > marker.size()) {
+            window.erase(0, window.size() - marker.size());
+        }
+    }
+    return false;
+}
+
+static bool emuglSharedTextureRequested() {
+    return truthyEnvValue("CHIMERA_ENABLE_EMUGL_SHARED_TEXTURE") ||
+           truthyEnvValue("CHIMERA_EMUGL_SHARED_TEXTURE_REQUESTED") ||
+           !envValue("CHIMERA_EMUGL_D3D11_TEXTURE_METADATA").empty();
+}
+
+static bool gfxstreamSharedTextureRequested() {
+    return truthyEnvValue("CHIMERA_ENABLE_GFXSTREAM_SHARED_TEXTURE") ||
+           truthyEnvValue("CHIMERA_GFXSTREAM_SHARED_TEXTURE_REQUESTED") ||
+           !envValue("CHIMERA_GFXSTREAM_D3D11_TEXTURE_METADATA").empty();
+}
+
+static void publishRuntimeProbeEnv(const EmulatorRuntimeCapabilities &caps) {
+    _putenv_s("CHIMERA_EMUGL_SHARED_TEXTURE_RUNTIME_READY",
+              caps.supportsChimeraEmuglSharedTexture ? "1" : "0");
+    _putenv_s("CHIMERA_EMUGL_SHARED_TEXTURE_RUNTIME_STATUS", caps.status.c_str());
+    _putenv_s("CHIMERA_GFXSTREAM_SHARED_TEXTURE_RUNTIME_READY",
+              caps.supportsChimeraGfxstreamSharedTexture ? "1" : "0");
+    _putenv_s("CHIMERA_GFXSTREAM_SHARED_TEXTURE_RUNTIME_STATUS", caps.status.c_str());
 }
 
 InstanceManager::InstanceManager() : d(std::make_unique<Impl>()) {
@@ -85,14 +276,14 @@ void InstanceManager::loadInstances() {
             cfg.enableVsync = item.value("enableVsync", false);
             cfg.enableRoot = item.value("enableRoot", false);
             cfg.enableAudio = item.value("enableAudio", false);
-            cfg.quickBoot = item.value("quickBoot", true);
+            cfg.quickBoot = item.value("quickBoot", false);
             cfg.deviceProfile = item.value("deviceProfile", "");
-            cfg.headless = item.value("headless", false);
-            cfg.processPriority = item.value("processPriority", "normal");
+            cfg.headless = item.value("headless", true);
+            cfg.processPriority = item.value("processPriority", "below_normal");
             cfg.dataDir  = item.value("dataDir", "");
             cfg.gridRow  = item.value("gridRow", 0);
             cfg.gridCol  = item.value("gridCol", 0);
-            d->savedConfigs.push_back(cfg);
+            d->savedConfigs.push_back(normalizedInstanceConfig(cfg));
         }
     } catch (...) {
         // Ignore corrupted JSON
@@ -106,51 +297,73 @@ void InstanceManager::saveInstances() const {
     std::set<std::string> seen;
     for (auto &cfg : d->savedConfigs) {
         if (cfg.name.empty() || seen.count(cfg.name)) continue;
-        seen.insert(cfg.name);
+        const InstanceConfig normalized = normalizedInstanceConfig(cfg);
+        seen.insert(normalized.name);
         nlohmann::json item;
-        item["name"] = cfg.name;
-        item["cpus"] = cfg.cpus;
-        item["ramMB"] = cfg.ramMB;
-        item["width"] = cfg.width;
-        item["height"] = cfg.height;
-        item["dpi"] = cfg.dpi;
-        item["graphicsEngine"] = cfg.graphicsEngine;
-        item["graphicsRenderer"] = cfg.graphicsRenderer;
-        item["maxFps"] = cfg.maxFps;
-        item["enableVsync"] = cfg.enableVsync;
-        item["enableRoot"] = cfg.enableRoot;
-        item["enableAudio"] = cfg.enableAudio;
-        item["quickBoot"] = cfg.quickBoot;
-        item["deviceProfile"] = cfg.deviceProfile;
-        item["headless"] = cfg.headless;
-        item["processPriority"] = cfg.processPriority;
-        item["dataDir"]  = cfg.dataDir.string();
-        item["gridRow"]  = cfg.gridRow;
-        item["gridCol"]  = cfg.gridCol;
+        item["name"] = normalized.name;
+        item["cpus"] = normalized.cpus;
+        item["ramMB"] = normalized.ramMB;
+        item["width"] = normalized.width;
+        item["height"] = normalized.height;
+        item["dpi"] = normalized.dpi;
+        item["graphicsEngine"] = normalized.graphicsEngine;
+        item["graphicsRenderer"] = normalized.graphicsRenderer;
+        item["maxFps"] = normalized.maxFps;
+        item["enableVsync"] = normalized.enableVsync;
+        item["enableRoot"] = normalized.enableRoot;
+        item["enableAudio"] = normalized.enableAudio;
+        item["quickBoot"] = normalized.quickBoot;
+        item["deviceProfile"] = normalized.deviceProfile;
+        item["headless"] = normalized.headless;
+        item["processPriority"] = normalized.processPriority;
+        item["dataDir"]  = normalized.dataDir.string();
+        item["gridRow"]  = normalized.gridRow;
+        item["gridCol"]  = normalized.gridCol;
         arr.push_back(item);
     }
     for (auto &vm : d->vms) {
         auto &c = vm->config();
         if (c.name.empty() || seen.count(c.name)) continue;
         seen.insert(c.name);
+        const auto normalized = normalizedInstanceConfig({
+            c.name,
+            c.cpus,
+            c.ramMB,
+            c.width,
+            c.height,
+            c.dpi,
+            c.graphicsEngine,
+            c.graphicsRenderer,
+            c.maxFps,
+            c.enableVsync,
+            c.enableRoot,
+            c.enableAudio,
+            c.quickBoot,
+            c.headless,
+            c.allowVisibleEmulatorWindow,
+            c.deviceProfile,
+            c.processPriority,
+            c.qmpPort,
+            c.dataDir,
+        });
         nlohmann::json item;
-        item["name"] = c.name;
-        item["cpus"] = c.cpus;
-        item["ramMB"] = c.ramMB;
-        item["width"] = c.width;
-        item["height"] = c.height;
-        item["dpi"] = c.dpi;
-        item["graphicsEngine"] = c.graphicsEngine;
-        item["graphicsRenderer"] = c.graphicsRenderer;
-        item["maxFps"] = c.maxFps;
-        item["enableVsync"] = c.enableVsync;
-        item["enableRoot"] = c.enableRoot;
-        item["enableAudio"] = c.enableAudio;
-        item["quickBoot"] = c.quickBoot;
-        item["deviceProfile"] = c.deviceProfile;
-        item["headless"] = c.headless;
-        item["processPriority"] = c.processPriority;
-        item["dataDir"] = c.dataDir.string();
+        item["name"] = normalized.name;
+        item["cpus"] = normalized.cpus;
+        item["ramMB"] = normalized.ramMB;
+        item["width"] = normalized.width;
+        item["height"] = normalized.height;
+        item["dpi"] = normalized.dpi;
+        item["graphicsEngine"] = normalized.graphicsEngine;
+        item["graphicsRenderer"] = normalized.graphicsRenderer;
+        item["maxFps"] = normalized.maxFps;
+        item["enableVsync"] = normalized.enableVsync;
+        item["enableRoot"] = normalized.enableRoot;
+        item["enableAudio"] = normalized.enableAudio;
+        item["quickBoot"] = normalized.quickBoot;
+        item["deviceProfile"] = normalized.deviceProfile;
+        item["headless"] = normalized.headless;
+        item["processPriority"] = normalized.processPriority;
+        item["dataDir"] = normalized.dataDir.string();
         arr.push_back(item);
     }
     j["instances"] = arr;
@@ -161,6 +374,93 @@ void InstanceManager::saveInstances() const {
 InstanceManager &InstanceManager::instance() {
     static InstanceManager inst;
     return inst;
+}
+
+EmulatorRuntimeCapabilities InstanceManager::probeEmulatorRuntime(
+    const std::filesystem::path &emulatorPath) {
+    EmulatorRuntimeCapabilities caps;
+    if (emulatorPath.empty()) {
+        caps.status = "missing emulator path";
+        return caps;
+    }
+
+    caps.runtimeDir = emulatorPath.parent_path();
+    const auto lib64 = caps.runtimeDir / "lib64";
+    const auto lib = caps.runtimeDir / "lib";
+    const std::string baseEmulatorBuildId =
+        readSourceProperty(caps.runtimeDir / "source.properties", "Pkg.BuildId");
+
+    caps.hasLegacyOpenglRender = existsAny({
+        lib64 / "lib64OpenglRender.dll",
+        lib64 / "libOpenglRender.dll",
+        lib / "libOpenglRender.dll",
+    });
+    const std::vector<std::filesystem::path> gfxstreamCandidates = {
+        lib64 / "libgfxstream_backend.dll",
+        lib / "libgfxstream_backend.dll",
+    };
+    const auto gfxstreamBackend = firstExistingPath(gfxstreamCandidates);
+    caps.hasGfxstreamBackend = !gfxstreamBackend.empty();
+    caps.hasChimeraGfxstreamBridgeMarker =
+        fileContainsMarker(gfxstreamBackend, "ChimeraGfxstreamSharedTextureBridge") ||
+        fileContainsMarker(gfxstreamBackend, "ChimeraGfxstreamVulkanSharedTextureBridge");
+    caps.hasCompatibleGfxstreamAbi = fileContainsMarker(
+        gfxstreamBackend, "gfxstream_backend_set_screen_background");
+    caps.hasSdkGfxstreamRuntimeImports =
+        fileContainsMarker(gfxstreamBackend, "libandroid-emu-agents.dll") &&
+        fileContainsMarker(gfxstreamBackend, "libandroid-emu-protos.dll") &&
+        fileContainsMarker(gfxstreamBackend, "libandroid-emu-metrics.dll");
+    const std::vector<std::filesystem::path> emuglManifestCandidates = {
+        caps.runtimeDir / "chimera-emugl-shared-texture.json",
+        lib64 / "chimera-emugl-shared-texture.json",
+        lib / "chimera-emugl-shared-texture.json",
+    };
+    const std::vector<std::filesystem::path> gfxstreamManifestCandidates = {
+        caps.runtimeDir / "chimera-gfxstream-shared-texture.json",
+        lib64 / "chimera-gfxstream-shared-texture.json",
+        lib / "chimera-gfxstream-shared-texture.json",
+    };
+    caps.hasChimeraSharedTextureManifest = hasValidSharedTextureManifest(
+        emuglManifestCandidates, "ChimeraSharedTextureBridge", baseEmulatorBuildId);
+    caps.hasChimeraGfxstreamSharedTextureManifest = hasValidSharedTextureManifest(
+        gfxstreamManifestCandidates,
+        "ChimeraGfxstreamSharedTextureBridge",
+        baseEmulatorBuildId,
+        &caps.hasMatchingGfxstreamBuildId,
+        &caps.hasMismatchedGfxstreamBuildId);
+    caps.hasRequiredEmuglRuntimeDlls =
+        hasCompleteEmuglRuntimeDllSet(lib64) || hasCompleteEmuglRuntimeDllSet(lib);
+    caps.supportsChimeraEmuglSharedTexture =
+        caps.hasRequiredEmuglRuntimeDlls && caps.hasChimeraSharedTextureManifest;
+    caps.supportsChimeraGfxstreamSharedTexture =
+        caps.hasGfxstreamBackend &&
+        caps.hasChimeraGfxstreamBridgeMarker &&
+        caps.hasCompatibleGfxstreamAbi &&
+        caps.hasSdkGfxstreamRuntimeImports &&
+        caps.hasChimeraGfxstreamSharedTextureManifest;
+
+    if (caps.supportsChimeraGfxstreamSharedTexture) {
+        caps.status = "modified gfxstream shared texture runtime detected";
+    } else if (caps.supportsChimeraEmuglSharedTexture) {
+        caps.status = "modified EmuGL shared texture runtime detected";
+    } else if (caps.hasGfxstreamBackend && !caps.hasChimeraGfxstreamBridgeMarker) {
+        caps.status = "stock gfxstream runtime; Chimera gfxstream bridge marker is missing";
+    } else if (caps.hasGfxstreamBackend && !caps.hasCompatibleGfxstreamAbi) {
+        caps.status = "incompatible gfxstream runtime ABI; required screen background export is missing";
+    } else if (caps.hasGfxstreamBackend && !caps.hasSdkGfxstreamRuntimeImports) {
+        caps.status = "incompatible gfxstream runtime ABI; SDK runtime imports are missing";
+    } else if (caps.hasGfxstreamBackend && caps.hasMismatchedGfxstreamBuildId) {
+        caps.status = "incompatible gfxstream runtime ABI; source snapshot build id does not match emulator build id";
+    } else if (caps.hasGfxstreamBackend && !caps.hasChimeraGfxstreamSharedTextureManifest) {
+        caps.status = "stock gfxstream runtime; Chimera gfxstream bridge will not load";
+    } else if (caps.hasLegacyOpenglRender && !caps.hasRequiredEmuglRuntimeDlls) {
+        caps.status = "legacy EmuGL runtime is missing required translator DLLs";
+    } else if (caps.hasLegacyOpenglRender && !caps.hasChimeraSharedTextureManifest) {
+        caps.status = "legacy EmuGL runtime found, but Chimera shared texture manifest is missing or invalid";
+    } else {
+        caps.status = "no compatible Chimera shared texture runtime detected";
+    }
+    return caps;
 }
 
 std::vector<std::string> InstanceManager::listInstances() const {
@@ -183,45 +483,74 @@ std::vector<std::string> InstanceManager::listInstances() const {
 }
 
 bool InstanceManager::createInstance(const InstanceConfig &config) {
-    if (!isValidInstanceName(config.name)) return false;
+    const InstanceConfig normalizedConfig = normalizedInstanceConfig(config);
+    if (!isValidInstanceName(normalizedConfig.name)) return false;
     for (auto &vm : d->vms) {
-        if (vm->config().name == config.name) return false;
+        if (vm->config().name == normalizedConfig.name) return false;
     }
 
     VirtualMachineConfig vmConfig;
-    vmConfig.name = config.name;
-    vmConfig.cpus = config.cpus;
-    vmConfig.ramMB = config.ramMB;
-    vmConfig.width = config.width;
-    vmConfig.height = config.height;
-    vmConfig.dpi = config.dpi;
-    vmConfig.graphicsEngine = config.graphicsEngine;
-    vmConfig.graphicsRenderer = config.graphicsRenderer;
-    vmConfig.maxFps = config.maxFps;
-    vmConfig.enableVsync = config.enableVsync;
-    vmConfig.headless = config.headless;
-    vmConfig.enableRoot = config.enableRoot;
-    vmConfig.enableAudio = config.enableAudio;
-    vmConfig.quickBoot = config.quickBoot;
-    vmConfig.processPriority = config.processPriority;
-    vmConfig.qmpPort = config.qmpPort;
-    vmConfig.deviceProfile = config.deviceProfile;
-    vmConfig.dataDir = config.dataDir.empty() ? (d->instancesDir / config.name) : config.dataDir;
+    vmConfig.name = normalizedConfig.name;
+    vmConfig.cpus = normalizedConfig.cpus;
+    vmConfig.ramMB = normalizedConfig.ramMB;
+    vmConfig.width = normalizedConfig.width;
+    vmConfig.height = normalizedConfig.height;
+    vmConfig.dpi = normalizedConfig.dpi;
+    vmConfig.graphicsEngine = normalizedConfig.graphicsEngine;
+    vmConfig.graphicsRenderer = normalizedConfig.graphicsRenderer;
+    vmConfig.maxFps = normalizedConfig.maxFps;
+    vmConfig.enableVsync = normalizedConfig.enableVsync;
+    vmConfig.headless = normalizedConfig.headless;
+    vmConfig.allowVisibleEmulatorWindow = normalizedConfig.allowVisibleEmulatorWindow;
+    vmConfig.startHidden = !normalizedConfig.allowVisibleEmulatorWindow;
+    vmConfig.enableRoot = normalizedConfig.enableRoot;
+    vmConfig.enableAudio = normalizedConfig.enableAudio;
+    vmConfig.quickBoot = normalizedConfig.quickBoot;
+    vmConfig.processPriority = normalizedConfig.processPriority;
+    vmConfig.qmpPort = normalizedConfig.qmpPort;
+    vmConfig.deviceProfile = normalizedConfig.deviceProfile;
+    vmConfig.dataDir = normalizedConfig.dataDir.empty()
+        ? (d->instancesDir / normalizedConfig.name)
+        : normalizedConfig.dataDir;
 
     // Apply device spoofing if profile specified
-    if (!config.deviceProfile.empty()) {
+    if (!normalizedConfig.deviceProfile.empty()) {
         auto profiles = DeviceSpoofer::getBuiltinProfiles();
         for (auto &p : profiles) {
-            if (p.name == config.deviceProfile) {
-                DeviceSpoofer::instance().applyProfile(p, config.name);
+            if (p.name == normalizedConfig.deviceProfile) {
+                DeviceSpoofer::instance().applyProfile(p, normalizedConfig.name);
                 break;
             }
         }
     }
 
     auto sdkCfg = loadAndroidSdkConfig();
-    if (sdkCfg.contains("emulator")) {
+    const std::string emulatorOverride = envValue("CHIMERA_EMULATOR_PATH");
+    if (!emulatorOverride.empty()) {
+        vmConfig.emulatorPath = emulatorOverride;
+    } else if (sdkCfg.contains("emulator")) {
         vmConfig.emulatorPath = sdkCfg["emulator"].get<std::string>();
+    }
+    prepareEmulatorRuntimePath(vmConfig.emulatorPath);
+    if (gfxstreamSharedTextureRequested() || emuglSharedTextureRequested()) {
+        const auto caps = InstanceManager::probeEmulatorRuntime(vmConfig.emulatorPath);
+        publishRuntimeProbeEnv(caps);
+        if (gfxstreamSharedTextureRequested() && caps.supportsChimeraGfxstreamSharedTexture) {
+            qDebug() << "Chimera gfxstream shared texture runtime ready:"
+                     << QString::fromStdString(caps.status);
+        } else if (emuglSharedTextureRequested() && caps.supportsChimeraEmuglSharedTexture) {
+            vmConfig.useClassicEmuglRuntime = true;
+            vmConfig.enableGrpc = false;
+            qDebug() << "Chimera EmuGL shared texture runtime ready:"
+                     << QString::fromStdString(caps.status);
+        } else {
+            qWarning() << "Chimera shared texture runtime requested but unavailable:"
+                       << QString::fromStdString(caps.status);
+            if (truthyEnvValue("CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE") ||
+                truthyEnvValue("CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE")) {
+                return false;
+            }
+        }
     }
     if (sdkCfg.contains("avd_name")) {
         vmConfig.avdName = sdkCfg["avd_name"].get<std::string>();
@@ -241,9 +570,9 @@ bool InstanceManager::createInstance(const InstanceConfig &config) {
 
     // Update saved config
     auto it = std::remove_if(d->savedConfigs.begin(), d->savedConfigs.end(),
-                             [&](const auto &c) { return c.name == config.name; });
+                             [&](const auto &c) { return c.name == normalizedConfig.name; });
     d->savedConfigs.erase(it, d->savedConfigs.end());
-    d->savedConfigs.push_back(config);
+    d->savedConfigs.push_back(normalizedConfig);
     saveInstances();
     return true;
 }
@@ -416,13 +745,14 @@ InstanceConfig InstanceManager::getInstanceConfig(const std::string &name) const
             cfg.maxFps = c.maxFps;
             cfg.enableVsync = c.enableVsync;
             cfg.headless = c.headless;
+            cfg.allowVisibleEmulatorWindow = c.allowVisibleEmulatorWindow;
             cfg.processPriority = c.processPriority;
             cfg.enableRoot = c.enableRoot;
             cfg.enableAudio = c.enableAudio;
             cfg.quickBoot = c.quickBoot;
             cfg.deviceProfile = c.deviceProfile;
             cfg.dataDir = c.dataDir;
-            return cfg;
+            return normalizedInstanceConfig(cfg);
         }
     }
     for (auto &cfg : d->savedConfigs) {

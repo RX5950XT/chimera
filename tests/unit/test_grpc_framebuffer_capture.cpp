@@ -1,9 +1,13 @@
 #include <QtTest/QtTest>
 
+#include "AdbH264FramebufferCapture.h"
 #include "GrpcFramebufferCapture.h"
+#include "GrpcMmapFramebufferCapture.h"
 #include <QMap>
 
+using chimera::graphics::AdbH264FramebufferCapture;
 using chimera::graphics::GrpcFramebufferCapture;
+using chimera::graphics::GrpcMmapFramebufferCapture;
 
 namespace {
 
@@ -26,6 +30,15 @@ QMap<int, quint64> parseVarintFields(const QByteArray &payload) {
     return fields;
 }
 
+bool readLengthDelimited(const QByteArray &payload, int *offset, QByteArray *out) {
+    quint64 len = 0;
+    if (!GrpcFramebufferCapture::readVarint(payload, offset, &len)) return false;
+    if (len > static_cast<quint64>(payload.size() - *offset)) return false;
+    *out = QByteArray(payload.constData() + *offset, static_cast<qsizetype>(len));
+    *offset += static_cast<int>(len);
+    return true;
+}
+
 } // namespace
 
 class TestGrpcFramebufferCapture : public QObject {
@@ -43,9 +56,77 @@ private slots:
             GrpcFramebufferCapture::buildImageFormatRequest(1920, 1080);
         const QMap<int, quint64> fields = parseVarintFields(payload);
 
-        QCOMPARE(fields.value(1), 2ULL);
+        QCOMPARE(fields.value(1), 1ULL);
         QCOMPARE(fields.value(3), 1920ULL);
         QCOMPARE(fields.value(4), 1080ULL);
+    }
+
+    void encodesMmapTransportWithoutDownscaling() {
+        const QByteArray payload =
+            GrpcMmapFramebufferCapture::buildMmapImageFormatRequest(
+                1920, 1080, QStringLiteral("file:///C:/Temp/chimera.rgb"));
+
+        QMap<int, quint64> scalarFields;
+        QByteArray transport;
+        int offset = 0;
+        while (offset < payload.size()) {
+            quint64 tag = 0;
+            QVERIFY(GrpcFramebufferCapture::readVarint(payload, &offset, &tag));
+            const int field = static_cast<int>(tag >> 3);
+            const int wire = static_cast<int>(tag & 0x07);
+            if (wire == 0) {
+                quint64 value = 0;
+                QVERIFY(GrpcFramebufferCapture::readVarint(payload, &offset, &value));
+                scalarFields.insert(field, value);
+            } else if (field == 6 && wire == 2) {
+                QVERIFY(readLengthDelimited(payload, &offset, &transport));
+            } else {
+                QFAIL("unexpected field in ImageFormat");
+            }
+        }
+
+        QCOMPARE(scalarFields.value(1), 1ULL);
+        QCOMPARE(scalarFields.value(3), 1920ULL);
+        QCOMPARE(scalarFields.value(4), 1080ULL);
+        QVERIFY(!transport.isEmpty());
+
+        QMap<int, quint64> transportScalarFields;
+        QByteArray handle;
+        int transportOffset = 0;
+        while (transportOffset < transport.size()) {
+            quint64 tag = 0;
+            QVERIFY(GrpcFramebufferCapture::readVarint(transport, &transportOffset, &tag));
+            const int field = static_cast<int>(tag >> 3);
+            const int wire = static_cast<int>(tag & 0x07);
+            if (wire == 0) {
+                quint64 value = 0;
+                QVERIFY(GrpcFramebufferCapture::readVarint(transport, &transportOffset, &value));
+                transportScalarFields.insert(field, value);
+            } else if (field == 2 && wire == 2) {
+                QVERIFY(readLengthDelimited(transport, &transportOffset, &handle));
+            } else {
+                QFAIL("unexpected field in ImageTransport");
+            }
+        }
+
+        QCOMPARE(transportScalarFields.value(1), 1ULL);
+        QCOMPARE(QString::fromUtf8(handle), QStringLiteral("file:///C:/Temp/chimera.rgb"));
+    }
+
+    void screenrecordTransportKeeps1080pFloor() {
+        QCOMPARE(AdbH264FramebufferCapture::normalizedCaptureSize(1280, 720), QSize(1920, 1080));
+
+        const QStringList adbArgs = AdbH264FramebufferCapture::buildAdbArgs(
+            QStringLiteral("emulator-5554"), QSize(1280, 720), 8000000);
+        QVERIFY(adbArgs.contains(QStringLiteral("screenrecord")));
+        QVERIFY(adbArgs.contains(QStringLiteral("--output-format=h264")));
+        QVERIFY(adbArgs.contains(QStringLiteral("1920x1080")));
+        QVERIFY(adbArgs.contains(QStringLiteral("24000000")));
+
+        const QStringList ffmpegArgs =
+            AdbH264FramebufferCapture::buildFfmpegArgs(QSize(1280, 720));
+        QVERIFY(!ffmpegArgs.contains(QStringLiteral("-vf")));
+        QVERIFY(ffmpegArgs.contains(QStringLiteral("bgra")));
     }
 };
 

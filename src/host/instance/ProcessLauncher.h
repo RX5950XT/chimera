@@ -24,13 +24,16 @@ public:
 
     static HANDLE runAsync(const std::string &exe, const std::vector<std::string> &args,
                            OutputCallback onStdout, OutputCallback onStderr,
-                           bool startHidden = false);
+                           bool startHidden = false,
+                           DWORD initialPriorityClass = NORMAL_PRIORITY_CLASS);
 
     static bool isRunning(HANDLE hProcess);
     static bool terminate(HANDLE hProcess);
+    static bool terminateProcessTreeById(DWORD rootPid);
     static int waitForExit(HANDLE hProcess, int timeoutMs);
     static void setProcessTreePriority(HANDLE hProcess, DWORD priorityClass);
     static void setProcessTreePriorityById(DWORD rootPid, DWORD priorityClass);
+    static std::vector<std::string> visibleWindowTitlesInProcessTreeById(DWORD rootPid);
 
     // Exposed for testing — implements CommandLineToArgvW round-trip quoting rules
     static std::wstring quoteArg(const std::wstring &arg);

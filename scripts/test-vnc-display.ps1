@@ -8,7 +8,7 @@ $cmdline = "console=ttyS0,115200n8 earlycon=uart8250,io,0x3f8,115200 loglevel=8 
 
 $argStr = "-accel whpx,kernel-irqchip=off -machine q35 -smp 4 -m 4096" +
           " -vga none" +
-          " -device virtio-gpu-pci,xres=1280,yres=720" +
+          " -device virtio-gpu-pci,xres=1920,yres=1080" +
           " -kernel `"$base\out\android-kernel\bzImage`"" +
           " -initrd `"$base\out\cuttlefish\initrd-qemu.img`"" +
           " -append `"$cmdline`"" +

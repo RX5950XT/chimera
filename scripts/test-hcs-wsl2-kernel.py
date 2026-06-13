@@ -69,7 +69,7 @@ VM_JSON = json.dumps({
                 "DefaultBindSecurityDescriptor":    "D:P(A;;FA;;;WD)",
                 "DefaultConnectSecurityDescriptor": "D:P(A;;FA;;;WD)",
             }},
-            "VideoMonitor": {"HorizontalResolution": 1280, "VerticalResolution": 720},
+            "VideoMonitor": {"HorizontalResolution": 1920, "VerticalResolution": 1080},
             "ComPorts": {"0": {"NamedPipe": PIPE}},
         },
     }

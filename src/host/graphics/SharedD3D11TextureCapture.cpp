@@ -66,6 +66,11 @@ bool validateHeader(const Header &header, QString *error) {
         *error = QStringLiteral("invalid shared D3D11 texture dimensions");
         return false;
     }
+    if (header.width < shmem::kMinimumFrameWidth ||
+        header.height < shmem::kMinimumFrameHeight) {
+        *error = QStringLiteral("shared D3D11 texture below 1920x1080 minimum");
+        return false;
+    }
     if ((header.flags & ~shmem::kD3D11FlagHasAlpha) != 0) {
         *error = QStringLiteral("unsupported shared D3D11 texture flags");
         return false;
@@ -146,7 +151,8 @@ bool SharedD3D11TextureCapture::openMapping() {
     m_mapping = OpenFileMappingW(FILE_MAP_READ, FALSE,
                                  reinterpret_cast<LPCWSTR>(m_mappingName.utf16()));
     if (!m_mapping) {
-        emit captureError(winError("OpenFileMappingW"));
+        if (GetLastError() != ERROR_FILE_NOT_FOUND)
+            emit captureError(winError("OpenFileMappingW"));
         return false;
     }
 

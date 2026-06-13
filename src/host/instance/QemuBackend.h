@@ -31,8 +31,8 @@ struct QemuInstanceConfig {
 
     std::string machineType = "q35";
     std::string accel = "whpx";
-    int cpus = 4;
-    int ramMB = 4096;
+    int cpus = 2;
+    int ramMB = 2048;
     int vncDisplay = 0;     // :N → TCP port 5900 + N
     int qmpPort = 4444;
     int adbPort = 5560;
@@ -41,8 +41,8 @@ struct QemuInstanceConfig {
     std::vector<std::string> extraArgs;
 
     // Guest display resolution (informs VNC desired size and QMP coordinate scaling)
-    int displayWidth  = 1024;
-    int displayHeight = 768;
+    int displayWidth  = 1920;
+    int displayHeight = 1080;
 
     // Serial console log file (empty = no redirection)
     std::filesystem::path serialLog;

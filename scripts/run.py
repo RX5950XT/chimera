@@ -16,6 +16,8 @@ import signal
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CHIMERA_ROOT = os.path.dirname(SCRIPT_DIR)
 CONFIG_PATH = os.path.join(CHIMERA_ROOT, "configs", "android_sdk.json")
+MIN_WIDTH = 1920
+MIN_HEIGHT = 1080
 
 
 def load_config():
@@ -52,6 +54,10 @@ def main():
     except ValueError:
         print("Invalid resolution format. Use WxH, e.g., 1920x1080")
         sys.exit(1)
+    if w < MIN_WIDTH or h < MIN_HEIGHT:
+        print(f"[chimera] Resolution {w}x{h} is below minimum; using {MIN_WIDTH}x{MIN_HEIGHT}")
+        w = max(w, MIN_WIDTH)
+        h = max(h, MIN_HEIGHT)
 
     cmd = [emulator, "-avd", avd_name]
 

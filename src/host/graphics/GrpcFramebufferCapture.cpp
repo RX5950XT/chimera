@@ -16,10 +16,12 @@ namespace chimera::graphics {
 namespace {
 
 constexpr quint8 kGrpcUncompressed = 0;
+constexpr int kRgba8888 = 1;
+constexpr int kRgb888 = 2;
 constexpr int kMaxFrameBytes = 64 * 1024 * 1024;
-constexpr int kIdleCaptureIntervalMs = 50;
-constexpr int kInteractiveWindowMs = 2000;
-constexpr int kDuplicateFramesBeforeIdle = 6;
+constexpr int kIdleCaptureIntervalMs = 250;
+constexpr int kInteractiveWindowMs = 1200;
+constexpr int kDuplicateFramesBeforeIdle = 2;
 
 void appendVarintField(QByteArray *out, int fieldNumber, quint64 value) {
     GrpcFramebufferCapture::appendVarint(out, static_cast<quint64>(fieldNumber) << 3);
@@ -58,7 +60,7 @@ bool GrpcFramebufferCapture::start() {
     m_hasLastFingerprint = false;
     m_lastFingerprint = 0;
     m_duplicateStreak = 0;
-    m_interactiveUntilMs = kInteractiveWindowMs;
+    m_interactiveUntilMs = 0;
     // Prime the pipeline with paced dispatches. scheduleNext() staggers them
     // by the frame interval, so the requests don't all fire at once and the
     // capture loop settles into a steady ~target-FPS cadence.
@@ -224,7 +226,7 @@ void GrpcFramebufferCapture::onReplyFinished(QNetworkReply *reply) {
 
 QByteArray GrpcFramebufferCapture::buildImageFormatRequest(int width, int height, int displayId) {
     QByteArray payload;
-    appendVarintField(&payload, 1, 2); // RGB888: 25% less bandwidth than RGBA8888.
+    appendVarintField(&payload, 1, kRgba8888);
     if (width > 0) appendVarintField(&payload, 3, static_cast<quint64>(width));
     if (height > 0) appendVarintField(&payload, 4, static_cast<quint64>(height));
     if (displayId > 0) appendVarintField(&payload, 5, static_cast<quint64>(displayId));
@@ -356,8 +358,8 @@ bool GrpcFramebufferCapture::decodeImageMessage(const QByteArray &payload, Decod
     }
 
     if (width <= 0 || height <= 0 || pixels.isEmpty()) return false;
-    const int bytesPerPixel = (format == 2) ? 3 : 4;
-    if (format != 1 && format != 2) return false;
+    const int bytesPerPixel = (format == kRgb888) ? 3 : 4;
+    if (format != kRgba8888 && format != kRgb888) return false;
     const auto expected = static_cast<qint64>(width) * static_cast<qint64>(height) * bytesPerPixel;
     if (expected <= 0 || expected > kMaxFrameBytes || pixels.size() != expected) return false;
 
@@ -369,13 +371,22 @@ bool GrpcFramebufferCapture::decodeImageMessage(const QByteArray &payload, Decod
 }
 
 QImage GrpcFramebufferCapture::imageFromTopDown(const DecodedImage &decoded) const {
-    const int bytesPerPixel = (decoded.format == 2) ? 3 : 4;
-    const auto imageFormat = (decoded.format == 2) ? QImage::Format_RGB888 : QImage::Format_RGBA8888;
-    QImage image(decoded.width, decoded.height, imageFormat);
+    const int bytesPerPixel = (decoded.format == kRgb888) ? 3 : 4;
+    QImage image(decoded.width, decoded.height, QImage::Format_RGBA8888);
     const int stride = decoded.width * bytesPerPixel;
     for (int y = 0; y < decoded.height; ++y) {
         const char *src = decoded.pixels.constData() + y * stride;
-        memcpy(image.scanLine(y), src, static_cast<size_t>(stride));
+        uchar *dst = image.scanLine(y);
+        if (decoded.format == kRgb888) {
+            for (int x = 0; x < decoded.width; ++x) {
+                dst[x * 4 + 0] = static_cast<uchar>(src[x * 3 + 0]);
+                dst[x * 4 + 1] = static_cast<uchar>(src[x * 3 + 1]);
+                dst[x * 4 + 2] = static_cast<uchar>(src[x * 3 + 2]);
+                dst[x * 4 + 3] = 0xff;
+            }
+        } else {
+            memcpy(dst, src, static_cast<size_t>(stride));
+        }
     }
     return image;
 }

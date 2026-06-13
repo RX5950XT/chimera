@@ -6,6 +6,139 @@
 
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 
+## 最新狀態（2026-06-13 Session 73）
+
+- Session 73 修正 `initLibrary` ABI crash 根因：`gfxstream_proxy.c` 用 `void*(void*)` C 假簽名承接 `gfxstream::RenderLibPtr`（`std::unique_ptr<RenderLib>`），在 x64 Windows 下 ABI 不相容，是 boot 前 `-1073741819 (AV)` 的根源。
+- 改為 `extern "C" __declspec(dllexport) gfxstream::RenderLibPtr initLibrary()` 放在 `gfxstream_proxy_renderlib.cpp`，exact C++ signature pure forward，`#pragma warning(suppress: 4190)` 壓 MSVC C4190。
+- 從 `gfxstream_proxy.c` 刪除 C shim；build script 過時註解同步修正；analyzer 同時計數 `renderlib_wrapper initLibrary` 與 `forward name=initLibrary` 兩種格式。
+- 驗證：build PASS（348 exports，gate 通過）；headless smoke boot 完成，`initLibrary=1 androidSetOpenglesRenderer=1 rendererVtable=1`；analyzer 正確 FAIL `no 1920x1080 GPU display/resource signal`；`no_residual_processes=OK`。
+- 目前 stock headless emulator 沒有 GPU display-post signal；analyzer FAIL 是預期行為（gate 未放寬）。
+- 下一步：仍需 matching SDK gfxstream source 的 `DisplayVk::postImpl()` GPU post hook，才能在 stock ABI proxy 上觀察第一個 GPU display signal，進而接 D3D11 shared texture producer。
+
+## 歷史狀態（2026-06-13 Session 72）
+
+- Session 72 新增 `scripts\analyze-gfxstream-proxy-log.ps1`，用於分類 stock-ABI gfxstream proxy log，不啟動 emulator。
+- 分析器 fail-closed：必須看到 proxy attach + renderer init，且只有 1920x1080 `stream_renderer_flush` / `stream_renderer_resource_create` / `gfxstream_backend_setup_window` 這類 GPU display/resource signal 才算下一步 hook 候選。
+- `android_onPost`、`renderer_hook getScreenshot`、`transfer_read_iov` 會被標成 CPU/readback 風險，不可當 shared texture producer 或 60 FPS 證據。
+- 驗證：PowerShell parser PASS；正向合成 proxy log PASS；只有 `android_onPost` 的負向合成 log 如預期 fail；`build-chimera-gfxstream-proxy-runtime.ps1` PASS，348 exports；完整 non-integration `ctest` 20/20 PASS。
+- 既有 proxy logs 目前沒有 1920x1080 GPU display/resource signal；它們不能當 true 1080p/60 證據。
+- 子代理研究 matching source / hook 線索因使用額度限制失敗，沒有可採用結論。
+- 本輪沒有啟動 Android runtime；結束後無 `chimera-ui` / `emulator` / `qemu-system*` / `adb` / `ffmpeg` 殘留。
+- 真 Android 1080p/60 仍未達標；下一步仍是 matching SDK gfxstream source/ABI，或用 stock-ABI proxy 找到穩定 GPU display-post hook，再接 D3D11 shared texture producer。
+
+## 歷史狀態（2026-06-13 Session 71）
+
+- Session 71 再次固定架構邊界：Chimera 不從零重寫完整 Android VM；短期正確方向是 Chimera shell + headless Android Emulator/QEMU/gfxstream 相容核心 + custom display producer。原生 Android Emulator 視窗外露或多開都是 bug，不是策略。
+- gfxstream Vulkan bridge 已補低頻 runtime 診斷：bridge enabled、`recordCopy()` unavailable/ok、`publishFrame()` failure 會按低頻 cadence 記錄，方便定位黑屏卡在 display-post 哪一段，同時避免 per-frame log 干擾 host audio。
+- runtime bridge 端也加入 1920x1080 floor；低於最低尺寸會被拒絕，不能把低解析度 producer 當成 60 FPS 證據。
+- 驗證：patch parser / build parser PASS；`chimera-ui test-instance-manager test-virtual-machine` targeted build PASS；targeted `ctest` 2/2 PASS；完整 non-integration `ctest` 20/20 PASS。
+- source-patched gfxstream runtime 已編過 `ChimeraGfxstreamVulkanSharedTextureBridge.cpp` / `DisplayVk.cpp`，最後由 manifest gate 正確 fail-closed：source snapshot build id `13278158` 不等於 SDK emulator build id `15261927`。
+- 結束後無 `chimera-ui` / `emulator` / `qemu-system*` / `adb` / `ffmpeg` 殘留。
+- 真 Android 1080p/60 仍未達標；下一步仍是 matching SDK gfxstream shared texture producer / verifier PASS，不能用 mixed ABI runtime、raw fallback 或原生 emulator 視窗交差。
+
+## 歷史狀態（2026-06-13 Session 69）
+
+- Session 69 收斂 headless runtime / snapshot shutdown I/O：Chimera 短期不從零自研完整 Android VM，而是 fork/改 Android Emulator/QEMU/gfxstream 作 headless 相容核心；正式使用者面只能有 Chimera 單一視窗，原生 Android Emulator 視窗外露或多開都是 bug。
+- `VirtualMachine` 預設 full boot 現在同時帶 `-no-snapstorage -no-snapshot -no-snapshot-load -no-snapshot-save`，避免 emulator 自動使用 `default_boot` snapshot storage。
+- `VirtualMachine::stop()` 只有在明確 `CHIMERA_SAVE_QUICK_BOOT=1` 時才走 `adb emu avd snapshot save` / console kill；一般停止改由 Job Object / process tree cleanup，降低 shutdown I/O 對 host audio 的干擾。
+- `scripts\verify-true-1080p60.ps1` finally 不再預設送 `adb emu kill`，避免 verifier 自己觸發 emulator shutdown snapshot/I/O。
+- 驗證：`test-virtual-machine` target build PASS；`ctest -R test-virtual-machine` PASS；完整 `cmake --build build --config Release` PASS；完整 `ctest --test-dir build -C Release --output-on-failure -LE integration` 20/20 PASS；結束後無 `chimera-ui` / `emulator` / `qemu-system*` 殘留。
+- 真 Android 1080p/60 仍未達標；這輪修的是多開/外露/音訊干擾的啟停根因與防回歸。
+
+## 歷史狀態（2026-06-13 Session 68）
+
+- Session 68 補上 strict shared texture watchdog：required EmuGL/gfxstream shared texture 模式下，Android boot 後若 host capture 未配置、metadata mapping 未出現、或 capture 已跑但沒有第一幀，Chimera 會 exit 3，不再黑屏/0 FPS 靜默等待，也不會退回 raw gRPC/ADB fallback。
+- `scripts\verify-true-1080p60.ps1` 現在會拒絕 `Required shared texture capture ...` 失敗訊息，並修正 early-exit 診斷要印出 exit code。
+- SDK/source 對齊結論：本機 Android Emulator SDK 36.5.11 是 build id `15261927`；目前 `tmp\aosp-sdk-release\hardware\google\gfxstream` 的 `sdk-release` source snapshot 是 `13278158`；官方 `emu-36-1-release` 是 `12579432`，更舊，不能當 matching runtime 來源。
+- strict verifier 對目前 invalid custom gfxstream runtime 正確 fail-closed：`Required shared texture runtime is unavailable; exiting`，沒有 raw fallback，沒有多開原生 Android Emulator 視窗。
+- 子代理只讀研究確認公開 refs 找不到 `15261927` matching source；`prebuilts/android-emulator-build/archive` 也不是 SDK emulator binary archive。若要繼續走 stock SDK 36.5.11，應以 binary ABI/proxy 探針為準。
+- stock gfxstream proxy 已加低風險 C export 觀察：`stream_renderer_init/resource_create/create_blob/export_blob/ctx_attach/ctx_detach/resource_map_info/transfer_read_iov/transfer_write_iov/vulkan_info` 與 `gfxstream_backend_setup_window/set_screen_mask/set_screen_background` 會以 typed wrappers 低頻 log 自然呼叫。不可包 `RenderLib` / `Renderer` C++ object，不可主動 `transfer_read` 或走 `android_setPostCallback` CPU readback。
+- `scripts\build-chimera-gfxstream-proxy-runtime.ps1` build PASS，`chimera-gfxstream-proxy.json` 會列出 hooked exports；`sharedTextureProducer=false`，所以它仍只是定位工具，不是 1080p/60 完成證據。
+- 驗證：`chimera-ui test-grpc-framebuffer-capture test-instance-manager test-virtual-machine test-qemu-backend` build PASS；script parser PASS；targeted ctest 4/4 PASS；完整 `ctest --test-dir build -C Release --output-on-failure -LE integration` 20/20 PASS；結束後無 `chimera-ui` / `emulator` / `qemu-system*` / `adb` / `ffmpeg` 殘留。
+- 真 Android 1080p/60 仍未達標；下一步仍是取得 SDK 36.5.11 matching gfxstream source/ABI，或在 stock ABI proxy 內找到可穩定定位 display-post resource 的 C export probe，再接 D3D11 shared texture producer。
+
+## 歷史狀態（2026-06-12 Session 67）
+
+- Session 67 修正 visible emulator gate：`CHIMERA_ALLOW_UNSAFE_VISIBLE_EMULATOR_WINDOW=1` 現在只代表診斷授權，不能單獨讓正式路徑外露原生 Android Emulator 視窗。
+- 主程式只有在同次 CLI 明確啟用 `--native-embed --allow-unsafe-native-window` 或 `--window-capture --allow-unsafe-window-capture`，且同時有 `CHIMERA_ALLOW_UNSAFE_VISIBLE_EMULATOR_WINDOW=1` 時，才設定內部 `CHIMERA_VISIBLE_EMULATOR_DIAGNOSTICS_SESSION=1`。
+- `InstanceManager` normalize 層現在要求外部 unsafe allowance + 內部 diagnostics session 兩者同時成立，才接受 `allowVisibleEmulatorWindow=true`；否則舊設定、測試設定或殘留 env 都會回到 headless / `-no-window`。
+- `CHIMERA_EMULATOR_START_VISIBLE` 不再能影響正式路徑；只有通過 visible diagnostics gate 的 instance 才會可見啟動。
+- 架構邊界再次固定：Chimera 不走短期完整自研 Android VM；保留 Android Emulator/QEMU/gfxstream 作為 headless 相容核心，但使用者面只能有 Chimera 單一視窗。多開原生 Emulator 視窗是 bug。
+- 驗證：targeted build `test-instance-manager test-virtual-machine test-process-launcher chimera-ui` PASS；targeted tests 3/3 PASS；完整 `ctest --test-dir build -C Release --output-on-failure -LE integration` 20/20 PASS；結束後無 `chimera-ui` / `emulator` / `qemu-system*` / `adb` / `ffmpeg` 殘留。
+- 真 Android 1080p/60 仍未達標；這輪只收斂多開/外露原生 Emulator 的產品邊界。
+
+## 歷史狀態（2026-06-12 Session 66）
+
+- Session 66 再次固定產品邊界：不從零重寫完整 Android VM；Chimera 保留 Android Emulator/QEMU/gfxstream 相容核心，但底層必須 headless，使用者面只能有 Chimera 單一視窗。外露或多開原生 Android Emulator 視窗是 bug，不是策略。
+- custom gfxstream runtime gate 再收緊：`chimera-gfxstream-shared-texture.json` 必須包含 `gfxstreamSourceSnapBuildId` 與 `baseEmulatorBuildId`，且必須匹配 SDK emulator build id。當前 source snapshot `13278158` 不等於 SDK 36.5.11 build id `15261927`，manifest writer 會拒絕這個會 crash 的 mixed ABI runtime。
+- 直接 `LoadLibrary` 測試證明 `build\chimera-gfxstream-runtime-sdk-release\lib64\libgfxstream_backend.dll` 可載入，但 direct emulator probe 在 `Initializing gfxstream backend` 後 `0xC0000005`，所以不能再把 marker/export/import 當 runtime ready。
+- stock SDK gfxstream proxy default path 可 headless boot，但沒有看到 `android_setPostCallback`；`CHIMERA_GFXSTREAM_PROXY_WRAP_RENDERLIB=1` 會 crash。`stream_renderer_flush` + `stream_renderer_resource_get_info` 低頻 probe 已加入並重建 proxy runtime，headless/no-audio boot completed 後仍沒有任何 flush log；正式 shared texture producer 仍應接 matching source 的 `DisplayVk::postImpl()` GPU post path。
+- `GrpcMmapFramebufferCapture` 已補低干擾 fallback：RGBA8888 frame 會優先 publish 到 `SharedD3D11TexturePublisher`，避免每幀 QImage allocation 與 UI thread texture upload；RGB888 或 publisher 失敗才退回 QImage。
+- MMAP diagnostic smoke：Android boot completed，log 顯示 `gRPC MMAP D3D11 texture publisher started at 1920 x 1080`，但 dynamic sample 只有 `effective=29.4`。這不是 1080p/60 完成證據。
+- 新增 `LowInterferenceProcess` 共用工具；main boot/setup adb、QML Android controls、ADB raw screencap fallback、ScreenRecorder ffmpeg 都套 BelowNormal + low memory priority + power throttling，避免直接 `QProcess` 繞過 `ProcessLauncher` 後再次干擾背景音樂。
+- strict true-1080p60 verifier 對不相容 runtime 正確 fail-closed：`Required shared texture runtime is unavailable`，沒有啟動第二個 emulator/qemu，也沒有 raw fallback 假裝達標。
+- 驗證：`ctest --test-dir build -C Release --output-on-failure -LE integration` 20/20 PASS；結束後沒有殘留 `chimera-ui` / `emulator` / `qemu-system*` / `adb` / `ffmpeg`。
+- 真 Android 1080p/60 仍未達標。下一步是取得/對齊 SDK 36.5.11 matching gfxstream source/ABI，或在 stock-ABI proxy 中做只觀測的 `stream_renderer_flush`/resource probe，再把 display-post GPU texture producer 接到 D3D11 shared texture；不得退回 raw gRPC/ADB/screenrecord 或可見 stock emulator window。
+
+## 歷史狀態（2026-06-12 Session 65）
+
+- Session 65 釐清產品邊界：不從零重寫完整 Android VM；Chimera 保留 Android Emulator/QEMU/gfxstream 相容核心，但底層必須 headless，使用者面只能有 Chimera 單一視窗。外露或多開原生 Android Emulator 視窗是 bug，不是策略。
+- `VirtualMachine` 的 `m_state` 已改為 atomic，背景 exit monitor 不再和 start/stop/state 查詢形成 data race；emulator/qemu process tree 消失時會用明確 `VMState::Error` callback fail closed。
+- 重新實測 `build\chimera-gfxstream-runtime-sdk-release`：即使設定 `CHIMERA_DISABLE_GFXSTREAM_VK_D3D11_TEXTURE=1` 關掉 Chimera bridge，60 秒內仍沒有 5554/5555/8554、沒有 ADB device，log 停在 gfxstream feature list，未進 `FrameBuffer::initialize()`。
+- 對照 `dumpbin /DEPENDENTS`：stock SDK `libgfxstream_backend.dll` 依賴 `libandroid-emu-agents.dll`、`libandroid-emu-protos.dll`、`libandroid-emu-metrics.dll`；standalone `sdk-release` / `emu36` custom backend 都缺這些 SDK runtime imports，不能再當 SDK 36.5.11 相容 runtime。
+- `InstanceManager::probeEmulatorRuntime()` 與 `scripts\write-chimera-gfxstream-runtime-manifest.ps1` 現在除 marker、manifest、`gfxstream_backend_set_screen_background` 外，也要求 SDK runtime imports；缺任一項會回報 `SDK runtime imports are missing` 並拒絕 strict shared texture runtime。
+- strict invalid runtime smoke 已驗證：`chimera-ui --gfxstream-shared-texture` 在壞 runtime 下 exitCode=3，沒有留下 `chimera-ui` / `emulator` / `qemu-system*` / `adb`。
+- `CHIMERA_GFXSTREAM_PROXY_WRAP_RENDERLIB=1` 目前不是穩定路徑；短 probe 只記錄 `initLibrary result=wrapped`，沒有可靠 GRPC/producer 證據。不要把 RenderLib/Renderer wrapper 或 CPU `android_setPostCallback` readback 當 1080p/60 解法。
+- 驗證：`ctest --test-dir build -C Release --output-on-failure -LE integration` 20/20 PASS。
+- 真 Android 1080p/60 仍未達標。下一步只能找 SDK 36.5.11 相容 source/ABI 重建 modified gfxstream，或在 bootable stock-ABI proxy 中找到穩定 GPU display-post hook；不得退回 raw gRPC/ADB/screenrecord 或可見 stock emulator window。
+
+## 歷史狀態（2026-06-06 Session 64）
+
+- Session 64 新增 gfxstream proxy RenderLib/Renderer C++ wrapper probe，但 wrapper 只允許 opt-in；default proxy 仍 forward `initLibrary` 原物件，避免影響 boot。
+- `CHIMERA_GFXSTREAM_PROXY_WRAP_RENDERER=1` 實測會讓 emulator 早退，不可當正式 producer 接線點。
+- default proxy hidden/no-audio probe 已恢復：`sys.boot_completed=1`、boot completed in 29283 ms、`leftoverCount=0`，proxy log 顯示 `renderlib_wrapper initLibrary result=forwarded` 與 `android_setOpenglesRenderer ...`。
+- Session 63 重新確認架構邊界：不從零重寫完整 Android VM；Chimera 保留 Android Emulator/QEMU/gfxstream 相容核心，但正式產品面只允許 Chimera 單一視窗。
+- Session 63 重新驗證 headless visible-window gate：`test-process-launcher` / `test-virtual-machine` 2/2 PASS，`chimera-ui` build PASS，且沒有殘留 `chimera-ui` / `emulator` / `qemu-system*` / `adb`。
+- Session 62 補上 headless visible-window watchdog：正式 emulator 啟動不只帶 `-no-window` / hidden process policy，還會檢查 emulator/qemu process tree 是否外露可見 HWND。
+- 若 headless 路徑仍冒出 `Android Emulator - ...` 原生視窗，`VirtualMachine::start()` 會立即終止整棵 emulator tree 並回報啟動失敗，避免第二個原生視窗留在桌面上干擾主機音訊/資源。
+- 新增 `ProcessLauncher::visibleWindowTitlesInProcessTreeById()` 與 `terminateProcessTreeById()`；`test-process-launcher` 已覆蓋 hidden async launch 不外露視窗。
+- Session 62 驗證：`test-process-launcher` / `test-virtual-machine` PASS、`chimera-ui` build PASS，沒有殘留 `chimera-ui` / `emulator` / `qemu-system*` / `adb`。
+- Session 60 補上 visible stock Android Emulator window 的雙重保險：`--native-embed` / `--window-capture` 即使帶 unsafe 參數，也必須同時設 `CHIMERA_ALLOW_UNSAFE_VISIBLE_EMULATOR_WINDOW=1` 才允許外露原生視窗。
+- `InstanceManager` normalize 層現在會擋掉舊設定或程式路徑誤設的 `allowVisibleEmulatorWindow=true`，正式路徑回到 headless / `-no-window`。
+- `ChimeraWindow` title 改為 `Chimera`，不再顯示 `Android Emulator`。
+- Session 60 驗證：`test-instance-manager` PASS、完整 `ctest --test-dir build -C Release --output-on-failure -LE integration` 20/20 PASS、沒有殘留 `chimera-ui` / `emulator` / `qemu-system*`。
+- 新增 `scripts\build-chimera-gfxstream-proxy-runtime.ps1` 與 `src\host\runtime\gfxstream_proxy\gfxstream_proxy.c`：會複製 stock SDK emulator runtime 到 `build\chimera-gfxstream-proxy-runtime`，把 stock `libgfxstream_backend.dll` 保存為 `libgfxstream_backend_stock.dll`，再產生同 ABI proxy DLL。
+- proxy runtime smoke 已驗證：Chimera 以 `CHIMERA_EMULATOR_PATH=build\chimera-gfxstream-proxy-runtime\emulator.exe` 啟動時，Android 可在約 32 秒達 `sys.boot_completed=1`，guest 顯示為 `1920x1080 / 320 dpi`，且沒有殘留 `chimera-ui` / `emulator` / `qemu-system*`。
+- proxy hook 已確認被載入：`CHIMERA_GFXSTREAM_PROXY_LOG` 會記錄 `dll_process_attach=libgfxstream_backend_proxy`，且 SDK 36.5.11 初始化路徑會呼叫 `initLibrary` 與 `android_setOpenglesRenderer`；`stream_renderer_flush` 在目前 boot smoke 中不是活躍入口。
+- Renderer vtable patch probe 會讓 boot 提早結束，已撤回；不要把 stock Renderer object 的 vtable hard-patch 當正式路徑。下一步應走 source patch，或以完整相容的 RenderLib/Renderer wrapper 實作。
+- `emu-main-dev` source layout 已不同於 `emu-36-1-release`，缺舊 `host/gl/DisplayGl.cpp`；現有 shared texture patch 不適用。`build-chimera-gfxstream-runtime.ps1 -SkipConfigure` 已修成 patch 失敗時 fail-closed，避免假成功。
+- `VirtualMachine` 一般啟動現在同時帶 `-no-snapshot`、`-no-snapshot-load`、`-no-snapshot-save`；Quick Boot 未明確開 `CHIMERA_SAVE_QUICK_BOOT=1` 時也帶 `-no-snapshot-save`。proxy boot smoke 關閉時 log 未再出現 `Saving snapshot`。
+- 目前 proxy 仍是測量/定位基座，`sharedTextureProducer=false`，不可當 1080p/60 完成證據。下一步要在已確認的 `initLibrary` / renderer object path 包裝或 patch gfxstream source，把 display producer 接到 D3D11 shared texture。
+- 結論更新：`build\chimera-gfxstream-runtime` / `build\chimera-gfxstream-runtime-emu36` 這類 standalone-built `libgfxstream_backend.dll` 不能再被當成 SDK emulator 36.5.11 可替換 runtime；marker/manifest 不足以證明可用。
+- 實測：`build\chimera-gfxstream-runtime-emu36` 可 build/package，但 direct boot 180 秒沒有 ADB device；`scripts\verify-true-1080p60.ps1` 240 秒內未到 `sys.boot_completed=1`。同 AVD 用 stock SDK emulator 約 36 秒 boot completed。
+- ABI 證據：custom DLL 缺 SDK stock backend 需要的 `gfxstream_backend_set_screen_background` export，且多出新版 `stream_renderer_platform_import_resource` / `stream_renderer_wait_sync_resource`，所以 QEMU 會活著但 Android/ADB 不起來。
+- `InstanceManager::probeEmulatorRuntime()` 現在要求三件事才算 gfxstream shared texture ready：`ChimeraGfxstreamSharedTextureBridge` marker、合法 `chimera-gfxstream-shared-texture.json`、相容 SDK ABI export。
+- `scripts\write-chimera-gfxstream-runtime-manifest.ps1` 現在缺 `gfxstream_backend_set_screen_background` 時會拒絕寫 manifest；`build\chimera-gfxstream-runtime-emu36` 的舊 manifest 已移除。
+- 驗證：`test-instance-manager` PASS、`ctest --test-dir build -C Release --output-on-failure -LE integration` 20/20 PASS、gfxstream 相關 PowerShell parser checks PASS。
+- 這輪修的是「防止不相容 runtime 造成黑屏/多開/資源干擾」；真 Android 動態 1080p/60 仍未達標。下一步要取得 SDK 36.5.11 對應 source/ABI，或做 stock ABI wrapper 層接 shared texture producer。
+- `scripts\build-chimera-gfxstream-runtime.ps1` / `prepare-chimera-gfxstream-deps.ps1` 已支援 `-Branch`，可用於後續抓分支對齊 source；但目前公開 `emu-36-1-release` 對 SDK 36.5.11 仍不夠新。
+- `--window-capture` / stock emulator HWND capture 已封成 unsafe opt-in；`--native-embed` 也需要 `--allow-unsafe-native-window` 才會生效。`CHIMERA_ENABLE_NATIVE_EMBED` / `CHIMERA_ALLOW_UNSAFE_NATIVE_WINDOW` / `CHIMERA_ENABLE_WINDOW_CAPTURE` / `CHIMERA_ALLOW_UNSAFE_WINDOW_CAPTURE` 只會被警告並忽略，避免舊環境變數偷開原生 Android Emulator 視窗或工具列。
+- `InstanceConfig` / `VirtualMachineConfig` 預設 headless；沒有 `allowVisibleEmulatorWindow` unsafe gate 時，即使舊設定寫 `headless=false`，最後仍會帶 `-no-window`。
+- 新增 modern gfxstream shared texture runtime gate：stock `libgfxstream_backend.dll` 只會被標成 `stock gfxstream runtime; Chimera gfxstream bridge will not load`，只有具備合法 `chimera-gfxstream-shared-texture.json` 的 modified runtime 才能被當成 shared texture producer。
+- gfxstream gate 現在不只看 manifest：`libgfxstream_backend.dll` 必須內含 `ChimeraGfxstreamSharedTextureBridge` marker，否則 stock binary 加 manifest 仍會被拒絕。
+- 新增 `--gfxstream-shared-texture` / `CHIMERA_ENABLE_GFXSTREAM_SHARED_TEXTURE=1` 與 `CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE=1` fail-closed 模式；runtime 不可用或 shared texture 沒第一幀時，不會退回 raw gRPC/ADB 或 stock emulator 視窗。
+- 新增 `scripts/write-chimera-gfxstream-runtime-manifest.ps1`；manifest 必須宣告 `producer=ChimeraGfxstreamSharedTextureBridge`、`transport=D3D11SharedTexture`、`minWidth>=1920`、`minHeight>=1080`、`targetFps>=60`。
+- `scripts/verify-true-1080p60.ps1` 預設 `-RuntimeKind Gfxstream`，預設 runtime path 為 `build\chimera-gfxstream-runtime\emulator.exe`；legacy EmuGL runtime 要明確用 `-RuntimeKind EmuGL`。
+- legacy EmuGL bridge 已補 strict no-readback：`CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE` / `CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE` 開啟時，`FrameBuffer::post()` 不再退回 `m_onPost` / `ColorBuffer::readback()`；shared texture 初始化硬失敗會 latch，避免每幀重試與錯誤輸出干擾 host audio。
+- `scripts\build-chimera-emugl-runtime.ps1` 最新可重新 build 出含 strict bridge marker 的 `build\chimera-emugl-runtime\lib64\lib64OpenglRender.dll`；`emulator.exe -help` 可執行。
+- ADB H.264 fallback 已降干擾：移除重複 ffmpeg scale、helper process 套低優先級/低 memory priority/power throttling，解碼 BGRA frame 優先送 `SharedD3D11TexturePublisher`，QImage 僅作 fallback。
+- `scripts/build-chimera-emugl-runtime.ps1` 現可產出 classic `emulator.exe` / `emulator64-x86.exe`、完整 legacy EmuGL DLL set、MinGW runtime DLL 與 `chimera-emugl-shared-texture.json`。
+- `emulator64-x86.exe -help` 可執行；host 也已新增 classic-compatible args，避免把 `-grpc`、`-window-size`、`-vsync-rate` 傳給 classic runtime。
+- 這仍不是 production runtime：短 smoke 證明 classic runtime 無法跑 Android 34 `google_apis_playstore/x86_64`，因 modern image 只有 `kernel-ranchu`，classic path 期待/解析的是 `kernel-qemu`。
+- 架構決策：短期不完整自研 Android VM；保留 Android/QEMU 相容層，改寫 host shell、headless display producer、input 與 resource policy，下一步是 modern ranchu/gfxstream shared texture bridge。正式產品路徑只能有一個 Chimera 視窗，不可再多開或外露原生 Android Emulator 視窗。
+- modern gfxstream source 已抓到 `tmp\gfxstream-src` 做只讀分析；實際接點在官方 `host\FrameBuffer.cpp::postImpl()` / `host\PostWorkerGl.cpp::postImpl()`。`GpuFrameBridge` 太晚，已經是 CPU pixels；stock DLL forwarder 風險高，因 `libgfxstream_backend.dll` 匯出大量 C++ mangled symbols。
+- 真 Android 動態 1080p/60 尚未達標；下一步要 patch/replace modern gfxstream producer 並讓 `scripts/verify-true-1080p60.ps1` 在 dynamic flow PASS，不能回退到 stock emulator HWND 或 raw screenshot fallback。
+
 ## 引擎決策（最重要）
 
 **生產引擎**: `emulator.exe`（Google QEMU+WHPX fork，與 BlueStacks 自製引擎同等級）
@@ -217,7 +350,7 @@ Chimera 的等效路徑：Android Console `event` protocol on port 5554（繞過
 ## Session 4 補強（2026-05-19）
 
 - ✅ **APK 安裝通知**：`installApk()` 成功後 emit `notificationRequested` signal；`ChimeraWindow.qml` 加 `Connections { target: AndroidControls }` → `trayIcon.showMessage()`
-- ✅ **螢幕尺寸預設**：Settings 頁加入 4 個常用尺寸（手機 9:16 / 9:19、平板 4:3、橫屏 16:9）+ 重置按鈕；`setScreenSize()` / `resetScreenSize()` via `adb shell wm size`
+- ✅ **螢幕尺寸預設**：Settings 頁目前只保留至少 1920x1080 的尺寸入口；`setScreenSize()` / `resetScreenSize()` via `adb shell wm size`
 - ✅ **App Manager 強化**：ListView delegate 新增「清除」（`pm clear`）和「卸載」（`adb uninstall`）按鈕；卸載時從本機清單同步移除
 - ✅ **截圖存 Downloads + 通知**：`takeScreenshot()` 從 `screenshots/` 相對路徑改為 `screenshotDir()`（Downloads）+ `trayIcon.showMessage()`
 - ✅ **OBB 擴充資料安裝**：`installObb(fileUrl, packageName)` → `mkdir -p /sdcard/Android/obb/<pkg>/` → `adb push`；獨立 one-shot QProcess 避免 m_adbProcess 衝突；QML 加「安裝 OBB」SideButton + 對話框
@@ -1013,3 +1146,694 @@ HANDLE acquireKillOnCloseJob() {
 - 尚未完成的核心目標：把 Android/emulator guest framebuffer producer 接到 named D3D11 shared texture，並用通知欄、滾輪滑動、app switch/遊戲 flow 驗證真 1080p 60+。
 
 *Updated: 2026-05-27 — Session 29*
+
+---
+
+## Session 30 — Audio stutter guard / 1080p fallback containment（2026-05-27）
+
+### 修正
+
+- 使用者回報原本修好的背景音樂卡頓/雜音又回來；本輪先把主機資源搶占當成回歸處理，而不是追表面 FPS。
+- `streamScreenshot` MMAP capture 修正 top-down frame copy，並移除 full-frame hash 成本，改以 metadata sequence 判斷新 frame；但此路徑實測仍不是 1080p 60，維持 `CHIMERA_GRPC_TRANSPORT=mmap` opt-in。
+- Legacy native Win32 embed 再次確認不可當預設：即使 attach log 顯示成功，實際畫面會黑屏/工具列外漏。
+- 預設 Quick Boot 改為啟用，只有 `CHIMERA_QUICK_BOOT=0` 才 full boot；boot completed 後 30s 會非同步保存 `chimera_quickboot` snapshot，降低後續 cold boot 對主機音訊的影響。
+- emulator/qemu 預設 priority 改為 `below_normal`，`ProcessLauncher` 對 BelowNormal/Idle process 套用 Windows power throttling / EcoQoS。
+- guest audio log 改成明確 `Guest audio: disabled by default (-no-audio)`；`enableAudio=false` 仍不可掛 `virtio-snd-pci`。
+- 1080p unary gRPC fallback 保留，但靜止 duplicate cadence 從 50ms 降到 250ms，啟動時不再先進 2s interactive 忙輪詢。
+
+### 驗證
+
+- `cmake --build build --config Release --target chimera-ui test-process-launcher test-grpc-framebuffer-capture`：通過。
+- `test-process-launcher`：15/15 PASS。
+- `test-grpc-framebuffer-capture`：4/4 PASS。
+- `ctest --test-dir build -C Release --output-on-failure -LE integration`：19/19 PASS。
+- 短 runtime smoke 已確認 qemu priority 為 BelowNormal、guest size 維持 1920x1080、guest audio 為 disabled；為避免再次干擾使用者背景音樂，未執行長時間音訊壓測。
+
+### 狀態
+
+- 這輪修的是「不要再傷主機音訊 / 不要把實驗路徑當預設」；真 1080p 60+ 尚未完成。
+- 下一個必要工程仍是 Android/emulator 端 shared D3D11 texture producer，讓 dynamic guest frame 不再走 1080p CPU screenshot/readback。
+
+*Updated: 2026-05-27 — Session 30*
+
+---
+
+## Session 31 — Reusable D3D11 shared texture producer（2026-05-31）
+
+### 修正
+
+- 把測試用 `shared_d3d11_texture_producer` 裡的 named D3D11 texture / metadata mapping / event / sequence 寫法抽成正式 `SharedD3D11TexturePublisher`。
+- Publisher 建立 named shared D3D11 texture，寫入 `SharedD3D11TextureHeader`，並用 odd/even sequence 發布 frame，供 `SharedD3D11TextureCapture` 消費。
+- Publisher 支援 `publishColor()` 產生 60Hz smoke source，也支援 `publishTexture(void*)`，作為下一步 QEMU/custom display bridge 接 D3D11 texture 的入口。
+- `shared_d3d11_texture_producer` 改用正式 publisher，預設解析度改為 1920x1080、60fps，不再以 1280x720 當測試 source。
+- `test-shared-d3d11-texture-capture` 改成直接驗證 publisher 產生的 named texture / metadata 可被 consumer 打開。
+
+### 驗證
+
+- `cmake --build build --config Release --target chimera-graphics shared_d3d11_texture_producer test-shared-d3d11-texture-capture`：通過。
+- `test-shared-d3d11-texture-capture`：3/3 PASS。
+- `shared_d3d11_texture_producer --width 1920 --height 1080 --fps 60 --seconds 1`：退出碼 0。
+
+### 狀態
+
+- Host consumer 與 producer contract 已共用同一套 ABI；這是把 emulator 端實際 guest frame 接進 shared texture 的前置工作。
+- 尚未完成真 1080p 60+：還要把 QEMU/EmuGL 的 `FrameBuffer::post()` / `ColorBuffer::post()` 或 `GpuFrameBridge` 接到 publisher，並用通知欄/滑動/遊戲 flow 驗證 Guest/Stream/Render。
+
+*Updated: 2026-05-31 — Session 31*
+
+---
+
+## Session 32 — EmuGL shared texture bridge hook（2026-05-31）
+
+### 修正
+
+- 在 QEMU/EmuGL `libOpenglRender` 新增 `ChimeraSharedTextureBridge`。
+- `ColorBuffer` 新增 `getTextureName()`，讓 bridge 可直接取得 guest color buffer 的 GL texture name。
+- `FrameBuffer::post()` 在 sub-window 與 headless/no-subwindow 分支都會嘗試發布 shared texture。
+- Bridge 透過 `eglCreatePbufferFromClientBuffer` / `EGL_ANGLE_d3d_share_handle_client_buffer` 將 named D3D11 shared texture 包成 EGL surface，再用既有 `TextureDraw` 把 guest GL texture 畫入 D3D11 shared texture。
+- 若 bridge 成功發布 frame，`FrameBuffer::post()` 會跳過 `m_onPost` 的 `ColorBuffer::readback()`，避免 shared texture path 仍被 CPU readback 拖慢。
+- `libOpenglRender/Android.mk` 加入 `ChimeraSharedTextureBridge.cpp`；Windows host build 補 `d3d11/dxgi` link libs。
+
+### 驗證
+
+- 既有 host app build 不受影響：`cmake --build build --config Release --target chimera-ui shared_d3d11_texture_producer test-shared-d3d11-texture-capture test-grpc-framebuffer-capture` 通過。
+- 尚未完成 custom emulator runtime 驗證；目前 stock Android SDK emulator 不會載入這份修改後的 `libOpenglRender`。
+
+### 狀態
+
+- 這輪把真正 guest frame 的 shared texture hook 放到了正確的 EmuGL post 點，並移除成功路徑上的 CPU readback。
+- 尚未證明 Android 動態 flow 真 1080p 60+；下一步需要把 modified EmuGL build 進 custom emulator 或建立可載入的實驗 runtime，然後跑通知欄/滾輪/遊戲 flow。
+
+*Updated: 2026-05-31 — Session 32*
+
+---
+
+## Session 33 — Host audio stutter regression containment（2026-05-31）
+
+### 修正
+
+- 使用者回報原本修好的背景音樂卡頓又回來；本輪鎖定啟動資源搶占，而不是看前端 FPS。
+- `ProcessLauncher::runAsync()` 新增 initial priority，child process 先 suspended 建立、套 priority/EcoQoS，再 `ResumeThread()`。
+- `VirtualMachine::start()` 將 emulator/qemu 的 `below_normal` priority 傳進 initial launch，避免啟動第一段仍以 Normal priority 搶 host audio。
+- Quick Boot 仍預設載入 snapshot；但 boot 後自動保存 snapshot 改成 `CHIMERA_SAVE_QUICK_BOOT=1` 才啟用，預設不做背景磁碟/CPU 重工作。
+- `SharedD3D11TextureCapture` 對 metadata mapping 尚未存在的情況安靜重試，避免實驗 shared texture env 洗出錯誤洪水。
+
+### 驗證
+
+- `cmake --build build --config Release --target chimera-ui test-shared-d3d11-texture-capture test-grpc-framebuffer-capture`：通過。
+- `test-process-launcher` 新增 initial priority 驗證並通過。
+- `ctest --test-dir build -C Release --output-on-failure -LE integration`：19/19 PASS。
+- `chimera-ui --no-emulator` 短 smoke 後無 qemu/emulator/chimera-ui 殘留。
+
+### 狀態
+
+- 已修正這次最可能讓 host 音樂卡頓回歸的兩個預設路徑：啟動瞬間 priority 過晚、boot 後自動 snapshot save。
+- 真 1920x1080 / dynamic Guest+Stream+Render 60+ 仍未完成，下一步仍是 custom emulator shared texture runtime 驗證。
+
+*Updated: 2026-05-31 — Session 33*
+
+---
+
+## Session 34 — EmuGL shared texture runtime opt-in wiring（2026-05-31）
+
+### 修正
+
+- 新增 `--emugl-shared-texture` 與 `CHIMERA_ENABLE_EMUGL_SHARED_TEXTURE=1` opt-in，作為 modified EmuGL bridge 的 host runtime 接線。
+- 新增 `CHIMERA_EMULATOR_PATH` 覆蓋，讓 custom emulator 可以獨立於官方 SDK runtime 測試。
+- opt-in 時自動產生 `Local\ChimeraEmuglD3D11Meta_<pid>` / texture / event 名稱，並同時寫入 `CHIMERA_D3D11_TEXTURE_*` 與 `CHIMERA_EMUGL_D3D11_TEXTURE_*`。
+- 若外部已提供任一側 metadata env，host 會沿用既有名稱並補齊另一側，避免 host consumer / emulator producer 名稱不一致。
+- gRPC fallback 的 input activity boost 現在即使 shared texture capture object 存在也保留，避免 shared texture 第一幀前滾輪/觸控 pacing 退化。
+- `InstanceManager` 啟動前會把 custom emulator 旁邊的 `lib64/`、`lib/`、本體目錄 prepend 到 PATH，符合舊 Android Emulator SDK-like layout。
+
+### 驗證
+
+- `cmake --build build --config Release --target chimera-ui test-process-launcher`：通過。
+- `cmake --build build --config Release --target chimera-ui test-instance-manager`：通過。
+- `chimera-ui --no-emulator --emugl-shared-texture`：opt-in log 出現，且沒有 qemu/emulator/chimera-ui 殘留。
+
+### 狀態
+
+- Host runtime 已能把 shared texture transport 名稱傳給 modified EmuGL；stock emulator 預設不啟用，避免無 producer 時增加干擾。
+- 下一步仍是 custom emulator / modified `libOpenglRender` build 或載入路徑，然後做 Android dynamic flow 的 Guest/Stream/Render 60 FPS 驗證。
+
+*Updated: 2026-05-31 — Session 34*
+
+---
+
+## Session 35 — Audio stutter regression re-fix（2026-05-31）
+
+### 修正
+
+- 使用者指出背景音樂卡頓「原本修好又回來」；本輪重新檢查啟動/關閉資源路徑。
+- 根因方向：Session 33 只把 boot 後自動保存 snapshot 改成 opt-in，但 Quick Boot 載入仍是預設，而且 `VirtualMachine::stop()` 只要 quickBoot=true 仍會同步保存 `chimera_quickboot`。
+- `CHIMERA_QUICK_BOOT` 改回明確 opt-in：只有設為 `1` 才載入 snapshot；預設 full boot。
+- `CHIMERA_SAVE_QUICK_BOOT` 同時控制 boot 後延遲保存與 `VirtualMachine::stop()` 保存；當時預設關閉時只送 `adb emu kill`，不做 snapshot save。Session 69 已再收緊：一般 stop / true verifier cleanup 不再送 `adb emu kill`。
+- `VirtualMachineConfig` / `InstanceConfig` / `configs/instances.json` 的 quickBoot 預設改為 false。
+
+### 驗證
+
+- `cmake --build build --config Release --target chimera-ui test-virtual-machine test-process-launcher`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -R "test-virtual-machine|test-process-launcher"`：2/2 PASS。
+- `ctest --test-dir build -C Release --output-on-failure -LE integration`：19/19 PASS。
+- `chimera-ui --no-emulator` smoke：啟動後強制關閉，無 Chimera/qemu/emulator 殘留。
+
+### 狀態
+
+- 已把這次最明確的音訊回歸來源封住：snapshot load/save 不再是一般啟動或關閉的隱性工作。
+- 真 1920x1080 dynamic Guest/Stream/Render 60+ 仍未完成；raw gRPC fallback 仍不是最終效能路徑。
+
+*Updated: 2026-05-31 — Session 35*
+
+---
+
+## Session 36 — MMAP regression containment（2026-05-31）
+
+### 修正
+
+- 釐清 MMAP 回歸：unary `getScreenshot` 的 `Image.seq` 固定為 0，不能拿來判斷新幀，否則畫面變化會被誤判成 duplicate。
+- `GrpcMmapFramebufferCapture` 改用單條 `streamScreenshot` MMAP，不再開三條 1080p unary screenshot pipeline。
+- MMAP path 使用 stream sequence 當 dirty signal，只在 sequence 變動時送 `frameReady()`，避免主 UI repaint 與 FPS 指標失真。
+- 沒有改成 full-frame hash；1080p 每幀掃圖會把 CPU 成本帶回 host，增加音樂卡頓風險。
+
+### 驗證
+
+- `cmake --build build --config Release --target chimera-ui test-grpc-framebuffer-capture`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -R test-grpc-framebuffer-capture`：1/1 PASS。
+- Runtime smoke：full boot、guest audio disabled、display `1920x1080 dpi 320`、結束後無 `chimera-ui` / `emulator` / `qemu-system*` 殘留。
+- stock emulator MMAP stream 實測只有約 Guest/Stream/Render `12.0 FPS`，所以這不是 60 FPS 完成證據。
+
+### 狀態
+
+- MMAP 已從「可能誤報/忙輪詢」改成比較乾淨的 opt-in 實驗路徑。
+- 真 1920x1080 dynamic 60+ 仍需 modified EmuGL shared texture/custom emulator runtime；stock emulator gRPC/MMAP 不能達標。
+
+*Updated: 2026-05-31 — Session 36*
+
+---
+
+## Session 37 — Screenrecord regression containment（2026-05-31）
+
+### 修正
+
+- 使用者指出背景音樂卡頓回來；本輪先確認不是 orphan process：檢查時沒有 `chimera-ui` / `emulator` / `qemu-system*` / `ffmpeg` / `adb` 殘留。
+- 確認預設 instance 仍是低干擾設定：2 vCPU、guest audio disabled、`below_normal` priority、Quick Boot load/save opt-in。
+- `CHIMERA_VIDEO_TRANSPORT=screenrecord` 的 ADB-H264 路徑不再每 5 秒重啟 adb/ffmpeg；未出第一幀時改成 30 秒 restart window，且不再並行啟動 raw ADB fallback 增加負載。
+- ADB-H264 capture error 現在會附上 adb/ffmpeg stderr tail，避免黑畫面或 0 FPS 沒有可診斷原因。
+- `ffmpeg -probesize` 從 32 調到 65536，避免 H.264 parameter sets 被過小 probe 截掉。
+- 預設 unary gRPC fallback 不再用 16ms 1080p readback 硬打，改為 33ms 保守節奏；raw readback 不是 60 FPS 生產路徑。
+
+### 驗證
+
+- `cmake --build build --config Release --target chimera-ui test-grpc-framebuffer-capture`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -R test-grpc-framebuffer-capture`：1/1 PASS。
+- `ctest --test-dir build -C Release --output-on-failure -LE integration`：19/19 PASS。
+- `chimera-ui --no-emulator` 短 smoke 後沒有 `chimera-ui` / `emulator` / `qemu-system*` / `ffmpeg` 殘留。
+
+### 狀態
+
+- 已封住這次最可能導致 host audio 卡頓回來的兩條路：screenrecord 高頻重啟、raw gRPC 16ms 1080p readback。
+- 真 1920x1080 dynamic 60+ 仍未完成；下一步仍是 custom emulator / gfxstream 或 modified EmuGL shared texture runtime。
+
+*Updated: 2026-05-31 — Session 37*
+
+---
+
+## Session 38 — Custom runtime gate for true 1080p/60（2026-06-01）
+
+### 修正
+
+- 重新確認目前 1920x1080 floor 仍由 `GrpcFramebufferCapture::normalizedCaptureSize()` 與 unit test 守住；raw gRPC/MMAP/screenrecord 都不能當 60 FPS 完成證據。
+- 補 `InstanceManager::probeEmulatorRuntime()`，辨識 selected emulator runtime 是否為 stock gfxstream、legacy EmuGL、或 Chimera EmuGL shared texture runtime。
+- `--emugl-shared-texture` / `CHIMERA_ENABLE_EMUGL_SHARED_TEXTURE=1` 現在會設定 `CHIMERA_EMUGL_SHARED_TEXTURE_REQUESTED=1`；instance 建立時會輸出 `CHIMERA_EMUGL_SHARED_TEXTURE_RUNTIME_READY/STATUS`。
+- 若 runtime 是 stock `libgfxstream_backend.dll`、沒有 legacy `lib64OpenglRender.dll`，host 會標示 shared texture producer 不可用，並跳過 EmuGL shared texture capture，避免假裝走上 shared texture。
+- 新增 `CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE=1`：如果要求 shared texture 但 runtime 不支援，instance create 直接失敗，不會 silent fallback 到 raw readback。
+- 新增 `scripts/write-chimera-emugl-runtime-manifest.ps1`：只有 custom runtime 中真的有 `lib64/lib64OpenglRender.dll` 才會寫入 `chimera-emugl-shared-texture.json`；stock gfxstream runtime 會被拒絕。
+
+### 驗證
+
+- `cmake --build build --config Release --target chimera-ui test-instance-manager test-grpc-framebuffer-capture`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -R "test-instance-manager|test-grpc-framebuffer-capture"`：2/2 PASS。
+- `ctest --test-dir build -C Release --output-on-failure -LE integration`：19/19 PASS。
+- Manifest script 對 stock SDK emulator 正確拒絕並輸出 `stock gfxstream runtime detected; it cannot load ChimeraSharedTextureBridge`。
+- Manifest script 對 fake legacy runtime 可寫出 manifest，內容包含 `minWidth=1920`、`minHeight=1080`、`targetFps=60`。
+
+### 狀態
+
+- 已堵住「stock emulator + shared texture env」這種假成功路徑；之後不會把 raw fallback 或無 producer 的 shared texture retry 當作真 60 FPS。
+- 真 1920x1080 dynamic 60+ 仍未完成；下一步是實際 build/load custom EmuGL runtime，或把 producer port 到 stock gfxstream backend，然後用 Android 通知欄/滾輪/遊戲 flow 驗證 Guest/Stream/Render。
+
+*Updated: 2026-06-01 — Session 38*
+
+---
+
+## Session 39 — Custom EmuGL build path probe（2026-06-01）
+
+### 修正
+
+- 檢查 WSL build path：Windows 直接 `bash` 會落到壞的 WSL relay；指定 `wsl -d Ubuntu-24.04` 可執行 Linux toolchain。
+- WSL 內原本缺 `x86_64-w64-mingw32-gcc`；已安裝 `mingw-w64`。
+- qemu 子倉庫 shell scripts 在 Windows checkout 是 CRLF；直接在 WSL 跑 `android-configure.sh` 會因 `$'\r'` 失敗。
+- 新增 `scripts/build-chimera-emugl-runtime.ps1 [-AospPrebuiltsDir <path>]`：建立 `/tmp` 臨時 copy、轉換含 CRLF 的文字檔為 LF、再跑 `android-rebuild.sh --mingw --no-tests`；不污染 qemu 子倉庫。
+- build wrapper 成功跨過 CRLF 與 MinGW 檢查後，明確停在缺完整 AOSP prebuilts：`/mnt/d/Workspace_cloud/Personal_Project/chimera/src/prebuilts/gcc`。
+- wrapper 以 exit code `3` 回報缺 AOSP prebuilts，並停止，不會再寫 manifest 或誤報 custom runtime ready。
+
+### 驗證
+
+- `wsl -d Ubuntu-24.04 -- bash -lc 'command -v x86_64-w64-mingw32-gcc'`：可用。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-chimera-emugl-runtime.ps1`：exit code `3`，輸出 `missing AOSP prebuilts: .../src/prebuilts/gcc`。
+- `ctest --test-dir build -C Release --output-on-failure -R "test-instance-manager|test-grpc-framebuffer-capture"`：2/2 PASS。
+
+### 狀態
+
+- custom EmuGL runtime 尚未產出；目前真正 blocker 是缺完整 AOSP prebuilts/build tree。
+- 這再次確認不能靠 stock emulator raw gRPC/MMAP/screenrecord 達成真 1080p/60；下一步要取得/接入完整 AOSP emulator prebuilts，或改走 stock gfxstream backend producer port。
+
+*Updated: 2026-06-01 — Session 39*
+
+---
+
+## Session 40 — Enforce guest/window 1080p floor（2026-06-01）
+
+### 修正
+
+- 將 1920x1080 floor 從 capture request 擴到 VM guest/window 層。
+- `VirtualMachine.cpp` 新增共用 guest display floor；`applyAvdHardwareConfig()` 會把 `hw.lcd.width/height` clamp 到至少 `1920x1080`。
+- emulator `-window-size` 也改用同一 floor；即使 config 或 UI 寫入 `800x450`，啟動參數仍會是 `1920x1080`。
+- 這避免只在 host capture 層看似 1080p，但 guest/AVD 本身被低解析度設定偷降階。
+
+### 驗證
+
+- `test-virtual-machine` 新增 `emulatorWindowSizeKeeps1080pFloor()`，驗證 `VirtualMachineConfig{width=800,height=450}` 仍輸出 `-window-size 1920x1080`，且不含 `800x450`。
+- `cmake --build build --config Release --target test-virtual-machine test-grpc-framebuffer-capture`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -R "test-virtual-machine|test-grpc-framebuffer-capture"`：2/2 PASS。
+
+### 狀態
+
+- 「不可偷偷降解析度」現在覆蓋 VM guest/window 與 capture request 層。
+- 真 1920x1080 dynamic 60+ 仍未完成；效能瓶頸仍在缺 custom/shared texture producer runtime。
+
+*Updated: 2026-06-01 — Session 40*
+
+---
+
+## Session 41 — Normalize instance config resolution（2026-06-01）
+
+### 修正
+
+- `InstanceManager.cpp` 新增 `normalizedInstanceConfig()`，讓 saved config 與 live config 在進入 VM 前就被 clamp 到至少 1920x1080。
+- `loadInstances()` 讀取舊設定時會正規化 width/height，避免歷史低解析度設定繼續流入 UI 或 VM。
+- `createInstance()` 現在用 normalized config 建立 `VirtualMachineConfig`，並把 normalized config 寫回 saved configs。
+- `saveInstances()` 寫出 JSON 時也使用 normalized config，避免低解析度再次落盤。
+
+### 驗證
+
+- `test-instance-manager` 新增 `createInstanceKeeps1080pFloor()`，驗證傳入 `800x450` 後 `getInstanceConfig()` 回傳 `1920x1080`。
+- `cmake --build build --config Release --target test-instance-manager test-virtual-machine test-grpc-framebuffer-capture`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -R "test-instance-manager|test-virtual-machine|test-grpc-framebuffer-capture"`：3/3 PASS。
+
+### 狀態
+
+- 解析度 floor 現在覆蓋 instance config、VM args、AVD hardware config、capture request。
+- 真 1920x1080 dynamic 60+ 仍未完成；還是卡在缺 custom/shared texture producer runtime。
+
+*Updated: 2026-06-01 — Session 41*
+
+---
+
+## Session 42 — Startup audio/resource regression guard（2026-06-01）
+
+### 修正
+
+- 回歸點判定為啟動期資源搶占：qemu child 在 emulator resume 後才生出來，原本可能有短暫 Normal priority/EcoQoS 未套用窗口。
+- `InstanceConfig` / `VirtualMachineConfig` 預設 priority 改成 `below_normal`；`InstanceManager` 讀寫 config 時補空值，並把 `high/gaming/above_normal/realtime` cap 到 `normal`。
+- `VirtualMachine` priority mapping 不再產生 High/Realtime；`ProcessLauncher::applyPriority()` 也會把任何高 priority request cap 到 Normal。
+- emulator start 後前 5 秒每 50ms 重套整棵 process tree priority/EcoQoS，再每秒追蹤，降低 qemu child 啟動尖峰干擾主機音訊的機率。
+- UI 螢幕尺寸 preset 移除低於 1920x1080 的入口；`QmlAndroidControls::setScreenSize()` 邊界也會 clamp 到至少 1920x1080。
+
+### 驗證
+
+- `cmake --build build --config Release --target test-process-launcher test-instance-manager chimera-ui`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -R "test-instance-manager|test-virtual-machine|test-process-launcher"`：3/3 PASS。
+- `ctest --test-dir build -C Release --output-on-failure -LE integration`：19/19 PASS。
+- 本輪沒有偵測到正在跑的 `qemu-system*` / `emulator` / `chimera-ui`；為避免再次干擾使用者背景音樂，未啟動 full Android boot。
+
+### 狀態
+
+- 這輪修的是「原本修好的主機音訊/資源搶占又回來」的防線。
+- 真 1920x1080 dynamic 60+ 還是未完成；仍需要 custom/shared texture producer runtime 做 Android 動態 flow 驗證。
+
+*Updated: 2026-06-01 — Session 42*
+
+---
+
+## Session 43 — Legacy backend 1080p floor（2026-06-01）
+
+### 修正
+
+- 掃描目前工作樹後發現 production emulator path 已 clamp，但 legacy `QemuBackend` / HCS path 仍有 1024x768 / 1280x720 fallback。
+- `QemuInstanceConfig` 預設顯示解析度改成 `1920x1080`。
+- `QemuBackend` constructor 會正規化低於 1920x1080 的 config，避免 `virtio-gpu-pci,xres/yres` 偷偷降階。
+- `main.cpp` 讀取 `qemu.json` / `cuttlefish.json` 的 display 設定時會 clamp 到至少 1920x1080。
+- `HyperVManager::buildHcsJsonString()` 的 synthetic video monitor 改為 1920x1080。
+- `scripts/test-vnc-display.ps1` 的 `virtio-gpu-pci` 也改成 1920x1080，避免 R&D smoke 用低解析度。
+- 新增 `test-qemu-backend` 鎖住 QEMU/HCS 兩條 legacy path 的解析度 floor。
+
+### 驗證
+
+- `cmake --build build --config Release --target test-qemu-backend chimera-ui`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -R "test-qemu-backend|test-instance-manager|test-virtual-machine|test-grpc-framebuffer-capture"`：4/4 PASS。
+- `ctest --test-dir build -C Release --output-on-failure -LE integration`：20/20 PASS。
+
+### 狀態
+
+- 解析度 floor 現在覆蓋 production emulator、instance config、VM args、AVD hardware config、host capture request、UI `wm size`、legacy QEMU/HCS backend。
+- 真 1920x1080 dynamic 60+ 仍未完成；仍要接 custom/shared texture producer runtime。
+
+*Updated: 2026-06-01 — Session 43*
+
+---
+
+## Session 44 — gRPC fallback RGBA render path（2026-06-01）
+
+### 修正
+
+- 盤點 `GuestDisplay` 後確認 D3D11 upload texture 會重用，但 RGB888 frame 仍會在 render path 被轉成 RGBA。
+- `GrpcFramebufferCapture::buildImageFormatRequest()` 改為要求 RGBA8888，對齊 Qt D3D11 texture upload 格式，避免 raw fallback 每幀再進 render-thread format conversion。
+- `GrpcFramebufferCapture::imageFromTopDown()` 一律輸出 `QImage::Format_RGBA8888`；若 emulator/runtime 回 RGB888，會在 capture 層一次展開成 RGBA。
+- `GrpcMmapFramebufferCapture` MMAP request 也改為 RGBA8888，臨時 mmap 檔名改為 `.rgba`；RGB888 回應仍相容但在 capture 層轉 RGBA。
+- `test_grpc_framebuffer_capture` 更新為驗證 unary/MMAP ImageFormat 欄位為 `1`（RGBA8888），同時維持 1920x1080 floor。
+
+### 驗證
+
+- `cmake --build build --config Release --target test-grpc-framebuffer-capture chimera-ui`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -R "test-grpc-framebuffer-capture"`：1/1 PASS。
+- `ctest --test-dir build -C Release --output-on-failure -LE integration`：20/20 PASS。
+
+### 狀態
+
+- raw fallback render-thread 開銷已降低，但 raw screenshot/MMAP 仍不是 1080p/60 的完成路徑。
+- 本輪未啟動 full Android runtime，避免再次造成使用者主機音訊卡頓；真 1080p dynamic 60+ 仍需 shared texture/custom runtime 驗證。
+
+*Updated: 2026-06-01 — Session 44*
+
+---
+
+## Session 45 — Host audio startup isolation（2026-06-01）
+
+### 修正
+
+- 針對「啟動 Chimera 會讓背景音樂卡頓/雜音」重新檢查啟動路徑。
+- 確認 raw gRPC / MMAP / H.264 capture 仍由 `androidBootReady` gate 控制，只有 `sys.boot_completed=1` 後才會開始；本輪主要處理 emulator/qemu 啟動尖峰。
+- `VirtualMachine::start()` 現在以 startup priority 啟動 emulator：steady priority 為 `below_normal` 時，啟動前段先用 `IDLE_PRIORITY_CLASS`。
+- emulator 啟動後前 30 秒每 50ms 重套整棵 process tree startup priority，覆蓋 qemu child 在 parent resume 後才出生的競態；之後再以 steady priority 追蹤 90 秒。
+- `ProcessLauncher::applyPriority()` 對 `below_normal` / `idle` process 追加 `ProcessMemoryPriority`，並透過 `ProcessPowerThrottling` 套 execution speed / ignore timer resolution，降低對 foreground browser/audio 的搶占。
+- 新增 `test_process_launcher::runAsyncAppliesIdlePriority()`，鎖住 `IDLE_PRIORITY_CLASS` 可被套用；高 priority 仍會被 cap 到 Normal。
+
+### 驗證
+
+- `cmake --build build --config Release --target test-process-launcher chimera-ui`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -R "test-process-launcher|test-virtual-machine|test-instance-manager"`：3/3 PASS。
+- `ctest --test-dir build -C Release --output-on-failure -LE integration`：20/20 PASS。
+- 受控 runtime smoke：hidden 啟動 `chimera-ui.exe` 12 秒，`emulator.exe` / `qemu-system-x86_64-headless.exe` Priority 都是 `4`（Idle），`chimera-ui.exe` 是 `8`（Normal）。
+- smoke 結束後 force-stop host，5 秒後確認沒有 `chimera-ui` / `emulator` / `qemu-system*` 殘留。
+
+### 狀態
+
+- 這輪直接降低 emulator/qemu 啟動期對主機音樂的干擾，代價是啟動前段可能比之前更保守。
+- 已證明啟動前 12 秒 emulator/qemu 確實落在 Idle priority；尚未長跑到 Android HOME 完整可用狀態。
+
+*Updated: 2026-06-01 — Session 45*
+
+---
+
+## Session 46 — No-downscale cleanup before true 60 FPS proof（2026-06-01）
+
+### 修正
+
+- 子代理掃描指出仍有 active config/script 能繞過 production clamp：`configs/qemu.json`、`configs/cuttlefish.json`、`scripts/run.py`、三個 HCS diagnostic scripts。
+- `configs/qemu.json` / `configs/cuttlefish.json` display 預設改為 `1920x1080`。
+- `scripts/run.py` 對 `--resolution` 加上 `1920x1080` floor，低於最低值會提示並 clamp。
+- `scripts/test-hcs-wsl2-kernel.py`、`scripts/test-hcs-gpu-pv.py`、`scripts/test-hcs-cuttlefish.py` 的 `VideoMonitor` 改成 `1920x1080`。
+- `SharedMemoryFrameAbi` 新增共用最低 frame 尺寸；`SharedD3D11TexturePublisher` 與 `SharedD3D11TextureCapture` 低於 `1920x1080` 直接拒絕，避免 shared texture path 用低解析度冒充 60 FPS。
+- `README.md`、`docs/project/STATUS.md`、`tasks/lessons.md` 已把過去低解析度策略標成 historical/superseded。
+
+### 驗證
+
+- `cmake --build build --config Release --target test-shared-d3d11-texture-capture shared_d3d11_texture_producer chimera-ui`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -R "test-shared-d3d11-texture-capture|test-grpc-framebuffer-capture|test-instance-manager|test-virtual-machine|test-qemu-backend"`：5/5 PASS。
+- `ctest --test-dir build -C Release --output-on-failure -LE integration`：20/20 PASS。
+- `python -m py_compile scripts\run.py scripts\test-hcs-wsl2-kernel.py scripts\test-hcs-gpu-pv.py scripts\test-hcs-cuttlefish.py`：通過。
+- `shared_d3d11_texture_producer --width 1280 --height 720 --seconds 1`：如預期拒絕，錯誤為 `shared texture size below 1920x1080 minimum`。
+- `git diff --check`：通過，只有既有 CRLF warning。
+
+### 狀態
+
+- 這輪證明「不偷偷降解析度」的防線更完整；shared texture / legacy config / diagnostic script 都不再接受低於 1920x1080 的 active path。
+- 尚未證明 Android 動態 flow 穩定 60 FPS；production 仍需要 custom/shared texture producer runtime，不能把 raw gRPC fallback 或 host helper 當最終達標。
+
+*Updated: 2026-06-01 — Session 46*
+
+---
+
+## Session 47 — Shared-memory no-downscale guard（2026-06-01）
+
+### 修正
+
+- 補上 CPU shared-memory framebuffer 的解析度 floor；`SharedMemoryFramebufferCapture::checkedFrameBounds()` 會拒絕低於 `1920x1080` 的 metadata。
+- `test-shared-memory-framebuffer-capture` 正向案例改為 1920x1080，不再以 2x1 frame 當成功範例。
+- 新增 1280x720 metadata 拒絕測試，證明低解析度 CPU-copy frame 不會 emit `frameReady()`。
+
+### 驗證
+
+- `cmake --build build --config Release --target test-shared-memory-framebuffer-capture chimera-ui`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -R "test-shared-memory-framebuffer-capture|test-shared-d3d11-texture-capture|test-grpc-framebuffer-capture"`：3/3 PASS。
+- `ctest --test-dir build -C Release --output-on-failure -LE integration`：20/20 PASS。
+- `rg` 掃描剩餘低解析度測試值後，命中皆為 clamp/reject guard 測試，不是成功路徑。
+
+### 狀態
+
+- no-downscale invariant 現在涵蓋 raw capture request、D3D11 shared texture metadata、CPU shared-memory metadata、VM/AVD/window/config/script 入口。
+- 真 Android 動態 1080p/60 仍未完成；下一步仍是 custom/shared texture producer runtime，不能把 CPU shared-memory 或 raw gRPC 當完成路徑。
+
+*Updated: 2026-06-01 — Session 47*
+
+## Session 61 — gfxstream Vulkan producer gate（2026-06-06）
+
+### 修正
+
+- 回答並固定產品策略：不從零重寫整套 Android VM；Chimera 保留 Android Emulator/QEMU/ranchu/gfxstream 相容層，但正式產品只允許 Chimera 視窗，backend 必須 headless。
+- 實測 `build\chimera-gfxstream-runtime-sdk-release`：plain C `initLibrary` export 已補上，但產品 verifier 仍停在 gfxstream backend 初始化，ADB/console 未起，`CHIMERA_PERF effective=0`。
+- `scripts\write-chimera-gfxstream-runtime-manifest.ps1` 改為要求 `ChimeraGfxstreamVulkanSharedTextureBridge` marker，舊 GL bridge marker 不再能寫 gfxstream shared texture manifest。
+- `InstanceManager::probeEmulatorRuntime()` 對 gfxstream manifest 額外要求 `renderPath=VulkanDisplayVkPost`、`abi=sdk-emulator-36`，避免舊 manifest 被誤判 ready。
+- 補 `test-instance-manager`：舊格式 gfxstream manifest 會被拒絕，即使 binary 內有 bridge marker 與 SDK ABI 字串。
+
+### 驗證
+
+- `scripts\verify-true-1080p60.ps1 -RuntimeKind Gfxstream -RuntimePath .\build\chimera-gfxstream-runtime-sdk-release\emulator.exe`：正確失敗，證明該 runtime 不能達成 true 1080p/60。
+- `scripts\write-chimera-gfxstream-runtime-manifest.ps1 -RuntimeDir .\build\chimera-gfxstream-runtime-sdk-release`：正確失敗，缺 `ChimeraGfxstreamVulkanSharedTextureBridge`。
+- `cmake --build build --config Release --target test-instance-manager chimera-ui`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -R test-instance-manager`：PASS。
+- `ctest --test-dir build -C Release --output-on-failure -LE integration`：20/20 PASS。
+
+### 狀態
+
+- 多開原生 Android Emulator 視窗仍視為產品 bug；正式路徑維持 headless/hidden backend。
+- 真 1080p/60 下一步是 source-patched gfxstream Vulkan `DisplayVk::postImpl` / display-post shared D3D11 producer；不能再用 stock HWND、raw gRPC/ADB、或舊 GL bridge manifest 當完成證據。
+
+---
+
+---
+
+## Session 48 — Custom EmuGL runtime artifact gate（2026-06-01）
+
+### 修正
+
+- 收緊 `InstanceManager::probeEmulatorRuntime()`：custom shared texture runtime 必須有完整 legacy EmuGL DLL set，不再只看 `lib64OpenglRender.dll`。
+- 必要 DLL set：`lib64OpenglRender.dll`、`lib64EGL_translator.dll`、`lib64GLES_CM_translator.dll`、`lib64GLES_V2_translator.dll`。
+- manifest schema 也會驗證：`producer=ChimeraSharedTextureBridge`、`transport=D3D11SharedTexture`、`minWidth>=1920`、`minHeight>=1080`、`targetFps>=60`。
+- `write-chimera-emugl-runtime-manifest.ps1` 缺任一 runtime DLL 會直接 fail，不再替不完整 runtime 寫 manifest。
+- `build-chimera-emugl-runtime.ps1` build 後複製完整 DLL set；缺一個就 exit 4，避免產出看似可用但會回落 raw readback 的 runtime。
+
+### 驗證
+
+- `cmake --build build --config Release --target test-instance-manager chimera-ui`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -R "test-instance-manager"`：PASS。
+- fake runtime 驗證：缺 translator DLL 時 manifest script 如預期失敗；完整 DLL set 時 manifest 寫入成功。
+- PowerShell parser 檢查 `build-chimera-emugl-runtime.ps1` / `write-chimera-emugl-runtime-manifest.ps1`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -LE integration`：20/20 PASS。
+- 實際執行 `scripts\build-chimera-emugl-runtime.ps1` 仍停在缺完整 AOSP prebuilts：`missing AOSP prebuilts: .../src/prebuilts/gcc`。
+
+### 狀態
+
+- 這輪讓 custom runtime gate 更嚴格，防止「manifest 蓋章但 runtime 啟動缺 DLL」造成假 ready 或回落 raw gRPC。
+- 真 Android 動態 1080p/60 仍需要取得完整 AOSP prebuilts 或可載入的 custom emulator runtime，然後以 `CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE=1` 跑動態 flow 驗證；目前不能把這個目標標成完成。
+
+*Updated: 2026-06-01 — Session 48*
+
+---
+
+## Session 49 — True 1080p/60 Runtime Gate（2026-06-01）
+
+### 修正
+
+- 新增 `scripts/verify-true-1080p60.ps1`，把「真 1080p/60」變成可重跑 gate：強制 `--emugl-shared-texture`、`CHIMERA_ENABLE_EMUGL_SHARED_TEXTURE=1`、`CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE=1`。
+- verifier 會檢查 Android `wm size >= 1920x1080`，驅動通知列/滑動產生動態畫面，並解析 `[Perf]` / `CHIMERA_PERF` 的 Guest、Stream、Render、effective FPS、duplicate rate。
+- verifier 明確拒絕 raw gRPC / ADB raw / ADB H.264 fallback；只有 custom EmuGL shared texture runtime ready 且 Shared D3D11 capture started 才能進入 FPS 判定。
+- `main.cpp` 新增 `CHIMERA_LOG_PATH`，讓 runtime verifier 能穩定收 qDebug/qWarning log。
+- `main.cpp` 新增 machine-parseable `CHIMERA_PERF guest=... stream=... render=... effective=...`。
+- `CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE=1` 現在 fail closed：runtime 不可用時直接退出；shared texture capture 沒出第一幀時不允許回落 raw gRPC/ADB。
+- `tests/helpers/echo_args.cpp` 改用 `wmain` 並輸出 UTF-8，修正 Windows ANSI codepage 造成的 Unicode argv 測試失真。
+
+### 驗證
+
+- `verify-true-1080p60.ps1 -ParseOnlyLog` 正向 log 通過，低 effective FPS 與 fallback log 皆如預期失敗。
+- stock SDK emulator 實跑 verifier 正確失敗：`stock gfxstream runtime; Chimera EmuGL bridge will not load`，且無 `chimera-ui` / `emulator` / `qemu-system*` 殘留。
+- `cmake --build build --config Release --target chimera-ui`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -R "test-instance-manager|test-grpc-framebuffer-capture|test-shared-d3d11-texture-capture"`：3/3 PASS。
+- `ctest --test-dir build -C Release --output-on-failure -R test-process-launcher`：PASS。
+- `ctest --test-dir build -C Release --output-on-failure -LE integration`：20/20 PASS。
+
+### 狀態
+
+- 這輪不是完成 60 FPS，而是封住「fallback 假達標」；目前 stock runtime 仍被正確拒絕。
+- 真 Android 動態 1080p/60 仍需要可用 custom EmuGL/shared texture runtime，再用 `scripts/verify-true-1080p60.ps1` 跑到 PASS 才能算完成。
+
+*Updated: 2026-06-01 — Session 49*
+
+---
+
+## Session 50 — Stock emulator window-capture rollback + audio guard（2026-06-01）
+
+### 修正
+
+- `--window-capture` 實測不合格：它依賴 stock emulator HWND，會露出原生 Android Emulator 視窗；現在預設拒絕，只有命令列同時帶 `--window-capture --allow-unsafe-window-capture` 才允許實驗，環境變數不再能啟用。
+- strict GPU capture 不再自動啟動 raw gRPC/ADB fallback；避免 Window D3D11 或 shared texture 失敗後回落到 1080p screenshot readback 造成 host 音訊卡頓。
+- `QmlAndroidControls::setEcoMode(false)` 改成恢復 `BelowNormal` 並套整棵 emulator/qemu process tree，不再把 root emulator 拉回 Normal。
+- ADB H.264 診斷路徑的 adb/ffmpeg helper 啟動後套低優先級，失敗 restart 改 backoff，避免黑畫面時短週期重啟搶資源。
+
+### 驗證
+
+- `cmake --build build --config Release --target chimera-ui`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -LE integration`：20/20 PASS。
+- `--no-emulator --window-capture` gate smoke：只輸出 unsafe warning，沒有啟動 `emulator` / `qemu-system*`。
+
+### 狀態
+
+- 已修正「多開原生 emulator 視窗」與音訊回歸風險，但真 Android 動態 1080p/60 仍未達標。
+- 正式方向是 Chimera 自有 UI + headless Android backend + custom EmuGL/shared texture producer；stock emulator 可見視窗與 raw screenshot fallback 都不能當完成方案。
+
+---
+
+## Session 58 — Headless process gate + runtime strategy clarification（2026-06-05）
+
+### 修正
+
+- `VirtualMachine::start()` 對正式 headless 路徑強制 hidden process launch；不再只依賴 emulator CLI 的 `-no-window`。
+- `ProcessLauncher` 對相同 process policy 失敗 warning 做 once gate，避免 memory/power policy 套用時重複刷 log 干擾 host audio。
+- 產品策略保持：fork/改 Android Emulator + gfxstream/QEMU runtime，保留 Android 相容層；正式路徑只能有一個 Chimera 視窗，不外露原生 Android Emulator UI。
+
+### 驗證
+
+- short smoke：emulator process command line 含 `-no-window`、`MainWindowTitle` 空、`memoryPolicyWarnings=0`。
+- `cmake --build build --config Release --target test-virtual-machine test-process-launcher chimera-ui`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -R "test-virtual-machine|test-process-launcher"`：2/2 PASS。
+
+### 狀態
+
+- 多開原生 emulator 視窗的正式路徑已再收緊；真 Android 1080p/60 仍要靠 custom gfxstream shared texture producer runtime 進一步完成。
+
+---
+
+## Session 62 — Headless proxy rollback after native window regression（2026-06-06）
+
+### 修正
+
+- 產品策略再次固定：不從零重寫 WHPX/QEMU/ranchu/ADB/Play 相容層；Chimera 使用 Android Emulator 相容核心，但正式路徑必須 headless，只能顯示 Chimera 視窗。
+- `scripts\build-chimera-gfxstream-proxy-runtime.ps1` 已回到低風險 stock-ABI proxy：348 exports，C export hook 為 `stream_renderer_flush`、`android_setPostCallback`。
+- 撤回 `RenderLib` C++ wrapper；它會依賴 stock gfxstream 未匯出的 `FeatureSet` 符號，不能作為穩定接線點。
+
+### 驗證
+
+- Headless smoke：proxy runtime 啟動時 `emulator.exe` 與 qemu 均含 `-no-window -no-audio`，`visible_risk_count=0`，結束後 `leftover_count=0`。
+- 下一步仍是把真正 shared D3D11 texture producer 接進 modern gfxstream display-post path，不能靠原生 emulator 視窗或 raw gRPC/ADB fallback 證明 60 FPS。
+
+---
+
+## Session 63 — Native emulator architecture clarification（2026-06-06）
+
+### 結論
+
+- 不從零重寫完整 Android 模擬器；短期正確架構是 Chimera shell + headless Android Emulator/QEMU/gfxstream 相容核心 + custom display producer。
+- 多開原生 Android Emulator 視窗是 bug，不是策略；正式路徑必須只有 Chimera 視窗。
+- 現有 headless gate 已重新驗證：`-no-window`、hidden process launch、visible HWND watchdog、Job Object tree cleanup 都在。
+
+### 驗證
+
+- `cmake --build build --config Release --target test-process-launcher test-virtual-machine chimera-ui`：通過。
+- `ctest --test-dir build -C Release --output-on-failure -R "test-process-launcher|test-virtual-machine"`：2/2 PASS。
+- 殘留程序檢查：沒有 `chimera-ui` / `emulator` / `qemu-system*` / `adb`。
+
+---
+
+## Session 64 — Gfxstream RenderLib proxy probe（2026-06-06）
+
+### 修正
+
+- 新增 `src\host\runtime\gfxstream_proxy\gfxstream_proxy_renderlib.cpp`，可 opt-in 包裝 `initLibrary` / `RenderLib` / `Renderer`，並補齊 `FeatureSet` copy/assign 避免 stock DLL 未 export 符號。
+- `initLibrary` wrapper 預設只 forward stock `RenderLibPtr`；只有 `CHIMERA_GFXSTREAM_PROXY_WRAP_RENDERLIB=1` 才包回傳物件。
+- `android_setOpenglesRenderer` 新增 `CHIMERA_GFXSTREAM_PROXY_WRAP_RENDERER=1` opt-in shared_ptr wrapper，但實測會讓 emulator 早退，不能作為正式接線點。
+
+### 驗證
+
+- `scripts\build-chimera-gfxstream-proxy-runtime.ps1`：PASS，348 exports。
+- default proxy hidden/no-audio probe：`sys.boot_completed=1`，boot completed in 29283 ms，`leftoverCount=0`。
+- proxy log：`renderlib_wrapper initLibrary result=forwarded`、`android_setOpenglesRenderer ...`。
+
+### 狀態
+
+- 可用 baseline 是 stock ABI proxy + default forwarding；不穩定 C++ wrapper 只能保留為 opt-in probe。
+- 下一步要找不替換整個 Renderer shared_ptr 的 display-post/shared texture producer 接點。
+
+---
+
+## Session 66 — Headless-only low-interference runtime gate（2026-06-12）
+
+### 修正
+
+- 固定架構策略：不從零重寫完整 Android VM；保留 Android Emulator/QEMU/ranchu/gfxstream/Play image 相容核心，但正式產品只允許 Chimera 單一視窗與 headless backend。
+- raw gRPC/MMAP/screenrecord/ADB capture fallback 改為 CLI-only 診斷；`CHIMERA_ALLOW_RAW_CAPTURE_FALLBACK` 只警告不生效，避免舊環境變數重啟高負載 1080p readback。
+- `write-chimera-gfxstream-runtime-manifest.ps1` 在驗證前會移除 stale manifest；不合格 runtime 不再殘留 ready 訊號。
+- `QemuBackend` 預設改為低干擾：2 vCPU、2048MB、hidden launch、startup `Idle`，暖機後回 `BelowNormal`。
+- `ChimeraWindow` 不再轉發 mouse/wheel/key；輸入只由 `GuestDisplay` 以 guest 座標送進 `InputBridge`，避免雙送造成滾輪與點擊卡頓。
+- `apply-chimera-gfxstream-patch.ps1` 已補 headless Vulkan display-post patch：bridge enabled 且無 surface 時仍進 `FrameBuffer` / `DisplayVk` producer path，讓 `recordCopy()` / `publishFrame()` 可接 shared D3D11 texture。
+
+### 驗證
+
+- `chimera-ui` build PASS。
+- targeted tests 5/5 PASS；完整 non-integration `ctest` 20/20 PASS。
+- fail-closed smoke exit 3，且無殘留 `chimera-ui` / `emulator` / `qemu-system*` / `adb`。
+- `verify-true-1080p60.ps1` 正確失敗於 `incompatible gfxstream runtime ABI; required screen background export is missing`。
+
+### 狀態
+
+- 這輪已修低干擾與單一 headless runtime gate，但 true 1080p/60 尚未達標。
+- 下一步是讓 custom gfxstream runtime 補齊 SDK 36 ABI/imports，再重跑 verifier 到 PASS。
+
+---
+
+## Session 70 — Stale emulator port cleanup + native embed dormant（2026-06-13）
+
+### 修正
+
+- `VirtualMachine::start()` 啟動前會清理佔住 Chimera ports `5554/5555/8554` 且 process 名稱為 `emulator.exe` / `qemu-system*` 的 stale VM tree，避免前一輪殘留造成雙 VM、多開原生視窗與 host audio 卡頓。
+- 正式 UI 路徑不再 pin `NativeEmulatorView`；QML 也只有在 unsafe diagnostics 啟用時才讓 native view 可見。預設只用 `GuestDisplay` 顯示 headless backend。
+
+### 驗證
+
+- targeted tests 3/3 PASS。
+- Release build PASS；完整 non-integration `ctest` 20/20 PASS。
+- `--no-emulator` smoke 沒有 `NativeEmulatorView pinned`。
+
+### 狀態
+
+- 這輪修多開原生 emulator 與 stale VM 疊加的防線；true 1080p/60 仍需 matching SDK gfxstream shared texture producer。

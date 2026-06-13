@@ -1,12 +1,30 @@
 #include "QemuBackend.h"
 #include "ProcessLauncher.h"
 #include <QDebug>
+#include <algorithm>
 
 namespace chimera::instance {
 
+namespace {
+
+constexpr int kMinimumDisplayWidth = 1920;
+constexpr int kMinimumDisplayHeight = 1080;
+constexpr DWORD kStartupPriorityClass = IDLE_PRIORITY_CLASS;
+constexpr DWORD kRunningPriorityClass = BELOW_NORMAL_PRIORITY_CLASS;
+
+QemuInstanceConfig normalizedConfig(QemuInstanceConfig config) {
+    config.displayWidth = (std::max)(config.displayWidth, kMinimumDisplayWidth);
+    config.displayHeight = (std::max)(config.displayHeight, kMinimumDisplayHeight);
+    config.cpus = (std::max)(1, config.cpus);
+    config.ramMB = (std::max)(1024, config.ramMB);
+    return config;
+}
+
+} // namespace
+
 QemuBackend::QemuBackend(const QemuInstanceConfig &config, QObject *parent)
     : QObject(parent)
-    , m_config(config)
+    , m_config(normalizedConfig(config))
     , m_healthCheckTimer(new QTimer(this))
     , m_startupTimeoutTimer(new QTimer(this))
 {
@@ -64,7 +82,8 @@ bool QemuBackend::start() {
         binary, args,
         [](const std::string &line) { qDebug() << "[qemu stdout]" << QString::fromStdString(line); },
         [](const std::string &line) { qWarning() << "[qemu stderr]" << QString::fromStdString(line); },
-        false
+        true,
+        kStartupPriorityClass
     );
 
     if (m_processHandle == INVALID_HANDLE_VALUE || m_processHandle == nullptr) {
@@ -75,6 +94,7 @@ bool QemuBackend::start() {
 
     // QEMU typically writes to QMP within a few seconds; we poll for process health.
     // Callers connect QmpInput separately once stateChanged(Running) fires.
+    ProcessLauncher::setProcessTreePriority(m_processHandle, kStartupPriorityClass);
     setState(State::Running);
     m_healthCheckTimer->start();
     m_startupTimeoutTimer->start();
@@ -242,7 +262,8 @@ void QemuBackend::onHealthCheck() {
                 m_config.qemuBinary.string(), args,
                 [](const std::string &l) { qDebug()   << "[qemu stdout]" << QString::fromStdString(l); },
                 [](const std::string &l) { qWarning() << "[qemu stderr]" << QString::fromStdString(l); },
-                false
+                true,
+                kStartupPriorityClass
             );
             if (m_processHandle == INVALID_HANDLE_VALUE || m_processHandle == nullptr) {
                 m_errorMessage = QStringLiteral("QEMU restart %1 failed").arg(m_restartCount);
@@ -251,6 +272,7 @@ void QemuBackend::onHealthCheck() {
                 setState(State::Error);
                 emit errorOccurred(m_errorMessage);
             } else {
+                ProcessLauncher::setProcessTreePriority(m_processHandle, kStartupPriorityClass);
                 setState(State::Running);
                 m_startupTimeoutTimer->start();
             }
@@ -273,6 +295,7 @@ void QemuBackend::onStartupTimeout() {
     // After kStartupTimeoutMs the process is still alive — startup phase done.
     // Callers should have connected QMP by now; stop the timer.
     m_startupTimeoutTimer->stop();
+    ProcessLauncher::setProcessTreePriority(m_processHandle, kRunningPriorityClass);
     qDebug() << "QemuBackend: startup timeout cleared, process still alive";
 }
 

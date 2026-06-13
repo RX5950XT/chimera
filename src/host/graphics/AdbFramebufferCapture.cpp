@@ -1,4 +1,5 @@
 #include "AdbFramebufferCapture.h"
+#include "LowInterferenceProcess.h"
 #include <QDebug>
 #include <QtEndian>
 
@@ -11,6 +12,7 @@ constexpr int kMaxDimension = 10000;
 constexpr qsizetype kMaxBufferedBytes = 64 * 1024 * 1024;
 constexpr int kWatchdogIntervalMs = 250;
 constexpr int kStalledCaptureMs = 1500;
+constexpr int kRawRestartDelayMs = 1500;
 
 int bytesPerPixelForFormat(int fmt) {
     switch (fmt) {
@@ -107,6 +109,7 @@ void AdbFramebufferCapture::startSingleCapture() {
     m_process->setProgram(m_adbPath);
     m_process->setArguments(args);
     m_process->start();
+    chimera::utils::applyLowInterferencePriority(m_process);
 }
 
 void AdbFramebufferCapture::onProcessFinished(int exitCode, QProcess::ExitStatus status) {
@@ -157,6 +160,7 @@ void AdbFramebufferCapture::startRawStream() {
     m_process->setProgram(m_adbPath);
     m_process->setArguments(args);
     m_process->start();
+    chimera::utils::applyLowInterferencePriority(m_process);
 }
 
 void AdbFramebufferCapture::restartRawStream(const QString &reason) {
@@ -170,7 +174,7 @@ void AdbFramebufferCapture::restartRawStream(const QString &reason) {
         m_process->kill();
         m_process->waitForFinished(500);
     }
-    QTimer::singleShot(250, this, [this]() {
+    QTimer::singleShot(kRawRestartDelayMs, this, [this]() {
         if (m_running && !m_usePng) {
             m_lastFrameTimer.restart();
             startRawStream();

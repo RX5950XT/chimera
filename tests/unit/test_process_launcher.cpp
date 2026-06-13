@@ -125,6 +125,64 @@ private slots:
         QCOMPARE(res.exitCode, 0);
         QVERIFY(res.stdoutText.find(chinese) != std::string::npos);
     }
+
+    void runAsyncAppliesInitialPriority() {
+        HANDLE process = ProcessLauncher::runAsync(
+            "powershell.exe",
+            {"-NonInteractive", "-NoProfile", "-Command", "Start-Sleep -Seconds 5"},
+            nullptr,
+            nullptr,
+            true,
+            BELOW_NORMAL_PRIORITY_CLASS);
+        QVERIFY(process != nullptr);
+        QCOMPARE(GetPriorityClass(process), static_cast<DWORD>(BELOW_NORMAL_PRIORITY_CLASS));
+        ProcessLauncher::terminate(process);
+        QVERIFY(ProcessLauncher::waitForExit(process, 3000) >= 0);
+    }
+
+    void runAsyncAppliesIdlePriority() {
+        HANDLE process = ProcessLauncher::runAsync(
+            "powershell.exe",
+            {"-NonInteractive", "-NoProfile", "-Command", "Start-Sleep -Seconds 5"},
+            nullptr,
+            nullptr,
+            true,
+            IDLE_PRIORITY_CLASS);
+        QVERIFY(process != nullptr);
+        QCOMPARE(GetPriorityClass(process), static_cast<DWORD>(IDLE_PRIORITY_CLASS));
+        ProcessLauncher::terminate(process);
+        QVERIFY(ProcessLauncher::waitForExit(process, 3000) >= 0);
+    }
+
+    void runAsyncCapsHighPriorityToNormal() {
+        HANDLE process = ProcessLauncher::runAsync(
+            "powershell.exe",
+            {"-NonInteractive", "-NoProfile", "-Command", "Start-Sleep -Seconds 5"},
+            nullptr,
+            nullptr,
+            true,
+            HIGH_PRIORITY_CLASS);
+        QVERIFY(process != nullptr);
+        QCOMPARE(GetPriorityClass(process), static_cast<DWORD>(NORMAL_PRIORITY_CLASS));
+        ProcessLauncher::terminate(process);
+        QVERIFY(ProcessLauncher::waitForExit(process, 3000) >= 0);
+    }
+
+    void runAsyncHiddenDoesNotExposeWindow() {
+        HANDLE process = ProcessLauncher::runAsync(
+            "powershell.exe",
+            {"-NonInteractive", "-NoProfile", "-Command", "Start-Sleep -Seconds 5"},
+            nullptr,
+            nullptr,
+            true,
+            BELOW_NORMAL_PRIORITY_CLASS);
+        QVERIFY(process != nullptr);
+        const DWORD pid = GetProcessId(process);
+        QTest::qWait(500);
+        QVERIFY(ProcessLauncher::visibleWindowTitlesInProcessTreeById(pid).empty());
+        QVERIFY(ProcessLauncher::terminateProcessTreeById(pid));
+        QVERIFY(ProcessLauncher::waitForExit(process, 3000) >= 0);
+    }
 };
 
 QTEST_MAIN(TestProcessLauncher)

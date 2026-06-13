@@ -36,6 +36,7 @@ target_link_libraries(chimera-instance PRIVATE
 
 if(WIN32)
     target_link_libraries(chimera-instance PRIVATE
+        iphlpapi
         psapi
         ws2_32
     )

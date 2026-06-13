@@ -54,6 +54,7 @@ target_link_libraries(chimera-ui PRIVATE
     chimera-instance
     chimera-integration
     chimera-storage
+    chimera-utils
     nlohmann_json
 )
 

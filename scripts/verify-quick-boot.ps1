@@ -184,10 +184,36 @@ function Stop-Emulator {
     Remove-StaleAvdLocks
 }
 
+function Restore-EnvValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [AllowNull()][string]$Value
+    )
+    if ($null -eq $Value) {
+        Remove-Item "Env:\$Name" -ErrorAction SilentlyContinue
+    } else {
+        Set-Item "Env:\$Name" -Value $Value
+    }
+}
+
 Require-File -Path $AppExe -Name "chimera-ui.exe"
 Require-File -Path $Adb -Name "adb.exe"
 
 $env:PATH = "$QtBin;$env:PATH"
+$savedEnv = @{
+    CHIMERA_ENABLE_NATIVE_EMBED = $env:CHIMERA_ENABLE_NATIVE_EMBED
+    CHIMERA_ALLOW_UNSAFE_NATIVE_WINDOW = $env:CHIMERA_ALLOW_UNSAFE_NATIVE_WINDOW
+    CHIMERA_ENABLE_WINDOW_CAPTURE = $env:CHIMERA_ENABLE_WINDOW_CAPTURE
+    CHIMERA_ALLOW_UNSAFE_WINDOW_CAPTURE = $env:CHIMERA_ALLOW_UNSAFE_WINDOW_CAPTURE
+    CHIMERA_ALLOW_UNSAFE_VISIBLE_EMULATOR_WINDOW = $env:CHIMERA_ALLOW_UNSAFE_VISIBLE_EMULATOR_WINDOW
+    CHIMERA_EMULATOR_START_VISIBLE = $env:CHIMERA_EMULATOR_START_VISIBLE
+}
+Remove-Item Env:\CHIMERA_ENABLE_NATIVE_EMBED -ErrorAction SilentlyContinue
+Remove-Item Env:\CHIMERA_ALLOW_UNSAFE_NATIVE_WINDOW -ErrorAction SilentlyContinue
+Remove-Item Env:\CHIMERA_ENABLE_WINDOW_CAPTURE -ErrorAction SilentlyContinue
+Remove-Item Env:\CHIMERA_ALLOW_UNSAFE_WINDOW_CAPTURE -ErrorAction SilentlyContinue
+Remove-Item Env:\CHIMERA_ALLOW_UNSAFE_VISIBLE_EMULATOR_WINDOW -ErrorAction SilentlyContinue
+Remove-Item Env:\CHIMERA_EMULATOR_START_VISIBLE -ErrorAction SilentlyContinue
 
 if (-not $NoCleanStart) {
     Stop-ChimeraProcesses
@@ -221,6 +247,12 @@ try {
     Write-Host "quick_boot_threshold_sec=$MaxQuickBootSec"
 }
 finally {
+    Restore-EnvValue -Name "CHIMERA_ENABLE_NATIVE_EMBED" -Value $savedEnv.CHIMERA_ENABLE_NATIVE_EMBED
+    Restore-EnvValue -Name "CHIMERA_ALLOW_UNSAFE_NATIVE_WINDOW" -Value $savedEnv.CHIMERA_ALLOW_UNSAFE_NATIVE_WINDOW
+    Restore-EnvValue -Name "CHIMERA_ENABLE_WINDOW_CAPTURE" -Value $savedEnv.CHIMERA_ENABLE_WINDOW_CAPTURE
+    Restore-EnvValue -Name "CHIMERA_ALLOW_UNSAFE_WINDOW_CAPTURE" -Value $savedEnv.CHIMERA_ALLOW_UNSAFE_WINDOW_CAPTURE
+    Restore-EnvValue -Name "CHIMERA_ALLOW_UNSAFE_VISIBLE_EMULATOR_WINDOW" -Value $savedEnv.CHIMERA_ALLOW_UNSAFE_VISIBLE_EMULATOR_WINDOW
+    Restore-EnvValue -Name "CHIMERA_EMULATOR_START_VISIBLE" -Value $savedEnv.CHIMERA_EMULATOR_START_VISIBLE
     Stop-ChimeraProcesses
     Wait-NoChimeraProcesses -TimeoutSec 30
     Remove-StaleAvdLocks

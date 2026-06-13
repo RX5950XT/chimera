@@ -5,6 +5,8 @@
 #include "LocationSimulator.h"
 #include "ClipboardBridge.h"
 #include "AndroidConsoleInput.h"
+#include "ProcessLauncher.h"
+#include "LowInterferenceProcess.h"
 #include <QProcess>
 #include <QUrl>
 #include <QFileInfo>
@@ -21,6 +23,29 @@
 
 namespace chimera {
 
+namespace {
+
+void startLowInterferenceProcess(QProcess *process,
+                                 const QString &program,
+                                 const QStringList &args) {
+    if (!process) return;
+    process->start(program, args);
+    utils::applyLowInterferencePriority(process);
+}
+
+int executeLowInterferenceProcess(const QString &program, const QStringList &args) {
+    QProcess process;
+    startLowInterferenceProcess(&process, program, args);
+    if (!process.waitForFinished(5000)) {
+        process.kill();
+        process.waitForFinished(1000);
+        return -1;
+    }
+    return process.exitStatus() == QProcess::NormalExit ? process.exitCode() : -1;
+}
+
+} // namespace
+
 QmlAndroidControls::QmlAndroidControls(QObject *parent)
     : QObject(parent)
 {
@@ -34,7 +59,7 @@ bool QmlAndroidControls::back() {
 
 bool QmlAndroidControls::home() {
     if (!m_adbExe.isEmpty() && !m_adbSerial.isEmpty()) {
-        const int exitCode = QProcess::execute(m_adbExe, {
+        const int exitCode = executeLowInterferenceProcess(m_adbExe, {
             "-s", m_adbSerial, "shell", "am", "start",
             "-n", "com.chimera.launcher/.MainActivity",
             "-a", "android.intent.action.MAIN",
@@ -99,7 +124,8 @@ void QmlAndroidControls::installApk(const QString &fileUrl) {
         }
     });
     setInstallStatus(tr("安裝中…"));
-    m_adbProcess->start(m_adbExe, {"-s", m_adbSerial, "install", "-r", localPath});
+    startLowInterferenceProcess(m_adbProcess, m_adbExe,
+                                {"-s", m_adbSerial, "install", "-r", localPath});
 }
 
 void QmlAndroidControls::installObb(const QString &fileUrl, const QString &packageName) {
@@ -132,10 +158,12 @@ void QmlAndroidControls::installObb(const QString &fileUrl, const QString &packa
                     (err.isEmpty() ? QString{} : QStringLiteral("：") + err));
             }
         });
-        pushProc->start(m_adbExe, {"-s", m_adbSerial, "push", localPath, guestPath});
+        startLowInterferenceProcess(pushProc, m_adbExe,
+                                    {"-s", m_adbSerial, "push", localPath, guestPath});
     });
     setInstallStatus(tr("OBB 安裝中…"));
-    mkdirProc->start(m_adbExe, {"-s", m_adbSerial, "shell", "mkdir", "-p", obbDir});
+    startLowInterferenceProcess(mkdirProc, m_adbExe,
+                                {"-s", m_adbSerial, "shell", "mkdir", "-p", obbDir});
 }
 
 void QmlAndroidControls::adbRoot() {
@@ -203,7 +231,7 @@ void QmlAndroidControls::runAdbAsync(const QStringList &args,
     });
 
     setInstallStatus(tr("執行中…"));
-    m_adbProcess->start(m_adbExe, args);
+    startLowInterferenceProcess(m_adbProcess, m_adbExe, args);
 }
 
 void QmlAndroidControls::setGpsLocation(double lat, double lon, double altMetres) {
@@ -337,7 +365,7 @@ void QmlAndroidControls::refreshInstalledPackages() {
         emit installedPackagesChanged();
         setInstallStatus(tr("共 %1 個應用程式").arg(packages.size()));
     });
-    proc->start();
+    startLowInterferenceProcess(proc, proc->program(), proc->arguments());
 }
 
 QStringList QmlAndroidControls::listInstalledPackages() {
@@ -362,7 +390,7 @@ void QmlAndroidControls::refreshGuestDownloads() {
         m_guestDownloads = files;
         emit guestDownloadsChanged();
     });
-    proc->start();
+    startLowInterferenceProcess(proc, proc->program(), proc->arguments());
 }
 
 void QmlAndroidControls::launchPackage(const QString &packageName) {
@@ -412,7 +440,8 @@ void QmlAndroidControls::takeScreenshot() {
     });
 
     setInstallStatus(tr("截圖中…"));
-    m_adbProcess->start(m_adbExe, {"-s", m_adbSerial, "exec-out", "screencap", "-p"});
+    startLowInterferenceProcess(m_adbProcess, m_adbExe,
+                                {"-s", m_adbSerial, "exec-out", "screencap", "-p"});
 }
 
 QString QmlAndroidControls::screenshotDir() const {
@@ -445,7 +474,8 @@ void QmlAndroidControls::resetScreenDensity() {
 }
 
 void QmlAndroidControls::setScreenSize(int width, int height) {
-    if (width < 320 || height < 320) return;
+    width = (std::max)(width, 1920);
+    height = (std::max)(height, 1080);
     runAdbAsync({"-s", m_adbSerial, "shell", "wm", "size",
                  QString("%1x%2").arg(width).arg(height)},
                 tr("解析度已設為 %1×%2").arg(width).arg(height),
@@ -473,11 +503,13 @@ void QmlAndroidControls::setScreenBrightness(int level) {
             else
                 setInstallStatus(tr("無法設定亮度"));
         });
-        p2->start(m_adbExe, {"-s", m_adbSerial, "shell", "settings", "put", "system",
-                              "screen_brightness", QString::number(clamped)});
+        startLowInterferenceProcess(p2, m_adbExe,
+                                    {"-s", m_adbSerial, "shell", "settings", "put", "system",
+                                     "screen_brightness", QString::number(clamped)});
     });
-    p1->start(m_adbExe, {"-s", m_adbSerial, "shell", "settings", "put", "system",
-                          "screen_brightness_mode", "0"});
+    startLowInterferenceProcess(p1, m_adbExe,
+                                {"-s", m_adbSerial, "shell", "settings", "put", "system",
+                                 "screen_brightness_mode", "0"});
 }
 
 void QmlAndroidControls::setAirplaneMode(bool enabled) {
@@ -516,14 +548,17 @@ void QmlAndroidControls::setNetworkProxy(const QString &host, int port) {
                     setInstallStatus(tr("Proxy 設定失敗"));
                 }
             });
-            p3->start(m_adbExe, {"-s", m_adbSerial, "shell", "settings", "put", "global",
-                                 "http_proxy", combined});
+            startLowInterferenceProcess(p3, m_adbExe,
+                                        {"-s", m_adbSerial, "shell", "settings", "put", "global",
+                                         "http_proxy", combined});
         });
-        p2->start(m_adbExe, {"-s", m_adbSerial, "shell", "settings", "put", "global",
-                             "global_http_proxy_port", portStr});
+        startLowInterferenceProcess(p2, m_adbExe,
+                                    {"-s", m_adbSerial, "shell", "settings", "put", "global",
+                                     "global_http_proxy_port", portStr});
     });
-    p1->start(m_adbExe, {"-s", m_adbSerial, "shell", "settings", "put", "global",
-                         "global_http_proxy_host", host.trimmed()});
+    startLowInterferenceProcess(p1, m_adbExe,
+                                {"-s", m_adbSerial, "shell", "settings", "put", "global",
+                                 "global_http_proxy_host", host.trimmed()});
 }
 
 void QmlAndroidControls::clearNetworkProxy() {
@@ -544,9 +579,11 @@ void QmlAndroidControls::clearNetworkProxy() {
                 setInstallStatus(tr("Proxy 清除失敗"));
             }
         });
-        p2->start(m_adbExe, {"-s", m_adbSerial, "shell", "settings", "delete", "global", "http_proxy"});
+        startLowInterferenceProcess(p2, m_adbExe,
+                                    {"-s", m_adbSerial, "shell", "settings", "delete", "global", "http_proxy"});
     });
-    p1->start(m_adbExe, {"-s", m_adbSerial, "shell", "settings", "delete", "global", "global_http_proxy_host"});
+    startLowInterferenceProcess(p1, m_adbExe,
+                                {"-s", m_adbSerial, "shell", "settings", "delete", "global", "global_http_proxy_host"});
 }
 
 void QmlAndroidControls::setNetworkSpeed(const QString &profile) {
@@ -607,10 +644,8 @@ QString QmlAndroidControls::downloadDir() const {
 void QmlAndroidControls::setEcoMode(bool enabled) {
 #ifdef _WIN32
     if (m_emulatorPid == 0) return;
-    HANDLE hProc = OpenProcess(PROCESS_SET_INFORMATION, FALSE, m_emulatorPid);
-    if (!hProc) return;
-    SetPriorityClass(hProc, enabled ? BELOW_NORMAL_PRIORITY_CLASS : NORMAL_PRIORITY_CLASS);
-    CloseHandle(hProc);
+    const DWORD priority = enabled ? IDLE_PRIORITY_CLASS : BELOW_NORMAL_PRIORITY_CLASS;
+    instance::ProcessLauncher::setProcessTreePriorityById(m_emulatorPid, priority);
 #else
     Q_UNUSED(enabled)
 #endif

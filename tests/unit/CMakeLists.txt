@@ -24,6 +24,7 @@ if(WIN32)
         ${CMAKE_SOURCE_DIR}/src/host/graphics
     )
     target_link_libraries(shared_d3d11_texture_producer PRIVATE
+        chimera-graphics
         Qt6::Core
         d3d11
         dxgi
@@ -55,6 +56,7 @@ add_chimera_test(test-config-manager test_config_manager.cpp)
 add_chimera_test(test-input-mapper test_input_mapper.cpp)
 add_chimera_test(test-instance-manager test_instance_manager.cpp)
 add_chimera_test(test-virtual-machine test_virtual_machine.cpp)
+add_chimera_test(test-qemu-backend test_qemu_backend.cpp)
 add_chimera_test(test-graphics-framebuffer test_graphics_framebuffer.cpp chimera-graphics)
 add_chimera_test(test-adb-framebuffer-capture test_adb_framebuffer_capture.cpp chimera-graphics)
 add_chimera_test(test-grpc-framebuffer-capture test_grpc_framebuffer_capture.cpp chimera-graphics)

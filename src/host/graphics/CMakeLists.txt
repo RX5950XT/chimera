@@ -15,10 +15,18 @@ add_library(chimera-graphics STATIC
     FramebufferCapture.h
     AdbFramebufferCapture.cpp
     AdbFramebufferCapture.h
+    AdbH264FramebufferCapture.cpp
+    AdbH264FramebufferCapture.h
     GrpcFramebufferCapture.cpp
     GrpcFramebufferCapture.h
+    GrpcMmapFramebufferCapture.cpp
+    GrpcMmapFramebufferCapture.h
     SharedD3D11TextureCapture.cpp
     SharedD3D11TextureCapture.h
+    SharedD3D11TexturePublisher.cpp
+    SharedD3D11TexturePublisher.h
+    WindowD3D11Capture.cpp
+    WindowD3D11Capture.h
     VncFramebufferCapture.cpp
     VncFramebufferCapture.h
     HvSocketFramebufferCapture.cpp
@@ -50,10 +58,11 @@ target_link_libraries(chimera-graphics PRIVATE
     Qt6::Network
     Qt6::OpenGL
     OpenGL::GL
+    chimera-utils
 )
 
 if(WIN32)
-    target_link_libraries(chimera-graphics PRIVATE ws2_32 ole32 d3d11 dxgi)
+    target_link_libraries(chimera-graphics PRIVATE ws2_32 ole32 runtimeobject windowsapp d3d11 dxgi)
 endif()
 
 # Copy ANGLE DLLs to output directory if available

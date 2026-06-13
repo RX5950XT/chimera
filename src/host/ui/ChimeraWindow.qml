@@ -562,6 +562,8 @@ ApplicationWindow {
                         anchors.fill: parent
                         instanceName: "chimera_dev"
                         consolePort: 5554
+                        visible: nativeEmbedEnabled
+                        enabled: nativeEmbedEnabled
                         nativeEmbeddingEnabled: nativeEmbedEnabled
                     }
 
@@ -1884,11 +1886,8 @@ ApplicationWindow {
                             spacing: 8
                             Repeater {
                                 model: [
-                                    { label: "手機 9:16",  w: 720,  h: 1280 },
-                                    { label: "手機 9:19",  w: 1080, h: 2280 },
-                                    { label: "平板 4:3",   w: 1200, h: 900  },
-                                    { label: "橫屏 720p",  w: 1280, h: 720  },
-                                    { label: "橫屏 1080p", w: 1920, h: 1080 }
+                                    { label: "橫屏 1080p", w: 1920, h: 1080 },
+                                    { label: "橫屏 1440p", w: 2560, h: 1440 }
                                 ]
                                 delegate: DockButton {
                                     required property var modelData

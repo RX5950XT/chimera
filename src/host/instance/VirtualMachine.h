@@ -5,6 +5,8 @@
 #include <chrono>
 #include <functional>
 #include <filesystem>
+#include <atomic>
+#include <thread>
 
 namespace chimera::instance {
 
@@ -30,14 +32,17 @@ struct VirtualMachineConfig {
     int qmpPort = 5554;                  // QEMU monitor port for QMP input
     int grpcPort = 8554;                 // Android Emulator gRPC control/display stream
     bool enableGrpc = true;
+    bool useClassicEmuglRuntime = false; // Legacy EmuGL runtime does not support modern emulator CLI flags
     int vncPort = 5900;                  // QEMU VNC display port; unsupported by current emulator GPU modes
     bool enableVnc = false;
-    bool headless = false;               // -no-window flag; false enables native window embedding
+    bool headless = true;                // -no-window flag; production default
+    bool allowVisibleEmulatorWindow = false; // unsafe diagnostics only
+    bool startHidden = true;             // hidden launch protects desktop unless unsafe diagnostics need visibility
     bool enableRoot = false;             // -writable-system (google_apis only; adb root post-boot)
     bool enableAudio = false;            // Remove -no-audio flag; emulator handles host audio natively
-    bool quickBoot = true;                // Load/save named emulator snapshot to reduce boot time
+    bool quickBoot = false;               // Opt-in named emulator snapshot; default protects host audio
     std::string deviceProfile;           // Device spoofing profile name
-    std::string processPriority = "normal";
+    std::string processPriority = "below_normal";
 };
 
 /**
@@ -68,10 +73,15 @@ public:
     void setStateCallback(StateCallback cb);
 
 private:
+    void setState(VMState state, bool notify = true);
+    void joinExitMonitor();
+    void startExitMonitor(uint32_t rootPid);
+
     VirtualMachineConfig m_config;
-    VMState m_state = VMState::Stopped;
+    std::atomic<VMState> m_state{VMState::Stopped};
     StateCallback m_callback;
     void *m_processHandle = nullptr;  // Windows HANDLE
+    std::thread m_exitMonitor;
 };
 
 } // namespace chimera::instance

@@ -51,6 +51,8 @@ bool checkedFrameBounds(const SharedFrameHeader &h, qsizetype viewSize) {
     if (h.headerSize < sizeof(SharedFrameHeader)) return false;
     if (h.width == 0 || h.height == 0 || h.stride == 0) return false;
     if (h.width > 7680 || h.height > 4320) return false;
+    if (h.width < shmem::kMinimumFrameWidth ||
+        h.height < shmem::kMinimumFrameHeight) return false;
     if ((h.flags & ~shmem::kFlagBottomUp) != 0) return false;
     if ((h.flags & shmem::kFlagBottomUp) != 0) return false;
 

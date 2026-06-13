@@ -11,6 +11,8 @@ constexpr quint32 kVersion = 1;
 constexpr quint32 kFlagBottomUp = 0x1;
 constexpr quint32 kD3D11FlagHasAlpha = 0x1;
 constexpr quint32 kD3D11TextureNameChars = 260;
+constexpr quint32 kMinimumFrameWidth = 1920;
+constexpr quint32 kMinimumFrameHeight = 1080;
 
 enum class PixelFormat : quint32 {
     Rgba8888 = 1,

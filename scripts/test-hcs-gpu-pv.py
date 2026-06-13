@@ -76,7 +76,7 @@ devices = {
         "DefaultBindSecurityDescriptor":    "D:P(A;;FA;;;WD)",
         "DefaultConnectSecurityDescriptor": "D:P(A;;FA;;;WD)",
     }},
-    "VideoMonitor": {"HorizontalResolution": 1280, "VerticalResolution": 720},
+    "VideoMonitor": {"HorizontalResolution": 1920, "VerticalResolution": 1080},
     "ComPorts":     {"0": {"NamedPipe": PIPE}},
     # GPU-PV: Mirror host GPU into guest so dxgkrnl sees the physical device
     # Field name is "GpuP" (not "GpuConfiguration") per HCS schema v2.1

@@ -11,6 +11,8 @@ add_library(chimera-utils STATIC
     ThreadPool.h
     FileUtils.cpp
     FileUtils.h
+    LowInterferenceProcess.cpp
+    LowInterferenceProcess.h
 )
 
 target_include_directories(chimera-utils PUBLIC
