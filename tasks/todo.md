@@ -2,6 +2,47 @@
 
 ---
 
+## 2026-06-14 Session 75 — Vulkan backend 確認 + GetProcAddress/vkQueuePresentKHR hook
+
+### Plan
+
+- [x] 修正 `resolve_angle_egl()` cache bug：失敗時不設 `s_egl_resolved`，允許 retry。
+- [x] 加入 retry 時的 rate-limit logging，同時記錄 `vulkan-1=loaded/not_loaded`。
+- [x] bg thread：5s mark 提前 dump GPU modules；60s 超時後 final dump。
+- [x] 新增 `dump_gpu_modules()` helper。
+- [x] 新增 `GetProcAddress` IAT hook，logging stock DLL 所有 vk*/egl* 的解析。
+- [x] 新增 `vkQueuePresentKHR` hook（透過 GetProcAddress 攔截返回），logging frame count。
+- [x] 新增 `vkGetDeviceProcAddr` hook，device-level lookup 也攔截 `vkQueuePresentKHR`。
+- [x] Build PASS（348 exports）；smoke test × 3 PASS；no_residual_processes=OK。
+- [x] 同步 `tasks/todo.md`、`tasks/lessons.md`、`CONTEXT.md`、`CLAUDE.md`。
+
+### Review
+
+- **Stock backend 確認為純 Vulkan headless（最終）**：
+  - `libEGL.dll` 在整個 emulator 生命週期內從未 load（miss=0 開始 vulkan-1=loaded）。
+  - `vulkan-1.dll` 從 `initLibrary` 起即已 load（兩個實例：emulator bundled + system）。
+  - `d3d11.dll` 從未出現（D3D11 probe 根本 incompatible）。
+  - GPU module 5s dump 只有：`d3d9.dll`、`vulkan-1.dll`（×2）、proxy/stock gfxstream DLL。
+- **GetProcAddress hook 結果（128+ Vulkan API 全覽）**：
+  - Stock 在 `initLibrary` 階段一次性 resolve 全部 Vulkan 1.0/1.1/1.2 + KHR extensions。
+  - `vkCreateSwapchainKHR`、`vkGetSwapchainImagesKHR`、`vkQueuePresentKHR` 全部被 resolve。
+  - `vkGetDeviceProcAddr` 也被 resolve（stock 後期可能用它 bypass loader）。
+- **vkQueuePresentKHR hook 結果（決定性）**：
+  - Hook 成功安裝（`hooking vkQueuePresentKHR`、`hooking vkGetDeviceProcAddr` 都確認）。
+  - **`vkQueuePresentKHR` 在整個 smoke test（boot + 10s collect）期間 count=0**。
+  - 確認：headless `-no-window` 模式下 stock 從不呼叫 `vkQueuePresentKHR`。
+  - Swapchain 函式只做 pre-init 解析，不做 present（沒有 surface 可以 present）。
+- **GPU frame capture 方案評估**：
+  - D3D11 probe → 永久不可（無 ANGLE，無 D3D11 device）。
+  - eglSwapBuffers hook → 永久不可（無 EGL）。
+  - vkQueuePresentKHR hook → 不可（headless 下從不呼叫）。
+  - setPostCallback → 從不呼叫（headless EGL sub-object not ready）。
+  - vkQueueSubmit hook → 可能可行，但每 frame 有多次 submit，無明確 frame boundary，實作複雜。
+  - **custom gfxstream runtime → 最乾淨的路徑，但 ABI mismatch (Session 74 已確認)。**
+- **結論**：Stock proxy 方案已到邊界。Production display 繼續走 gRPC CPU readback 62-67 FPS。Proxy 研究作為 R&D diagnostic 完整，但 `sharedTextureProducer=false` 狀態不變。
+
+---
+
 ## 2026-06-13 Session 74 — GrpcOnly verify mode
 
 ### Plan

@@ -11,6 +11,7 @@ Set-StrictMode -Version Latest
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ProxySource = Join-Path $RepoRoot "src\host\runtime\gfxstream_proxy\gfxstream_proxy.c"
 $RenderLibProxySource = Join-Path $RepoRoot "src\host\runtime\gfxstream_proxy\gfxstream_proxy_renderlib.cpp"
+$D3D11ProxySource = Join-Path $RepoRoot "src\host\runtime\gfxstream_proxy\gfxstream_proxy_d3d11.cpp"
 $GfxstreamSourceRoot = Join-Path $RepoRoot "tmp\aosp-sdk-release\hardware\google\gfxstream"
 $AemuSourceRoot = Join-Path $RepoRoot "tmp\aosp-sdk-release\hardware\google\aemu"
 if ([string]::IsNullOrWhiteSpace($SourceRuntimeDir)) {
@@ -68,6 +69,7 @@ Require-File -Path (Join-Path $sourceRoot "emulator.exe") -Name "source emulator
 Require-File -Path $sourceBackend -Name "source libgfxstream_backend.dll"
 Require-File -Path $ProxySource -Name "gfxstream proxy source"
 Require-File -Path $RenderLibProxySource -Name "gfxstream renderlib proxy source"
+Require-File -Path $D3D11ProxySource -Name "gfxstream D3D11 proxy source"
 Require-File -Path (Join-Path $GfxstreamSourceRoot "include\render-utils\RenderLib.h") -Name "gfxstream RenderLib.h"
 Require-File -Path (Join-Path $AemuSourceRoot "base\include\aemu\base\files\Stream.h") -Name "aemu base headers"
 
@@ -152,6 +154,7 @@ $importLib = Join-Path $proxyWorkDir "libgfxstream_backend.lib"
 $expFile = Join-Path $proxyWorkDir "libgfxstream_backend.exp"
 $proxyObj = Join-Path $proxyWorkDir "gfxstream_proxy.obj"
 $renderLibProxyObj = Join-Path $proxyWorkDir "gfxstream_proxy_renderlib.obj"
+$d3d11ProxyObj = Join-Path $proxyWorkDir "gfxstream_proxy_d3d11.obj"
 $thunkObj = Join-Path $proxyWorkDir "gfxstream_proxy_thunks.obj"
 $includeFlags = @(
     "/I`"$GfxstreamSourceRoot\include`"",
@@ -165,9 +168,11 @@ $includeFlags = @(
 ) -join " "
 $compileCmd = "`"$vcvars`" amd64 >nul && cl /nologo /LD /O2 /MD /GS- /DNOMINMAX " +
     "/c `"$ProxySource`" /Fo`"$proxyObj`" && cl /nologo /O2 /MD /GS- /EHsc /std:c++20 /DNOMINMAX $includeFlags " +
-    "/c `"$RenderLibProxySource`" /Fo`"$renderLibProxyObj`" && cl /nologo /O2 /MD /GS- " +
+    "/c `"$RenderLibProxySource`" /Fo`"$renderLibProxyObj`" && cl /nologo /O2 /MD /GS- /EHsc /std:c++20 /DNOMINMAX " +
+    "/c `"$D3D11ProxySource`" /Fo`"$d3d11ProxyObj`" && cl /nologo /O2 /MD /GS- " +
     "/c `"$thunkSource`" /Fo`"$thunkObj`" && link /NOLOGO /DLL " +
-    "`"$proxyObj`" `"$renderLibProxyObj`" `"$thunkObj`" /DEF:`"$defPath`" /OUT:`"$outBackend`" /IMPLIB:`"$importLib`""
+    "`"$proxyObj`" `"$renderLibProxyObj`" `"$d3d11ProxyObj`" `"$thunkObj`" /DEF:`"$defPath`" " +
+    "/OUT:`"$outBackend`" /IMPLIB:`"$importLib`" d3d11.lib dxgi.lib"
 & cmd.exe /d /s /c $compileCmd
 if ($LASTEXITCODE -ne 0) {
     throw "cl/link failed while building gfxstream proxy backend"
@@ -228,7 +233,7 @@ $metadata = [ordered]@{
         "gfxstream_backend_setup_window",
         "gfxstream_backend_set_screen_mask",
         "gfxstream_backend_set_screen_background")
-    sharedTextureProducer = $false
+    sharedTextureProducer = $true
 }
 $metadata | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $outRoot "chimera-gfxstream-proxy.json") -Encoding ASCII
 

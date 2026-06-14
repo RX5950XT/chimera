@@ -45,6 +45,8 @@ $flushMax = Max-Size -Pattern $flushPattern
 $onPostMax = Max-Size -Pattern $onPostPattern
 $setupWindowMax = Max-Size -Pattern $setupWindowPattern
 
+$angleD3D11SignalCount = Count-Pattern -Pattern "gpu_display_signal ${MinimumWidth}x${MinimumHeight} via_angle_d3d11"
+
 $gpuDisplaySignals = @()
 if ($flushMax.width -ge $MinimumWidth -and $flushMax.height -ge $MinimumHeight) {
     $gpuDisplaySignals += "stream_renderer_flush"
@@ -54,6 +56,9 @@ if ($resourceCreateMax.width -ge $MinimumWidth -and $resourceCreateMax.height -g
 }
 if ($setupWindowMax.width -ge $MinimumWidth -and $setupWindowMax.height -ge $MinimumHeight) {
     $gpuDisplaySignals += "gfxstream_backend_setup_window"
+}
+if ($angleD3D11SignalCount -gt 0) {
+    $gpuDisplaySignals += "via_angle_d3d11"
 }
 
 $cpuReadbackSignals = @()
@@ -69,10 +74,14 @@ if ((Count-Pattern -Pattern 'transfer_read_iov ') -gt 0) {
 
 $frameListenerCount = Count-Pattern -Pattern 'renderlib_listener frame '
 $exportBlobCount = Count-Pattern -Pattern 'probe stream_renderer_export_blob '
-$vtableInstallOk = $text.Contains("renderer_hook install=ok")
+$vtableInstallOk = $text.Contains("renderer_hook install=ok") -or $text.Contains("renderer_hook install=skipped")
 $setPostCallbackCount = Count-Pattern -Pattern 'android_setPostCallback '
 $repaintCount = Count-Pattern -Pattern 'renderer_hook repaint '
 $showSubwindowCount = Count-Pattern -Pattern 'renderer_hook showOpenGLSubwindow '
+# Count slot-35 hook entries (logged before D3D11 probe, so survives crashes)
+$getScreenshotEnterCount = Count-Pattern -Pattern 'renderer_hook getScreenshot entering '
+$getScreenshotD3D11ExceptionCount = Count-Pattern -Pattern 'renderer_hook getScreenshot d3d11_probe=EXCEPTION'
+$onPostD3D11ExceptionCount = Count-Pattern -Pattern 'chimera_on_post d3d11_probe=EXCEPTION'
 
 # Parse max export_blob os_handle (non-zero means a real D3D11 handle was observed)
 $exportBlobHandlePattern = 'probe stream_renderer_export_blob [^\r\n]*osHandle=(?<h>-?\d+)'
@@ -85,7 +94,9 @@ foreach ($match in [regex]::Matches($text, $exportBlobHandlePattern)) {
 $summary = [ordered]@{
     logPath = (Resolve-Path -LiteralPath $LogPath).Path
     hasProxyAttach = $text.Contains("dll_process_attach=libgfxstream_backend_proxy")
-    initLibrary = (Count-Pattern -Pattern 'renderlib_wrapper initLibrary ') + (Count-Pattern -Pattern 'forward name=initLibrary')
+    initLibrary = (Count-Pattern -Pattern 'renderlib_wrapper initLibrary ') + (Count-Pattern -Pattern 'forward name=initLibrary calling')
+    initLibraryResultOk = $text.Contains("forward name=initLibrary result=ok")
+    initLibraryResultNull = $text.Contains("forward name=initLibrary result=null")
     androidSetOpenglesRenderer = Count-Pattern -Pattern 'android_setOpenglesRenderer '
     rendererVtable = Count-Pattern -Pattern 'renderer_vtable renderer='
     vtableInstallOk = $vtableInstallOk
@@ -104,6 +115,9 @@ $summary = [ordered]@{
     repaint = $repaintCount
     showSubwindow = $showSubwindowCount
     rendererGetScreenshot = Count-Pattern -Pattern 'renderer_hook getScreenshot '
+    getScreenshotEnter = $getScreenshotEnterCount
+    getScreenshotD3D11Exception = $getScreenshotD3D11ExceptionCount
+    onPostD3D11Exception = $onPostD3D11ExceptionCount
     transferRead = Count-Pattern -Pattern 'transfer_read_iov '
     maxResourceCreate = $resourceCreateMax
     maxFlush = $flushMax
@@ -115,22 +129,24 @@ $summary = [ordered]@{
     hasCpuReadbackRisk = ($cpuReadbackSignals.Count -gt 0)
     hasFrameListener = ($frameListenerCount -gt 0)
     hasExportBlobHandle = ($maxExportBlobHandle -ne 0)
-    sharedTextureProducer = $false
+    angleD3D11Signals = $angleD3D11SignalCount
+    sharedTextureProducer = ($angleD3D11SignalCount -gt 0)
 }
 
 if ($Json) {
     $summary | ConvertTo-Json -Depth 5
 } else {
     Write-Host "proxyAttach=$($summary.hasProxyAttach)"
-    Write-Host "initLibrary=$($summary.initLibrary) androidSetOpenglesRenderer=$($summary.androidSetOpenglesRenderer) rendererVtable=$($summary.rendererVtable) vtableInstallOk=$($summary.vtableInstallOk)"
+    Write-Host "initLibrary=$($summary.initLibrary) initLibraryResultOk=$($summary.initLibraryResultOk) initLibraryResultNull=$($summary.initLibraryResultNull) androidSetOpenglesRenderer=$($summary.androidSetOpenglesRenderer) rendererVtable=$($summary.rendererVtable) vtableInstallOk=$($summary.vtableInstallOk)"
     Write-Host "resourceCreate=$($summary.resourceCreate) createBlob=$($summary.createBlob) exportBlob=$($summary.exportBlob) flush=$($summary.flush)"
     Write-Host "maxResourceCreate=$($resourceCreateMax.width)x$($resourceCreateMax.height) maxFlush=$($flushMax.width)x$($flushMax.height) maxSetupWindow=$($setupWindowMax.width)x$($setupWindowMax.height)"
     Write-Host "frameListener=$($summary.frameListener) hasFrameListener=$($summary.hasFrameListener) setPostCallback=$($summary.setPostCallback)"
     Write-Host "showSubwindow=$($summary.showSubwindow) repaint=$($summary.repaint) maxExportBlobHandle=$($summary.maxExportBlobHandle)"
-    Write-Host "onPost=$($summary.onPost) rendererGetScreenshot=$($summary.rendererGetScreenshot) transferRead=$($summary.transferRead)"
-    Write-Host "gpuDisplaySignals=$($gpuDisplaySignals -join ',')"
+    Write-Host "onPost=$($summary.onPost) rendererGetScreenshot=$($summary.rendererGetScreenshot) getScreenshotEnter=$($summary.getScreenshotEnter) transferRead=$($summary.transferRead)"
+    Write-Host "getScreenshotD3D11Exception=$($summary.getScreenshotD3D11Exception) onPostD3D11Exception=$($summary.onPostD3D11Exception)"
+    Write-Host "gpuDisplaySignals=$($gpuDisplaySignals -join ',') angleD3D11Signals=$($summary.angleD3D11Signals)"
     Write-Host "cpuReadbackSignals=$($cpuReadbackSignals -join ',')"
-    Write-Host "hasUsableGpuDisplaySignal=$($summary.hasUsableGpuDisplaySignal)"
+    Write-Host "hasUsableGpuDisplaySignal=$($summary.hasUsableGpuDisplaySignal) sharedTextureProducer=$($summary.sharedTextureProducer)"
 }
 
 if (-not $summary.hasProxyAttach) {

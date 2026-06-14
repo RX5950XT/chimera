@@ -6,7 +6,17 @@
 
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 
-## 最新狀態（2026-06-13 Session 74）
+## 最新狀態（2026-06-14 Session 75）
+
+- Session 75 確認 stock SDK 15261927 headless mode GPU backend 為**純 Vulkan**：`vulkan-1.dll` 從第一毫秒載入（兩個實例），`libEGL.dll` 整個 emulator 存活期 NEVER 出現，`d3d11.dll` 也不載入。
+- 修正 `s_egl_resolved` caching bug：`resolve_angle_egl()` 舊版在 `libEGL.dll` 找不到時也設 `s_egl_resolved=true`，導致背景輪詢 loop 只嘗試一次就永遠短路。修正後只在 SUCCESS 才設 flag，允許 retry。
+- 加入模組枚舉（`CreateToolhelp32Snapshot`）：5s mark 與 60s timeout 都 dump GPU 相關模組，實測只有 `d3d9.dll` / `vulkan-1.dll`×2 / `libgfxstream_backend.dll`×2，無 `d3d11.dll` / `libEGL.dll` / `libGLESv2.dll`。
+- GetProcAddress IAT hook 捕獲 128+ Vulkan 函式 API surface，包含 `vkCreateSwapchainKHR`[32] / `vkQueuePresentKHR`[36] / `vkGetDeviceProcAddr`[17]。hook 安裝確認（`hooking vkQueuePresentKHR` log 出現），但 headless 模式下 `vkQueuePresentKHR` **零次呼叫**。
+- **結論**：GPU frame capture via proxy DLL 在 headless `-no-window` 模式下是永久死路；swapchain 函式被 pre-init 但從未 present。唯一出路仍是 matching SDK build id 15261927 的 custom gfxstream runtime。
+- 驗證：proxy build PASS（348 exports）；三次 headless smoke PASS，`no_residual_processes=OK`；Session 75 後無 Chimera/emulator/qemu/adb/ffmpeg 殘留。
+- production gRPC（stock SDK + headless + gRPC 62-67 FPS）是目前唯一可驗 display path；`verify-true-1080p60.ps1 -GrpcOnly` 是對應驗證器。
+
+## 歷史狀態（2026-06-13 Session 74）
 
 - Session 74 新增 `scripts\verify-true-1080p60.ps1 -GrpcOnly`：驗證 production gRPC path（stock SDK emulator headless，62-67 FPS 1920x1080）而不要求 custom shared texture runtime。
 - `Assert-True1080p60GrpcLog`：require "Starting .+ screen capture stream"，reject D3D11 / ADB fallback，require effective FPS ≥ 60 / dup ≤ 5%；既有 `Assert-True1080p60Log`（shared texture gate）完全不受影響。

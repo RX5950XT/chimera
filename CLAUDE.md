@@ -234,5 +234,14 @@ QEMU/debug logs、R&D throwaway scripts、runtime output dirs。
 - **blockers 實測確認**：gfxstream shared texture → Vulkan struct ABI mismatch；EmuGL shared texture → HAXM required / WHPX absent。
 - production gRPC 路徑（stock SDK + headless + gRPC 62-67 FPS）是目前可驗證的最佳 display path；`verify-true-1080p60.ps1 -GrpcOnly` 是對應驗證器。
 
+## 2026-06-14 — Session 75
+
+- 修正 `gfxstream_proxy_d3d11.cpp` 的 `s_egl_resolved` caching bug：舊版在 `libEGL.dll` 找不到時也設 flag，讓背景輪詢 loop 只嘗試一次就永遠短路；修正後只在 SUCCESS 才設 flag。
+- 加入 `dump_gpu_modules()` 模組枚舉（`CreateToolhelp32Snapshot`）：5s mark 與 60s timeout dump；實測確認 stock SDK 15261927 headless 只有 `d3d9.dll` / `vulkan-1.dll`×2 / `libgfxstream_backend.dll`×2，**無 `d3d11.dll` / `libEGL.dll` / `libGLESv2.dll`**。
+- 加入 GetProcAddress IAT hook（`gfxstream_proxy.c`）：捕獲 stock 在 `initLibrary` 階段批次解析的 128+ Vulkan 函式 API surface；同時 hook `vkQueuePresentKHR` / `vkGetDeviceProcAddr`。
+- **結論確定**：`vkQueuePresentKHR` hook 安裝成功（log 確認），但 headless `-no-window` 模式零次呼叫——swapchain 函式被 pre-init 但 frame 由 CPU readback 提供，GPU frame capture via proxy 是永久死路。
+- 驗證：proxy build PASS（348 exports）；三次 headless smoke PASS；`no_residual_processes=OK`。
+- true 1080p/60 尚未完成；唯一出路仍是 matching SDK build id 15261927 的 custom gfxstream runtime。
+
 ---
-*Updated: 2026-06-13 — Session 74（GrpcOnly verify + ABI empirical test）*
+*Updated: 2026-06-14 — Session 75（GPU backend 確認 + vkQueuePresentKHR hook 結論）*

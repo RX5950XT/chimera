@@ -329,6 +329,15 @@
 - 輸入只能由 `GuestDisplay` 做座標轉換後轉發；window 層直接送 mouse/wheel/key 會造成雙送、座標錯誤與滾輪卡頓。
 - legacy/R&D backend 也要遵守 host audio policy：預設 2 vCPU / 2048MB、hidden launch、startup `Idle`、暖機後 `BelowNormal`，不能因為是 fallback 就回到高干擾配置。
 
+## 2026-06-14 — stock SDK headless 是純 Vulkan，GPU frame capture via proxy 是死路
+
+- `resolve_angle_egl()` 類函式不能在確認找到模組「之前」就設 resolved flag；flag 只能在 SUCCESS（模組找到且 function pointer 全部解析成功）時才設，否則輪詢 loop 第一次失敗後就永遠不再重試。
+- Stock SDK 15261927 headless mode：`vulkan-1.dll` 從第一毫秒就已載入（兩個實例：emulator 自帶 `lib64/vulkan-1.dll` 與系統 `vulkan-1.dll`）；`libEGL.dll` 在整個 emulator 存活期間 NEVER 出現；`d3d11.dll` 也不載入。任何 ANGLE/EGL/D3D11 proxy 策略對 stock SDK 15261927 都是永久死路，無需繼續實驗。
+- Stock pre-initializes `vkQueuePresentKHR` 等 swapchain 函式（透過 GetProcAddress 批次解析 128+ Vulkan 函式），但 headless `-no-window` 模式 NEVER 實際呼叫它，因為沒有 VkSurface/Swapchain。GPU frame capture via proxy DLL（hook `vkQueuePresentKHR`）在 headless 模式下毫無用武之地。
+- GetProcAddress IAT hook 是有效的 Vulkan API surface logger：patch 前必須先 save real `GetProcAddress`（否則 hook 自己呼叫 `GetProcAddress` 會遞迴爆炸）；攔截回傳值可以強迫替換 `vkQueuePresentKHR` 等函式指標，技術上可行，只是 headless 下永遠不會被呼叫。
+- `vtable[35]` crash（`libgfxstream_backend_stock.dll+0x6D83D`）是 stock 嘗試用 EGL-based screenshot path 但 EGL 未初始化；QEMU catch 後走 Vulkan CPU readback，對 gRPC getScreenshot 無害。這是 expected behavior，不是 bug。
+- GPU frame capture via proxy 在 headless 下沒有乾淨 frame boundary signal；`vkQueueSubmit` 有 hook 點但 per-submit 沒有 frame 邊界，且中間可能有幾十次 compute/transfer submit；不是可行的 60 FPS producer 路徑。唯一出路仍是 matching SDK build id 的 custom gfxstream runtime。
+
 ## 2026-06-13 — 原生 emulator 多開要同時防 UI path 與 stale process
 
 - `NativeEmulatorView` 就算沒有 attach，也不應在正式路徑 pin emulator PID 或保持可見；預設產品路徑只允許 `GuestDisplay`，native embed 只屬於 unsafe diagnostics。

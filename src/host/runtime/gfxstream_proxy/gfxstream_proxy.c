@@ -8,6 +8,8 @@
 extern IMAGE_DOS_HEADER __ImageBase;
 
 extern void chimera_gfxstream_try_wrap_renderer_shared_ptr(void* renderer_shared_ptr);
+extern void chimera_try_set_post_callback_std(void* renderer_shared_ptr);
+extern void chimera_proxy_start_d3d11_bg_thread(void);
 
 typedef void(__cdecl *stream_renderer_flush_fn)(uint32_t res_handle);
 typedef struct stream_renderer_param {
@@ -103,6 +105,7 @@ typedef void(__cdecl *gfxstream_backend_screen_rgba_fn)(int width,
                                                         int height,
                                                         const unsigned char* rgbaData);
 typedef void(__cdecl *android_set_opengles_renderer_fn)(void* renderer_shared_ptr);
+typedef int  (__cdecl *pfn_egl_swap_buffers_t)(void* display, void* surface);
 typedef void(__cdecl *on_post_func)(void* context, uint32_t displayId, int width,
                                     int height, int ydir, int format, int type,
                                     unsigned char* pixels);
@@ -184,6 +187,7 @@ typedef void(__cdecl *renderer_snapshot_callback_fn)(void* self,
                                                      int snapshotterStage);
 
 static HMODULE g_stock_backend = NULL;
+static PVOID g_veh_handle = NULL;
 static stream_renderer_flush_fn g_stream_renderer_flush = NULL;
 static stream_renderer_init_fn g_stream_renderer_init = NULL;
 static stream_renderer_context_create_fn g_stream_renderer_context_create = NULL;
@@ -219,6 +223,9 @@ static volatile LONG64 g_probe_screen_mask_count = 0;
 static volatile LONG64 g_probe_screen_background_count = 0;
 static volatile LONG g_renderer_vtable_logged = 0;
 static volatile LONG g_renderer_vtable_hooked = 0;
+static pfn_egl_swap_buffers_t g_orig_eglSwapBuffers = NULL;
+static volatile LONG64 g_egl_swap_count = 0;
+static volatile LONG g_egl_swap_hook_installed = 0;
 static volatile LONG64 g_hook_set_post_callback_count = 0;
 static volatile LONG64 g_hook_add_listener_count = 0;
 static volatile LONG64 g_hook_remove_listener_count = 0;
@@ -320,7 +327,8 @@ void chimera_gfxstream_proxy_log(const char *line) {
         g_log_state = 1;
     }
     if (g_log_file == INVALID_HANDLE_VALUE) {
-        g_log_file = CreateFileA(g_log_path, FILE_APPEND_DATA, FILE_SHARE_READ, NULL,
+        g_log_file = CreateFileA(g_log_path, FILE_APPEND_DATA,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                                  OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         if (g_log_file == INVALID_HANDLE_VALUE) {
             return;
@@ -598,6 +606,9 @@ static void* __cdecl hooked_renderer_get_virtio_gpu_ops(void* self) {
     return result;
 }
 
+/* Forward declaration — defined in gfxstream_proxy_d3d11.cpp */
+extern void chimera_proxy_try_publish_d3d11_frame(int width, int height);
+
 static int __cdecl hooked_renderer_get_screenshot(void* self,
                                                   unsigned int nChannels,
                                                   unsigned int* width,
@@ -609,6 +620,25 @@ static int __cdecl hooked_renderer_get_screenshot(void* self,
                                                   int desiredHeight,
                                                   int desiredRotation,
                                                   renderer_rect rect) {
+    /* Log entry FIRST (before any crash-prone D3D11 code) so we know slot 35 was called
+       even if the subsequent D3D11 probe crashes the process. */
+    const LONG64 enterCount = InterlockedIncrement64(&g_hook_get_screenshot_count);
+    if (enterCount <= 5 || (enterCount % 300) == 0) {
+        char eline[128] = {0};
+        snprintf(eline, sizeof(eline),
+                 "renderer_hook getScreenshot entering count=%lld tid=%lu desired=%dx%d\n",
+                 (long long)enterCount, (unsigned long)GetCurrentThreadId(),
+                 desiredWidth, desiredHeight);
+        chimera_gfxstream_proxy_log(eline);
+    }
+    const int w = (desiredWidth  > 0) ? desiredWidth  : 1920;
+    const int h = (desiredHeight > 0) ? desiredHeight : 1080;
+    /* Guard D3D11/EGL probe with SEH — a crash here must not take down the emulator. */
+    __try {
+        chimera_proxy_try_publish_d3d11_frame(w, h);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        chimera_gfxstream_proxy_log("renderer_hook getScreenshot d3d11_probe=EXCEPTION\n");
+    }
     const size_t beforePixels = cPixels ? *cPixels : 0;
     const unsigned int beforeWidth = width ? *width : 0;
     const unsigned int beforeHeight = height ? *height : 0;
@@ -617,17 +647,13 @@ static int __cdecl hooked_renderer_get_screenshot(void* self,
                                          displayId, desiredWidth, desiredHeight,
                                          desiredRotation, rect)
         : -1;
-    LONG64 count = 0;
-    if (should_log_probe(&g_hook_get_screenshot_count, &count)) {
+    if (enterCount <= 5 || (enterCount % 300) == 0) {
         char line[320] = {0};
         snprintf(line, sizeof(line),
-                 "renderer_hook getScreenshot count=%lld result=%d display=%d channels=%u desired=%dx%d rotation=%d rect=%d,%d %dx%d in=%ux%u/%llu out=%ux%u/%llu pixels=%p\n",
-                 (long long)count, result, displayId, nChannels, desiredWidth,
-                 desiredHeight, desiredRotation, rect.pos.x, rect.pos.y, rect.size.w,
-                 rect.size.h, beforeWidth, beforeHeight,
+                 "renderer_hook getScreenshot done count=%lld result=%d in=%ux%u/%llu out=%ux%u/%llu\n",
+                 (long long)enterCount, result, beforeWidth, beforeHeight,
                  (unsigned long long)beforePixels, width ? *width : 0,
-                 height ? *height : 0, (unsigned long long)(cPixels ? *cPixels : 0),
-                 pixels);
+                 height ? *height : 0, (unsigned long long)(cPixels ? *cPixels : 0));
         chimera_gfxstream_proxy_log(line);
     }
     return result;
@@ -697,67 +723,20 @@ static void __cdecl hooked_renderer_set_display_active_config(void* self, int co
 }
 
 static void maybe_hook_renderer_vtable(void* renderer, void** vtable) {
-    if (!truthy_env("CHIMERA_GFXSTREAM_PROXY_HOOK_RENDERER_VTABLE")) {
-        return;
-    }
     if (renderer == NULL || vtable == NULL) {
         return;
     }
     if (InterlockedCompareExchange(&g_renderer_vtable_hooked, 1, 0) != 0) {
         return;
     }
-    void** clone = (void**)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(void*) * 48);
-    if (clone == NULL) {
-        chimera_gfxstream_proxy_log("renderer_hook install=alloc_failed\n");
-        return;
-    }
-    memcpy(clone, vtable, sizeof(void*) * 48);
-    g_orig_renderer_set_post_callback = (renderer_set_post_callback_fn)clone[8];
-    g_orig_renderer_add_listener = (renderer_listener_fn)clone[9];
-    g_orig_renderer_remove_listener = (renderer_listener_fn)clone[10];
-    g_orig_renderer_async_readback_supported = (renderer_bool_noargs_fn)clone[11];
-    g_orig_renderer_get_read_pixels_callback = (renderer_get_pointer_fn)clone[12];
-    g_orig_renderer_get_flush_read_pixel_pipeline = (renderer_get_pointer_fn)clone[13];
-    g_orig_renderer_show_subwindow = (renderer_show_subwindow_fn)clone[14];
-    g_orig_renderer_repaint = (renderer_void_noargs_fn)clone[18];
-    g_orig_renderer_has_guest_frame = (renderer_bool_noargs_fn)clone[19];
-    g_orig_renderer_reset_guest_frame = (renderer_void_noargs_fn)clone[20];
-    g_orig_renderer_screen_mask = (renderer_screen_mask_fn)clone[21];
-    g_orig_renderer_multi_display = (renderer_multi_display_fn)clone[22];
-    g_orig_renderer_multi_display_color_buffer =
-        (renderer_multi_display_color_buffer_fn)clone[23];
-    g_orig_renderer_get_virtio_gpu_ops = (renderer_get_virtio_gpu_ops_fn)clone[27];
-    g_orig_renderer_get_screenshot = (renderer_get_screenshot_fn)clone[35];
-    g_orig_renderer_snapshot_callback = (renderer_snapshot_callback_fn)clone[36];
-    g_orig_renderer_set_vsync_hz = (renderer_set_vsync_hz_fn)clone[37];
-    g_orig_renderer_set_display_configs = (renderer_set_display_configs_fn)clone[38];
-    g_orig_renderer_set_display_active_config =
-        (renderer_set_display_active_config_fn)clone[39];
-    clone[8] = (void*)hooked_renderer_set_post_callback;
-    clone[9] = (void*)hooked_renderer_add_listener;
-    clone[10] = (void*)hooked_renderer_remove_listener;
-    clone[11] = (void*)hooked_renderer_async_readback_supported;
-    clone[12] = (void*)hooked_renderer_get_read_pixels_callback;
-    clone[13] = (void*)hooked_renderer_get_flush_read_pixel_pipeline;
-    clone[14] = (void*)hooked_renderer_show_subwindow;
-    clone[18] = (void*)hooked_renderer_repaint;
-    clone[19] = (void*)hooked_renderer_has_guest_frame;
-    clone[20] = (void*)hooked_renderer_reset_guest_frame;
-    clone[21] = (void*)hooked_renderer_screen_mask;
-    clone[22] = (void*)hooked_renderer_multi_display;
-    clone[23] = (void*)hooked_renderer_multi_display_color_buffer;
-    clone[27] = (void*)hooked_renderer_get_virtio_gpu_ops;
-    clone[35] = (void*)hooked_renderer_get_screenshot;
-    clone[36] = (void*)hooked_renderer_snapshot_callback;
-    clone[37] = (void*)hooked_renderer_set_vsync_hz;
-    clone[38] = (void*)hooked_renderer_set_display_configs;
-    clone[39] = (void*)hooked_renderer_set_display_active_config;
-    __try {
-        *(void***)renderer = clone;
-        chimera_gfxstream_proxy_log("renderer_hook install=ok slots=8,9,10,11,12,13,14,18,19,20,21,22,23,27,35,36,37,38,39\n");
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        chimera_gfxstream_proxy_log("renderer_hook install=exception\n");
-    }
+    /* Both vtable approaches (clone and in-place) break the emulator:
+       Clone: dynamic_cast<FrameBuffer*> returns nullptr inside the gRPC handler.
+       In-place: triggers STATUS_HEAP_CORRUPTION (0xC0000374) in the emulator
+       immediately after patching — likely a CFI/vtable integrity check inside
+       gfxstream or ANGLE.  Frame interception is therefore done via eglSwapBuffers
+       IAT hook in patch_egl_swap_hook() instead. */
+    (void)vtable;
+    chimera_gfxstream_proxy_log("renderer_hook install=skipped (using eglSwapBuffers IAT)\n");
 }
 
 static void log_renderer_vtable(void* renderer) {
@@ -797,7 +776,363 @@ static void log_renderer_vtable(void* renderer) {
                  i, slot, rva);
         chimera_gfxstream_proxy_log(line);
     }
-    maybe_hook_renderer_vtable(renderer, vtable);
+    /* Isolation gate: skip vtable hook to test if it's responsible for gRPC hangs. */
+    char skipHook[4] = {0};
+    GetEnvironmentVariableA("CHIMERA_PROXY_SKIP_VTABLE_HOOK", skipHook, sizeof(skipHook));
+    if (skipHook[0] == '1') {
+        chimera_gfxstream_proxy_log("renderer_hook install=skipped (isolation gate)\n");
+    } else {
+        maybe_hook_renderer_vtable(renderer, vtable);
+    }
+}
+
+/* ---- VEH crash diagnostic ------------------------------------------- */
+
+static LONG NTAPI proxy_crash_veh(EXCEPTION_POINTERS* ep) {
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_STACK_OVERFLOW &&
+        code != EXCEPTION_ILLEGAL_INSTRUCTION && code != EXCEPTION_PRIV_INSTRUCTION &&
+        code != EXCEPTION_INT_DIVIDE_BY_ZERO) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    PCONTEXT ctx = ep->ContextRecord;
+    void* addr = ep->ExceptionRecord->ExceptionAddress;
+    char line[512] = {0};
+    snprintf(line, sizeof(line),
+             "proxy_exception code=0x%08lX crashAddr=%p stockBase=%p tid=%lu\n",
+             (unsigned long)code, addr, (void*)g_stock_backend,
+             (unsigned long)GetCurrentThreadId());
+    chimera_gfxstream_proxy_log(line);
+    if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2) {
+        snprintf(line, sizeof(line), "proxy_exception_av rw=%llu badAddr=%p\n",
+                 (unsigned long long)ep->ExceptionRecord->ExceptionInformation[0],
+                 (void*)ep->ExceptionRecord->ExceptionInformation[1]);
+        chimera_gfxstream_proxy_log(line);
+    }
+    /* Dump general-purpose registers for root cause analysis */
+    snprintf(line, sizeof(line),
+             "proxy_exception_regs rcx=%p rdx=%p r8=%p r9=%p\n",
+             (void*)ctx->Rcx, (void*)ctx->Rdx, (void*)ctx->R8, (void*)ctx->R9);
+    chimera_gfxstream_proxy_log(line);
+    snprintf(line, sizeof(line),
+             "proxy_exception_regs rax=%p rbx=%p rsi=%p rdi=%p r10=%p r11=%p\n",
+             (void*)ctx->Rax, (void*)ctx->Rbx, (void*)ctx->Rsi, (void*)ctx->Rdi,
+             (void*)ctx->R10, (void*)ctx->R11);
+    chimera_gfxstream_proxy_log(line);
+    /* Use RtlCaptureStackBackTrace for unwind-accurate call chain,
+       then annotate each frame with module name + RVA. */
+    void* frames[64] = {0};
+    USHORT nFrames = 0;
+    __try {
+        nFrames = RtlCaptureStackBackTrace(0, 64, frames, NULL);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        nFrames = 0;
+    }
+    for (USHORT fi = 0; fi < nFrames; ++fi) {
+        void* val = frames[fi];
+        if (!val) continue;
+        HMODULE hMod = NULL;
+        char modName[MAX_PATH] = {0};
+        BOOL inMod = FALSE;
+        __try {
+            inMod = GetModuleHandleExA(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                (LPCSTR)val, &hMod);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            inMod = FALSE;
+        }
+        if (!inMod || !hMod) {
+            snprintf(line, sizeof(line),
+                     "proxy_bt[%02u] addr=%p (no module)\n", fi, val);
+        } else {
+            __try {
+                GetModuleFileNameA(hMod, modName, (DWORD)(sizeof(modName) - 1));
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                modName[0] = '\0';
+            }
+            const char* modBase = modName;
+            for (const char* p = modName; *p; ++p) {
+                if (*p == '\\' || *p == '/') modBase = p + 1;
+            }
+            uintptr_t modRva = (uintptr_t)val - (uintptr_t)hMod;
+            snprintf(line, sizeof(line),
+                     "proxy_bt[%02u] addr=%p rva=0x%llX mod=%s\n",
+                     fi, val, (unsigned long long)modRva, modBase);
+        }
+        chimera_gfxstream_proxy_log(line);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+/* ---- IAT patch: redirect stock's self-name queries back to stock ---- */
+
+static HMODULE WINAPI my_stock_GetModuleHandleA(LPCSTR name) {
+    if (name && _stricmp(name, "libgfxstream_backend.dll") == 0 && g_stock_backend) {
+        chimera_gfxstream_proxy_log("iat_hook GetModuleHandleA->stock\n");
+        return g_stock_backend;
+    }
+    return GetModuleHandleA(name);
+}
+
+static HMODULE WINAPI my_stock_GetModuleHandleW(LPCWSTR name) {
+    if (name && _wcsicmp(name, L"libgfxstream_backend.dll") == 0 && g_stock_backend) {
+        chimera_gfxstream_proxy_log("iat_hook GetModuleHandleW->stock\n");
+        return g_stock_backend;
+    }
+    return GetModuleHandleW(name);
+}
+
+static HMODULE WINAPI my_stock_LoadLibraryA(LPCSTR name) {
+    if (name && _stricmp(name, "libgfxstream_backend.dll") == 0 && g_stock_backend) {
+        chimera_gfxstream_proxy_log("iat_hook LoadLibraryA->stock\n");
+        return g_stock_backend;
+    }
+    return LoadLibraryA(name);
+}
+
+/* ---- Vulkan frame-capture hooks ----
+   The stock loads ALL Vulkan functions via GetProcAddress on vulkan-1.dll.
+   We intercept key calls to observe and eventually capture GPU frames.
+
+   VkPresentInfoKHR layout (Vulkan spec, packed per Microsoft x64 ABI):
+     uint32_t sType, const void* pNext,
+     uint32_t waitSemaphoreCount, const VkSemaphore* pWaitSemaphores,
+     uint32_t swapchainCount, const VkSwapchainKHR* pSwapchains,
+     const uint32_t* pImageIndices, VkResult* pResults               */
+typedef uint32_t vkresult_t;
+typedef struct {
+    uint32_t       sType;
+    const void*    pNext;
+    uint32_t       waitSemaphoreCount;
+    const uint64_t* pWaitSemaphores;
+    uint32_t       swapchainCount;
+    const uint64_t* pSwapchains;
+    const uint32_t* pImageIndices;
+    vkresult_t*    pResults;
+} vk_present_info_t;
+
+typedef vkresult_t (WINAPI *pfn_vkQueuePresentKHR_t)(void* queue, const vk_present_info_t* pPresentInfo);
+typedef void* (WINAPI *pfn_vkGetDeviceProcAddr_t)(void* device, const char* pName);
+
+static pfn_vkQueuePresentKHR_t  g_real_vkQueuePresentKHR  = NULL;
+static pfn_vkGetDeviceProcAddr_t g_real_vkGetDeviceProcAddr = NULL;
+static volatile LONG64 g_vk_present_count = 0;
+
+static vkresult_t WINAPI hooked_vkQueuePresentKHR(void* queue, const vk_present_info_t* pPresentInfo)
+{
+    const LONG64 cnt = InterlockedIncrement64(&g_vk_present_count);
+    if (cnt <= 10 || (cnt % 60) == 0) {
+        uint32_t sc  = pPresentInfo ? pPresentInfo->swapchainCount : 0;
+        uint32_t idx = (pPresentInfo && pPresentInfo->pImageIndices) ? pPresentInfo->pImageIndices[0] : 0;
+        char line[128];
+        snprintf(line, sizeof(line),
+                 "vkQueuePresentKHR count=%lld queue=%p sc=%u idx=%u\n",
+                 (long long)cnt, queue, sc, idx);
+        chimera_gfxstream_proxy_log(line);
+    }
+    return g_real_vkQueuePresentKHR ? g_real_vkQueuePresentKHR(queue, pPresentInfo) : 0 /*VK_SUCCESS*/;
+}
+
+/* Device-level lookup: intercept vkQueuePresentKHR if the stock calls vkGetDeviceProcAddr. */
+static void* WINAPI hooked_vkGetDeviceProcAddr(void* device, const char* pName)
+{
+    void* result = g_real_vkGetDeviceProcAddr
+        ? g_real_vkGetDeviceProcAddr(device, pName)
+        : NULL;
+    if (pName && strcmp(pName, "vkQueuePresentKHR") == 0 && result) {
+        if (!g_real_vkQueuePresentKHR)
+            g_real_vkQueuePresentKHR = (pfn_vkQueuePresentKHR_t)result;
+        return (void*)hooked_vkQueuePresentKHR;
+    }
+    return result;
+}
+
+/* ---- GetProcAddress hook: log Vulkan/EGL lookups from stock DLL ----
+   The stock DLL loads Vulkan entirely dynamically via GetProcAddress.
+   Intercepting these calls reveals the exact Vulkan API surface and lets
+   us return hooked function pointers for key frame-capture entry points. */
+typedef FARPROC (WINAPI *pfn_GetProcAddress_t)(HMODULE, LPCSTR);
+static pfn_GetProcAddress_t g_real_GetProcAddress = NULL;
+static volatile LONG64 g_gpa_vk_count = 0;
+
+static FARPROC WINAPI hooked_stock_GetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
+    /* Call the REAL GetProcAddress directly (not via IAT) to avoid recursion. */
+    FARPROC result = g_real_GetProcAddress
+        ? g_real_GetProcAddress(hModule, lpProcName)
+        : NULL;
+
+    /* Log only Vulkan (vk*) and EGL (egl*) lookups; skip ordinals (high bits set). */
+    if (lpProcName && ((uintptr_t)lpProcName >> 16)) {
+        const char* n = lpProcName;
+        if ((n[0]=='v' && n[1]=='k') ||
+            (n[0]=='e' && n[1]=='g' && n[2]=='l')) {
+            LONG64 cnt = InterlockedIncrement64(&g_gpa_vk_count);
+            if (cnt <= 128 || (cnt % 64) == 0) {
+                char line[192];
+                snprintf(line, sizeof(line),
+                         "stock_GetProcAddress[%lld] name=%s result=%p\n",
+                         (long long)cnt, n, (void*)result);
+                chimera_gfxstream_proxy_log(line);
+            }
+
+            /* Intercept key frame-capture entry points */
+            if (strcmp(n, "vkQueuePresentKHR") == 0 && result) {
+                g_real_vkQueuePresentKHR = (pfn_vkQueuePresentKHR_t)result;
+                chimera_gfxstream_proxy_log("stock_GetProcAddress: hooking vkQueuePresentKHR\n");
+                return (FARPROC)hooked_vkQueuePresentKHR;
+            }
+            if (strcmp(n, "vkGetDeviceProcAddr") == 0 && result) {
+                g_real_vkGetDeviceProcAddr = (pfn_vkGetDeviceProcAddr_t)result;
+                chimera_gfxstream_proxy_log("stock_GetProcAddress: hooking vkGetDeviceProcAddr\n");
+                return (FARPROC)hooked_vkGetDeviceProcAddr;
+            }
+        }
+    }
+    return result;
+}
+
+static void patch_iat_in_module(HMODULE hMod,
+                                 const char* importDll,
+                                 const char* funcName,
+                                 FARPROC replacement) {
+    BYTE* base = (BYTE*)hMod;
+    IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)base;
+    if (!dos || dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+    IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return;
+
+    DWORD importRva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+    if (!importRva) return;
+
+    IMAGE_IMPORT_DESCRIPTOR* imp = (IMAGE_IMPORT_DESCRIPTOR*)(base + importRva);
+    for (; imp->Name; ++imp) {
+        const char* dll = (const char*)(base + imp->Name);
+        if (_stricmp(dll, importDll) != 0) continue;
+
+        IMAGE_THUNK_DATA* orig = imp->OriginalFirstThunk
+            ? (IMAGE_THUNK_DATA*)(base + imp->OriginalFirstThunk) : NULL;
+        IMAGE_THUNK_DATA* iat  = (IMAGE_THUNK_DATA*)(base + imp->FirstThunk);
+
+        for (DWORD i = 0; iat[i].u1.Function; ++i) {
+            if (!orig) continue;
+            if (orig[i].u1.Ordinal & IMAGE_ORDINAL_FLAG) continue;
+            IMAGE_IMPORT_BY_NAME* byName =
+                (IMAGE_IMPORT_BY_NAME*)(base + (DWORD)orig[i].u1.AddressOfData);
+            if (_stricmp((const char*)byName->Name, funcName) != 0) continue;
+
+            DWORD old = 0;
+            VirtualProtect(&iat[i].u1.Function, sizeof(FARPROC), PAGE_READWRITE, &old);
+            iat[i].u1.Function = (ULONG_PTR)replacement;
+            VirtualProtect(&iat[i].u1.Function, sizeof(FARPROC), old, &old);
+
+            char line[160] = {0};
+            snprintf(line, sizeof(line), "iat_patched dll=%s func=%s ok\n", importDll, funcName);
+            chimera_gfxstream_proxy_log(line);
+            return;
+        }
+        char line[160] = {0};
+        snprintf(line, sizeof(line), "iat_patched dll=%s func=%s not_found\n", importDll, funcName);
+        chimera_gfxstream_proxy_log(line);
+        return;
+    }
+}
+
+static void patch_stock_name_resolution(void) {
+    if (!g_stock_backend) return;
+
+    /* Cache the REAL GetProcAddress before we patch the IAT, so hooked_stock_GetProcAddress
+       can call it without going through the stock DLL's (now-patched) IAT slot. */
+    if (!g_real_GetProcAddress) {
+        g_real_GetProcAddress = (pfn_GetProcAddress_t)GetProcAddress(
+            GetModuleHandleA("KERNEL32.dll"), "GetProcAddress");
+    }
+    patch_iat_in_module(g_stock_backend, "KERNEL32.dll", "GetProcAddress",
+                        (FARPROC)hooked_stock_GetProcAddress);
+    chimera_gfxstream_proxy_log("iat_patched dll=KERNEL32.dll func=GetProcAddress ok\n");
+
+    /* Stock DLL calls GetModuleHandleA("libgfxstream_backend.dll") internally to get its
+       own HMODULE. With our proxy loaded under that name it returns the wrong handle.
+       Redirect these IAT entries to our stubs that return g_stock_backend instead. */
+    patch_iat_in_module(g_stock_backend, "KERNEL32.dll", "GetModuleHandleA",
+                        (FARPROC)my_stock_GetModuleHandleA);
+    patch_iat_in_module(g_stock_backend, "KERNEL32.dll", "GetModuleHandleW",
+                        (FARPROC)my_stock_GetModuleHandleW);
+    patch_iat_in_module(g_stock_backend, "KERNEL32.dll", "LoadLibraryA",
+                        (FARPROC)my_stock_LoadLibraryA);
+}
+
+/* ---- eglSwapBuffers IAT hook ------------------------------------------ */
+/* vtable in-place and clone approaches both corrupt the emulator (heap corruption /
+   dynamic_cast NULL).  Hooking eglSwapBuffers via the stock's IAT is safe (IAT is a
+   writable data section) and fires on the render thread with the EGL context current,
+   giving us the right moment to probe the ANGLE D3D11 render target. */
+
+/* Forward declaration — defined in gfxstream_proxy_d3d11.cpp */
+extern void chimera_proxy_try_publish_d3d11_frame(int width, int height);
+
+static int __cdecl my_egl_swap_buffers(void* display, void* surface) {
+    const LONG64 count = InterlockedIncrement64(&g_egl_swap_count);
+    if (count <= 5 || (count % 60) == 0) {
+        char line[192] = {0};
+        snprintf(line, sizeof(line),
+                 "eglSwapBuffers_hook count=%lld disp=%p surf=%p tid=%lu\n",
+                 (long long)count, display, surface, (unsigned long)GetCurrentThreadId());
+        chimera_gfxstream_proxy_log(line);
+    }
+    /* Probe ANGLE D3D11 RT — EGL context is current here (render thread). */
+    __try {
+        chimera_proxy_try_publish_d3d11_frame(1920, 1080);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        chimera_gfxstream_proxy_log("eglSwapBuffers_hook d3d11_probe=EXCEPTION\n");
+    }
+    return g_orig_eglSwapBuffers ? g_orig_eglSwapBuffers(display, surface) : 1;
+}
+
+static void patch_egl_swap_hook(void) {
+    if (InterlockedCompareExchange(&g_egl_swap_hook_installed, 1, 0) != 0) return;
+    if (!g_stock_backend) {
+        chimera_gfxstream_proxy_log("eglSwapBuffers_hook=skipped (no stock)\n");
+        return;
+    }
+    HMODULE egl = GetModuleHandleA("libEGL.dll");
+    if (!egl) {
+        chimera_gfxstream_proxy_log("eglSwapBuffers_hook=skipped (libEGL not loaded)\n");
+        return;
+    }
+    g_orig_eglSwapBuffers = (pfn_egl_swap_buffers_t)GetProcAddress(egl, "eglSwapBuffers");
+    patch_iat_in_module(g_stock_backend, "libEGL.dll", "eglSwapBuffers",
+                        (FARPROC)my_egl_swap_buffers);
+}
+
+/* ---- heartbeat -------------------------------------------------------- */
+
+static DWORD WINAPI proxy_heartbeat_thread(LPVOID param) {
+    (void)param;
+    DWORD tick = 0;
+    for (;;) {
+        Sleep(10000);
+        tick += 10;
+        char line[96] = {0};
+        snprintf(line, sizeof(line), "proxy_heartbeat t=%us\n", (unsigned)tick);
+        chimera_gfxstream_proxy_log(line);
+    }
+    return 0;
+}
+
+static volatile LONG g_heartbeat_started = 0;
+
+static void maybe_start_heartbeat(void) {
+    if (InterlockedCompareExchange(&g_heartbeat_started, 1, 0) != 0) {
+        return;
+    }
+    HANDLE ht = CreateThread(NULL, 0, proxy_heartbeat_thread, NULL, 0, NULL);
+    if (ht) {
+        chimera_gfxstream_proxy_log("proxy_heartbeat_thread=started\n");
+        CloseHandle(ht);
+    } else {
+        chimera_gfxstream_proxy_log("proxy_heartbeat_thread=FAILED\n");
+    }
 }
 
 static HMODULE load_stock_backend(void) {
@@ -829,6 +1164,15 @@ static HMODULE load_stock_backend(void) {
     g_stock_backend = LoadLibraryA(stock_path);
     if (g_stock_backend == NULL) {
         chimera_gfxstream_proxy_log("load_stock_backend=fail\n");
+    } else {
+        chimera_gfxstream_proxy_log("load_stock_backend=ok\n");
+        /* Redirect stock DLL's own-name queries (GetModuleHandleA/LoadLibraryA with
+           "libgfxstream_backend.dll") back to g_stock_backend before any stock code
+           runs, so stock's initRenderer can safely get its own HMODULE. */
+        patch_stock_name_resolution();
+        /* Start heartbeat here — after stock DLL is loaded and DllMain has returned.
+           CreateThread from DllMain can cause early process exit on some GPU paths. */
+        maybe_start_heartbeat();
     }
     return g_stock_backend;
 }
@@ -890,7 +1234,8 @@ static post_callback_state* post_callback_for_display(uint32_t displayId) {
     return &g_post_callbacks[0];
 }
 
-static void __cdecl chimera_on_post(void* ignored,
+/* Non-static so gfxstream_proxy_renderlib.cpp can wrap it in std::function */
+void __cdecl chimera_on_post(void* ignored,
                                     uint32_t displayId,
                                     int width,
                                     int height,
@@ -908,6 +1253,16 @@ static void __cdecl chimera_on_post(void* ignored,
                  (long long)count, displayId, width, height, ydir, format, type, pixels);
         chimera_gfxstream_proxy_log(line);
     }
+    /* Attempt GPU-side D3D11 texture publish via ANGLE EGL interop.
+       Uses render-target texture directly; never touches the pixels buffer.
+       SEH guard: a crash here must not take down the emulator. */
+    if (width == 1920 && height == 1080) {
+        __try {
+            chimera_proxy_try_publish_d3d11_frame(width, height);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            chimera_gfxstream_proxy_log("chimera_on_post d3d11_probe=EXCEPTION\n");
+        }
+    }
     if (state->callback != NULL) {
         state->callback(state->context, displayId, width, height, ydir, format, type, pixels);
     }
@@ -918,8 +1273,6 @@ __declspec(dllexport) void android_setOpenglesRenderer(void* renderer_shared_ptr
         g_android_set_opengles_renderer =
             (android_set_opengles_renderer_fn)chimera_gfxstream_resolve_stock_export("android_setOpenglesRenderer");
     }
-
-    chimera_gfxstream_try_wrap_renderer_shared_ptr(renderer_shared_ptr);
 
     void* renderer = NULL;
     if (renderer_shared_ptr != NULL) {
@@ -932,9 +1285,30 @@ __declspec(dllexport) void android_setOpenglesRenderer(void* renderer_shared_ptr
     chimera_gfxstream_proxy_log(line);
     log_renderer_vtable(renderer);
 
+    /* Forward to stock FIRST so the renderer's display system is fully
+       initialized before we install the frame listener via addListener.
+       Calling addListener before stock initializes the display config
+       triggers a NULL-pointer deref at r9=0x13A inside 0x18006D800. */
     if (g_android_set_opengles_renderer != NULL) {
         g_android_set_opengles_renderer(renderer_shared_ptr);
     }
+
+    chimera_gfxstream_try_wrap_renderer_shared_ptr(renderer_shared_ptr);
+
+    /* In headless (-no-window) mode the emulator never calls android_setPostCallback.
+       SDK 15261927 changed OnPostCallback from void(*)(…) to std::function<…>, so the
+       plain C vtable[8] call (passing chimera_on_post directly in rdx) triggers a
+       std::function move that writes NULL to [chimera_on_post] (proxy code) → WRITE AV.
+       Delegate to C++ which constructs a proper std::function and passes it via hidden
+       pointer (correct x64 MSVC ABI for non-trivially-copyable by-value parameters). */
+    chimera_try_set_post_callback_std(renderer_shared_ptr);
+
+    /* Hook eglSwapBuffers in the stock's IAT (fires on render thread if stock imports it).
+       Also start the background D3D11 polling thread which samples the render target at
+       ~60 Hz using ID3D11Multithread, covering the headless case where eglSwapBuffers is
+       never called from the stock because libEGL is not in its static IAT. */
+    patch_egl_swap_hook();
+    chimera_proxy_start_d3d11_bg_thread();
 }
 
 __declspec(dllexport) void android_setPostCallback(on_post_func onPost,
@@ -1309,8 +1683,18 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
     (void)reserved;
     if (reason == DLL_PROCESS_ATTACH) {
         chimera_gfxstream_proxy_log("dll_process_attach=libgfxstream_backend_proxy\n");
+        /* Install VEH first so we catch crashes in stock initRenderer and anywhere else.
+           Priority=1 means this handler runs before SEH on the crashing thread. */
+        g_veh_handle = AddVectoredExceptionHandler(1, proxy_crash_veh);
+        chimera_gfxstream_proxy_log(g_veh_handle ? "proxy_veh=installed\n" : "proxy_veh=FAILED\n");
     }
     if (reason == DLL_PROCESS_DETACH) {
+        /* Log before closing so we know if the DLL is unloaded before heartbeat fires */
+        chimera_gfxstream_proxy_log("dll_process_detach=libgfxstream_backend_proxy\n");
+        if (g_veh_handle) {
+            RemoveVectoredExceptionHandler(g_veh_handle);
+            g_veh_handle = NULL;
+        }
         close_log_file();
     }
     return TRUE;
