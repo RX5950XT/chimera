@@ -2,6 +2,29 @@
 
 ---
 
+## 2026-06-17 Session 79 — AdbH264 死路確認 + 背景音樂干擾修正
+
+### Plan
+
+- [x] 調查 AdbH264 screenrecord pipeline 無法輸出幀問題。
+- [x] 在 `AdbH264FramebufferCapture.cpp` 加入診斷 logging（adb/ffmpeg stderr、5s pipe health check、第一幀 log）。
+- [x] 移除 `applyLowInterferencePriority(m_ffmpeg)` 改用 `applyDecodePriority`（只有 BELOW_NORMAL，不含 power throttle）。
+- [x] 確認根本原因：`adb exec-out screenrecord --output-format=h264` 在 headless emulator 完全無輸出（0 bytes in 5s）。
+- [x] 確認 ADB-H264 路徑為死路：headless QEMU emulator 的 screenrecord 無法透過 SurfaceFlinger API 取得 virtual display 畫面。
+- [x] 修正背景音樂干擾：`configs/instances.json` 的 `processPriority` 從 `"below_normal"` 改為 `"idle"`，讓 OS 確保音樂播放器始終優先於模擬器 CPU 排程。
+- [x] Build PASS。
+- [x] GrpcOnly verifier PASS（`grpc_stream_fps_avg=6.7`，`unique_content_fps_max=1.9`）。
+- [x] 19/19 unit tests PASS（gamepad 需實體硬體，排除）。
+
+### Review
+
+- **AdbH264 死路**：`adb exec-out screenrecord --output-format=h264 --size 1920x1080 -` 在 headless `-no-window` emulator 下 5 秒內 0 bytes，無 stderr error。原因：Android `screenrecord` 走 SurfaceFlinger MediaRecorder API，headless mode 下 Virtual Display 不提供可供截取的 frame buffer。`CHIMERA_VIDEO_TRANSPORT=screenrecord` 路徑永久無效。
+- **背景音樂干擾**：即使 `enableAudio: false`（no WASAPI 競爭）、BELOW_NORMAL + power throttling，WHPX VCPU 執行時的 VM exit 處理仍在 kernel DPC level，可能造成 host audio thread stall。改為 `processPriority: "idle"` 確保 OS 永遠不會把 CPU 讓給模擬器來搶走音樂播放器的時脈。
+- **AdbH264 診斷保留**：adb/ffmpeg stderr immediate log、5s pipe health check、first frame log 保留在 `AdbH264FramebufferCapture.cpp`，供未來可能的替代實作（例如非 headless 模式）使用。
+- **GrpcOnly verifier PASS**：priority 改變不影響 gRPC display path。
+
+---
+
 ## 2026-06-17 Session 78 — 音訊啟用 + gRPC display 解鎖 + GrpcOnly verifier 修正
 
 ### Plan

@@ -33,7 +33,6 @@ public:
     static QStringList buildFfmpegArgs(const QSize &size);
 
 private slots:
-    void onAdbReadyRead();
     void onAdbStderr();
     void onFfmpegReadyRead();
     void onFfmpegStderr();
@@ -64,6 +63,8 @@ private:
     QElapsedTimer m_frameTimer;
     std::unique_ptr<SharedD3D11TexturePublisher> m_texturePublisher;
     bool m_texturePublishFailed = false;
+    bool m_frameLogged = false;
+    bool m_pipeLogged = false;
 };
 
 } // namespace chimera::graphics

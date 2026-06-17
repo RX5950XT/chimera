@@ -6,7 +6,13 @@
 
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 
-## 最新狀態（2026-06-17 Session 78）
+## 最新狀態（2026-06-17 Session 79）
+
+- **AdbH264 screenrecord 永久死路**：stock Android Emulator `-no-window` headless 模式下，`adb exec-out screenrecord --output-format=h264` 在 5s 內產生 0 bytes。SurfaceFlinger/MediaRecorder API 無法存取 headless virtual display framebuffer。`CHIMERA_VIDEO_TRANSPORT=screenrecord` 不再嘗試。
+- **audio 干擾修正**：`configs/instances.json` `processPriority` 改為 `"idle"`。IDLE priority class 使 OS 永遠優先排程音訊播放器；同時配合 `PROCESS_POWER_THROTTLING_EXECUTION_SPEED` + `MEMORY_PRIORITY_LOW` + `PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION`，不影響 16 核心 Ryzen 5950X 正常模擬器運作。
+- **驗證**：GrpcOnly verifier PASS（`grpc_stream_fps_avg=6.7`，`unique_content_fps_max=1.9`，1920x1080）；build PASS；no_residual_processes=OK。
+
+## 歷史狀態（2026-06-17 Session 78）
 
 - **音訊啟用**：`configs/instances.json` 改 `enableAudio: true`；移除 `VirtualMachine.cpp` 的 `virtio-snd-pci`（與 stock Goldfish audio HAL 衝突，導致 guest-side init fail）。stock Android Emulator 在無 `-no-audio` 時自動路由 Goldfish audio 到 host WASAPI。
 - **gRPC display regression fixed**：前一輪把 gRPC 誤分類為「diagnostic raw fallback」並要求 `--allow-raw-capture-fallback` CLI flag；修正後 gRPC 在無 shared D3D11 texture path 時是預設 display（`!sharedTextureCapture`）。`allowRawCaptureFallback` 只控制 MMAP/screenrecord/ADB 診斷 fallback。

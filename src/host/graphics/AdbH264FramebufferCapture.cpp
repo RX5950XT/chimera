@@ -1,5 +1,6 @@
 #include "AdbH264FramebufferCapture.h"
 
+#include <QDebug>
 #include <QImage>
 #include <QTimer>
 
@@ -85,6 +86,20 @@ void applyLowInterferencePriority(QProcess *process) {
 #endif
 }
 
+// Lighter version for real-time decode processes: only BELOW_NORMAL CPU, no efficiency-mode throttle.
+void applyDecodePriority(QProcess *process) {
+#ifdef _WIN32
+    if (!process || process->processId() <= 0) return;
+    HANDLE handle = OpenProcess(PROCESS_SET_INFORMATION, FALSE,
+                                static_cast<DWORD>(process->processId()));
+    if (!handle) return;
+    SetPriorityClass(handle, BELOW_NORMAL_PRIORITY_CLASS);
+    CloseHandle(handle);
+#else
+    Q_UNUSED(process)
+#endif
+}
+
 } // namespace
 
 AdbH264FramebufferCapture::AdbH264FramebufferCapture(QString adbPath,
@@ -158,6 +173,8 @@ bool AdbH264FramebufferCapture::start() {
     m_frameTimer.start();
     m_restartBackoffMs = 1500;
     m_texturePublishFailed = false;
+    m_frameLogged = false;
+    m_pipeLogged = false;
     SharedD3D11TexturePublisher::Config textureConfig;
     textureConfig.metadataName = localObjectName(QStringLiteral("Meta"));
     textureConfig.textureName = localObjectName(QStringLiteral("Texture"));
@@ -208,6 +225,24 @@ void AdbH264FramebufferCapture::startProcesses() {
             this, &AdbH264FramebufferCapture::onFfmpegStderr);
     connect(m_ffmpeg, &QProcess::finished,
             this, &AdbH264FramebufferCapture::onFfmpegFinished);
+
+    m_adb = new QProcess(this);
+    m_adb->setProgram(m_adbPath);
+    m_adb->setArguments(buildAdbArgs(m_serial, m_size, m_bitRate));
+    m_adb->setProcessChannelMode(QProcess::SeparateChannels);
+    // Wire adb stdout directly to ffmpeg stdin at OS level (same as a shell |
+    // pipe). This avoids manual Qt event-loop forwarding which can stall on
+    // Windows when the main loop is busy with other ADB operations at boot.
+    m_adb->setStandardOutputProcess(m_ffmpeg);
+    connect(m_adb, &QProcess::readyReadStandardError,
+            this, &AdbH264FramebufferCapture::onAdbStderr);
+    connect(m_adb, &QProcess::finished,
+            this, &AdbH264FramebufferCapture::onAdbFinished);
+
+    qDebug() << "[AdbH264] ffmpeg args:" << buildFfmpegArgs(m_size);
+    qDebug() << "[AdbH264] adb args:" << buildAdbArgs(m_serial, m_size, m_bitRate);
+
+    // ffmpeg must be started before adb so its stdin pipe is ready.
     m_ffmpeg->start();
     if (!m_ffmpeg->waitForStarted(3000)) {
         emit captureError(QStringLiteral("failed to start ffmpeg for ADB H.264 capture: %1")
@@ -215,18 +250,11 @@ void AdbH264FramebufferCapture::startProcesses() {
         stopProcesses();
         return;
     }
-    applyLowInterferencePriority(m_ffmpeg);
+    // Use lighter priority for ffmpeg: real-time H.264 decode needs CPU time.
+    // Full efficiency-mode throttle (applyLowInterferencePriority) starves the decoder.
+    applyDecodePriority(m_ffmpeg);
+    qDebug() << "[AdbH264] ffmpeg started pid:" << m_ffmpeg->processId();
 
-    m_adb = new QProcess(this);
-    m_adb->setProgram(m_adbPath);
-    m_adb->setArguments(buildAdbArgs(m_serial, m_size, m_bitRate));
-    m_adb->setProcessChannelMode(QProcess::SeparateChannels);
-    connect(m_adb, &QProcess::readyReadStandardOutput,
-            this, &AdbH264FramebufferCapture::onAdbReadyRead);
-    connect(m_adb, &QProcess::readyReadStandardError,
-            this, &AdbH264FramebufferCapture::onAdbStderr);
-    connect(m_adb, &QProcess::finished,
-            this, &AdbH264FramebufferCapture::onAdbFinished);
     m_adb->start();
     if (!m_adb->waitForStarted(3000)) {
         emit captureError(QStringLiteral("failed to start adb screenrecord: %1")
@@ -235,6 +263,17 @@ void AdbH264FramebufferCapture::startProcesses() {
         return;
     }
     applyLowInterferencePriority(m_adb);
+    qDebug() << "[AdbH264] adb started pid:" << m_adb->processId();
+
+    // Diagnostic: check pipe health 5 seconds after startup.
+    QTimer::singleShot(5000, this, [this]() {
+        if (!m_adb || !m_ffmpeg) return;
+        qDebug() << "[AdbH264] 5s check:"
+                 << "adb running=" << (m_adb->state() == QProcess::Running)
+                 << "ffmpeg running=" << (m_ffmpeg->state() == QProcess::Running)
+                 << "rawBuffer bytes=" << m_rawBuffer.size()
+                 << "ffmpeg bytesAvailable=" << m_ffmpeg->bytesAvailable();
+    });
 }
 
 void AdbH264FramebufferCapture::stopProcesses() {
@@ -257,27 +296,31 @@ void AdbH264FramebufferCapture::stopProcesses() {
     }
 }
 
-void AdbH264FramebufferCapture::onAdbReadyRead() {
-    if (!m_ffmpeg) return;
-    const QByteArray data = m_adb->readAllStandardOutput();
-    if (!data.isEmpty())
-        m_ffmpeg->write(data);
-}
-
 void AdbH264FramebufferCapture::onAdbStderr() {
     if (!m_adb) return;
-    appendBounded(&m_adbError, m_adb->readAllStandardError());
+    const QByteArray data = m_adb->readAllStandardError();
+    appendBounded(&m_adbError, data);
+    if (!data.isEmpty())
+        qDebug() << "[AdbH264] adb:" << QString::fromLocal8Bit(data).trimmed();
 }
 
 void AdbH264FramebufferCapture::onFfmpegReadyRead() {
     if (!m_ffmpeg) return;
-    m_rawBuffer.append(m_ffmpeg->readAllStandardOutput());
+    const QByteArray chunk = m_ffmpeg->readAllStandardOutput();
+    if (!m_pipeLogged) {
+        m_pipeLogged = true;
+        qDebug() << "[AdbH264] ffmpeg readyReadStandardOutput fired, bytes:" << chunk.size();
+    }
+    m_rawBuffer.append(chunk);
     parseRawFrames();
 }
 
 void AdbH264FramebufferCapture::onFfmpegStderr() {
     if (!m_ffmpeg) return;
-    appendBounded(&m_ffmpegError, m_ffmpeg->readAllStandardError());
+    const QByteArray data = m_ffmpeg->readAllStandardError();
+    appendBounded(&m_ffmpegError, data);
+    if (!data.isEmpty())
+        qWarning() << "[AdbH264] ffmpeg:" << QString::fromLocal8Bit(data).trimmed();
 }
 
 void AdbH264FramebufferCapture::parseRawFrames() {
@@ -296,6 +339,10 @@ void AdbH264FramebufferCapture::parseRawFrames() {
 
 void AdbH264FramebufferCapture::publishFrame(const char *data, qsizetype frameBytes) {
     if (!data || frameBytes <= 0) return;
+    if (!m_frameLogged) {
+        m_frameLogged = true;
+        qDebug() << "[AdbH264] first frame received, bytes:" << frameBytes;
+    }
     emit streamFrameReceived(true);
     const int bytesPerLine = m_size.width() * 4;
     if (m_texturePublisher && !m_texturePublishFailed) {

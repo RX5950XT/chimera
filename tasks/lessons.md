@@ -1,5 +1,20 @@
 # Chimera Lessons
 
+## 2026-06-17 — AdbH264 screenrecord 在 headless emulator 完全無效
+
+- `adb exec-out screenrecord --output-format=h264 --size 1920x1080 --bit-rate 24000000 -` 在 headless QEMU Android Emulator（`-no-window`）下 **0 bytes** 輸出，無任何 stderr error。
+- 根本原因：Android `screenrecord` 走 SurfaceFlinger MediaRecorder API 捕捉 DisplayDevice 畫面；headless mode 下 emulator 的 virtual display 不建立 Android-visible framebuffer surface，SurfaceFlinger 無可抓取的 layer。
+- Qt `setStandardOutputProcess` OS-level pipe 本身沒有問題（之前懷疑的方向是錯的）；問題在 data 根本沒有進 pipe。
+- `CHIMERA_VIDEO_TRANSPORT=screenrecord` 路徑在 stock headless QEMU emulator 上永久無效，**不應再嘗試**。
+- **正確方向**：唯一可行的 60 FPS path 仍是 matching SDK gfxstream shared texture runtime；gRPC unary 是 4-17 FPS 的可用 fallback。
+
+## 2026-06-17 — emulator IDLE priority 比 BELOW_NORMAL 更不干擾 host audio
+
+- 即使 `enableAudio: false`（emulator 不用 WASAPI）+ BELOW_NORMAL + power throttling，WHPX VCPU 的 VM exit 處理在 kernel DPC level 執行，仍可能造成 host audio thread stall。
+- IDLE priority class 確保 OS 永遠讓音樂播放器（normal priority）先跑；combined with `PROCESS_POWER_THROTTLING_EXECUTION_SPEED` 進一步限制 CPU frequency/execution。
+- 16-core Ryzen 5950X 即使以 IDLE priority 跑 emulator，仍有充足 idle CPU 給 emulator 正常運行（Android boot ≤ 60s 未受影響）。
+- **Rule**：背景運行的模擬器 `processPriority` 預設用 `"idle"`；只有在 user 明確要求最佳 emulator 效能時才升為 `"below_normal"`。
+
 ## 2026-06-17 — gRPC capture 被錯誤分類為 diagnostic fallback 的回歸
 
 - gRPC `getScreenshot` 是 stock Android Emulator 的合法 display path（4-17 FPS，1920x1080 unary polling）。在某輪修改中被改成「diagnostic raw fallback」並要求 `--allow-raw-capture-fallback` CLI flag，結果所有 stock emulator 用戶完全沒有顯示。

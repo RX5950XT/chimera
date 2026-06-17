@@ -266,5 +266,13 @@ QEMU/debug logs、R&D throwaway scripts、runtime output dirs。
 - **驗證**：GrpcOnly verifier PASS（`grpc_stream_fps_avg=8.3`，`unique_content_fps_max=4.0`，1920x1080）；20/20 unit tests PASS；build PASS。
 - true 1080p/60 仍需 matching SDK gfxstream runtime；gRPC 路徑約 4-17 FPS，為 stock emulator 的可用 display path。
 
+## 2026-06-17 — Session 79
+
+- **AdbH264 screenrecord 死路確認**：stock Android Emulator 以 `-no-window` headless 模式啟動時，SurfaceFlinger/MediaRecorder API 無法存取 virtual display framebuffer；`adb exec-out screenrecord --output-format=h264` 在 5s 內產生 0 bytes。`CHIMERA_VIDEO_TRANSPORT=screenrecord` 路徑永久無效，不再嘗試。
+- **診斷補強**：`AdbH264FramebufferCapture` 加入 `applyDecodePriority()`（ffmpeg 降 BELOW_NORMAL，無 power throttle）、5s pipe health check timer、首幀/管線連線 one-shot log、立即 adb stderr 輸出。診斷確認 `rawBuffer=0, ffmpeg bytesAvailable=0`，與 `adb exec-out` 零輸出一致。
+- **background audio 干擾修正**：`configs/instances.json` `processPriority` 從 `"below_normal"` 改為 `"idle"`。IDLE priority class 確保 OS 永遠優先排程音訊播放器（NORMAL+ priority）；`applyPriority(IDLE)` 同時設 `MEMORY_PRIORITY_LOW` + `PROCESS_POWER_THROTTLING_EXECUTION_SPEED` + `PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION`。16 核心 Ryzen 5950X 閒置算力足以支撐模擬器正常運作。
+- **驗證**：GrpcOnly verifier PASS（`grpc_stream_fps_avg=6.7`，`unique_content_fps_max=1.9`，1920x1080）；build PASS；no_residual_processes=OK。
+- true 1080p/60 仍需 matching SDK gfxstream runtime（build ID 15261927）；gRPC 路徑為目前唯一可用 display path。
+
 ---
-*Updated: 2026-06-17 — Session 78（音訊啟用 + gRPC display 解鎖 + GrpcOnly verifier 修正；GrpcOnly verifier PASS；20/20 unit tests PASS）*
+*Updated: 2026-06-17 — Session 79（AdbH264 死路確認 + idle priority 音訊修正；GrpcOnly verifier PASS）*
