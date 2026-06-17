@@ -50,6 +50,7 @@ struct EmulatorRuntimeCapabilities {
     bool hasMismatchedGfxstreamBuildId = false;
     bool supportsChimeraEmuglSharedTexture = false;
     bool supportsChimeraGfxstreamSharedTexture = false;
+    bool hasChimeraShmemPublisher = false;  // CPU readback → Win32 named shmem producer
     std::string status;
 };
 

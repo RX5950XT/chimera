@@ -39,7 +39,7 @@ struct VirtualMachineConfig {
     bool allowVisibleEmulatorWindow = false; // unsafe diagnostics only
     bool startHidden = true;             // hidden launch protects desktop unless unsafe diagnostics need visibility
     bool enableRoot = false;             // -writable-system (google_apis only; adb root post-boot)
-    bool enableAudio = false;            // Remove -no-audio flag; emulator handles host audio natively
+    bool enableAudio = false;            // Remove -no-audio: emulator routes Android Goldfish audio to host WASAPI
     bool quickBoot = false;               // Opt-in named emulator snapshot; default protects host audio
     std::string deviceProfile;           // Device spoofing profile name
     std::string processPriority = "below_normal";

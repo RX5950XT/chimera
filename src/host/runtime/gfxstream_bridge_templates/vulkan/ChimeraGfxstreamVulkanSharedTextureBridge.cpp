@@ -120,11 +120,11 @@ uint32_t findMemoryType(const VulkanDispatch& vk,
 
 }  // namespace
 
-extern "C" const char* ChimeraGfxstreamVulkanSharedTextureBridgeMarker() {
+extern "C" __declspec(dllexport) const char* ChimeraGfxstreamVulkanSharedTextureBridgeMarker() {
     return "ChimeraGfxstreamVulkanSharedTextureBridge";
 }
 
-extern "C" const char* ChimeraGfxstreamVulkanSharedTextureBridgeGpuCopyMarker() {
+extern "C" __declspec(dllexport) const char* ChimeraGfxstreamVulkanSharedTextureBridgeGpuCopyMarker() {
     return "ChimeraGfxstreamVulkanSharedTextureBridgeGpuCopy";
 }
 

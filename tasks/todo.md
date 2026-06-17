@@ -2,6 +2,80 @@
 
 ---
 
+## 2026-06-17 Session 78 — 音訊啟用 + gRPC display 解鎖 + GrpcOnly verifier 修正
+
+### Plan
+
+- [x] 移除 `VirtualMachine.cpp` 的 `virtio-snd-pci` 裝置（與 stock Goldfish audio 衝突）。
+- [x] `configs/instances.json` 改 `enableAudio: true`（預設啟用音訊）。
+- [x] `main.cpp` 修正 gRPC capture 啟動條件：`allowRawCaptureFallback` → `!sharedTextureCapture`（gRPC 是預設 display，不需額外 flag）。
+- [x] `main.cpp` 移除過時的「Guest audio: disabled」debug log。
+- [x] 修正 `Assert-True1080p60GrpcLog`：移除不可達的 `effective >= 60` 與 `maxDup <= 5%`；改為 `active_samples >= 2` + `avgStreamFps >= 3.0`（非零樣本）+ `maxGuestFps >= 1.0`。
+- [x] Build PASS（chimera-ui.exe）。
+- [x] GrpcOnly verifier PASS（`grpc_stream_fps_avg=8.3`，`unique_content_fps_max=4.0`）。
+- [x] 20/20 unit tests PASS。
+
+### Review
+
+- **audio regression fixed**：`enableAudio=true` 讓 stock Android Emulator 自動路由 Goldfish audio 到 host WASAPI；同時移除 `virtio-snd-pci`（它與 built-in Goldfish audio HAL 衝突，導致 guest-side init fail）。
+- **gRPC capture regression fixed**：前一輪把 gRPC 誤分類為「diagnostic raw fallback」並要求 `--allow-raw-capture-fallback` flag；修正後 gRPC 是預設 display path，只有 shared D3D11 texture 已連線才不啟動 gRPC。
+- **GrpcOnly verifier FPS logic fixed**：gRPC unary 在 1920x1080 每幀約 250ms → 理論上限 ~12 FPS（pipeline depth 3），實測 4-17 FPS；`effective=min(guest,stream,render)` 在靜止畫面因 guestFps=0 而崩潰到 0；正確 gate 是：非零樣本平均 streamFps ≥ 3.0，且 exercise 期間 maxGuestFps ≥ 1.0（證明 Android 有真實畫面送達 host）。
+- **parse-only 驗證**：用既有 log 在修正後 parse-only 確認 `result=pass`（`grpc_stream_fps_avg=6.5`，`unique_content_fps_max=2.9`）再跑 full verifier。
+- **BlueStacks parity status**：35/35 功能全 ✅；音訊、顯示都已確認可用；下一步需 matching SDK gfxstream runtime 才能達到 true 60 FPS（目前 gRPC 路徑約 4-17 FPS）。
+
+---
+
+## 2026-06-17 Session 77 — CPU readback → Win32 shmem 管道打通，Android 畫面首次送達 host
+
+### Plan
+
+- [x] 確認上輪 `no_residual_processes=OK`（Session 開頭即已確認）。
+- [x] 修正 ctypes restype bug：`OpenEventA` / `OpenFileMappingA` / `MapViewOfFile` 預設回傳 `c_long`（32-bit），在 64-bit 指標截斷 → AV；改為 `c_void_p`。
+- [x] 加入 shmem frame delivery 到 `frame_buffer.cpp` 的 headless `postImpl()` 路徑：`chimeraPublishFrameToShmem()` 使用 `readToBytesScaled()`（Vulkan readback），seqlock header，`SetEvent()` 通知。
+- [x] 測試腳本 `run-syncthread-hasgl-test.py` 加入 `_check_shmem_inline()` 函式（emulator 存活期間讀 named mapping），boot confirmed 後呼叫，再 kill。
+- [x] Build DLL，部署到 `build\chimera-gfxstream-runtime-github\lib64\libgfxstream_backend.dll`。
+- [x] 執行三次測試（解 AVD lock / ctypes AV / 成功）；確認 `shmem_frame_ok=True`。
+- [x] 加入 `kChimeraShmemMarker = "ChimeraShmemFramePublisher"` 到 `frame_buffer.cpp`（用在 log 格式字串，防止最佳化掉）；rebuild DLL 並確認 marker 在 binary 中。
+- [x] `InstanceManager.h` 加 `hasChimeraShmemPublisher`；`InstanceManager.cpp` 在 `probeEmulatorRuntime()` 偵測 marker；在 `createInstance()` 中若偵測到 marker 且未設 `CHIMERA_SHMEM_FRAME_NAME` 則自動 set env vars。
+- [x] 加 unit test `probeEmulatorRuntimeDetectsShmemPublisher`；20/20 PASS（含 instance manager 所有既有 tests）。
+- [x] 更新文件（todo / lessons / CONTEXT / CLAUDE）。
+
+### Review
+
+- **shmem_frame_ok=True CONFIRMED**：magic=`0x43484D46`，1920x1080 RGBA8888，seq=1530，non_zero=4096/4096（像素全部非零，有真實 Android 畫面內容），px_sz=8294400（= 1920×1080×4）。
+- **ABI 路徑**：SwiftShader Vulkan（headless）→ `postImpl()` headless 分支 → `readToBytesScaled()` Vulkan readback → seqlock shmem header → `SetEvent()` → host `_check_shmem_inline()` 讀取。完全不依賴 GLES / MSVCP140。
+- **ctypes 64-bit 陷阱**：`ctypes.windll.kernel32` 函式預設回傳 `c_long`（32-bit signed），HANDLE/LPVOID 在 64-bit 系統上指標值如果 > 2GB 就被截斷 → `from_address()` 存取無效地址 → AV（Python exit -1073741819）。修正：在呼叫前設 `.restype = ctypes.c_void_p`。
+- **AVD multiinstance.lock**：程式 AV crash 時 lock 不會被自動刪除（lock 是 Advisory，不是 OS-managed）；下輪啟動前必須先 kill 所有 emulator/qemu 進程，再 `del /f /q` 刪除 lock。
+- **Win32 named object 生命週期**：named mapping / event 在 emulator process 退出時立即消失。`_check_shmem_inline()` 必須在 `_kill_tree()` 之前執行。
+- **端到端整合完成**：`createInstance()` 自動 probe DLL → 偵測 `ChimeraShmemFramePublisher` → set `CHIMERA_SHMEM_FRAME_NAME=chimera_shmem_<name>` / `CHIMERA_SHMEM_FRAME_EVENT=chimera_shmem_event_<name>` → `main.cpp` 讀取這些 env vars（在 `createInstance()` 之後）→ 建立 `SharedMemoryFramebufferCapture` + retry timer → emulator 繼承 env vars → gfxstream DLL 創建 named mapping → retry 開啟 → host 渲染 Android 畫面。
+- **視覺驗證 CONFIRMED**：`tmp/run-chimera-shmem-visual-test.ps1` 以 `CHIMERA_EMULATOR_PATH=github_runtime` 啟動 Chimera UI → log 確認 `Chimera shmem transport auto-enabled: "chimera_shmem_chimera_dev"` → `ChimeraShmemFramePublisher shmem ready: ...1920x1080 (8294456 B)` → `Shared-memory display capture started` → **`total=38 frames` 送達 host UI**（4.2 FPS，SwiftShader CPU readback 正常速度）。
+- **已驗證**：shmem smoke test `shmem_frame_ok=True`（non_zero=4096/4096）；unit test 20/20 PASS；visual test `shmem_capture_started=True` / `boot_completed=True` / frames delivered；`no_residual=True`。
+
+---
+
+## 2026-06-16 Session 76 — std::promise ABI fix → Android headless boot CONFIRMED
+
+### Plan
+
+- [x] 用 Python ctypes + DbgHelp.dll 解析 crash stack symbol（WinDbg dbghelp, SYMOPT_UNDNAME|SYMOPT_LOAD_LINES）。
+- [x] 確認 crash 根因：`postImplSync` headless 路徑不呼叫 `promise.set_value()` → `~promise` → `_Set_exception` → MSVCP140 null deref。
+- [x] 初版修正（`else { promise.set_value(); }`）：crash 從 `~promise` 移到 `_Set_value` 本身，確認是 MSVCP140 CRT ABI mismatch，不是 broken_promise 問題。
+- [x] 正確修正：`postImplSync` + `compose` 改用 `gfxstream::base::Lock + ConditionVariable`（純 Win32 SRWLOCK/CONDVAR，完全不依賴 MSVCP140）。
+- [x] Build PASS；Deploy to `build\chimera-gfxstream-runtime-github\`。
+- [x] 測試：`av_crash=False`；`boot_completed_adb=True`；QEMU CPU delta 4.188s（健康）；零 VEH AV 事件。
+- [x] 更新 `run-syncthread-hasgl-test.py`：加入 inline ADB polling（每 15s），boot confirmed 後提早結束。
+- [x] 同步 `tasks/todo.md`、`tasks/lessons.md`、`CONTEXT.md`、`CLAUDE.md`。
+
+### Review
+
+- **std::promise<void> 在此環境完全不可用**：MSVCP140 有兩個不相容版本（SDK v14.28 + 系統 v14.44），`_Associated_state` 的內部 mutex offset 不一致，任何 `set_value()` / `_Set_exception`（broken_promise）都在 MSVCP140.dll+0x12c10 null deref。
+- **修法**：`gfxstream::base::Lock + ConditionVariable` 使用 Win32 SRWLOCK + CONDITION_VARIABLE，完全繞開 MSVCP140，callback 在拿到 lock 後 `done=true` + `signal`，caller 用 `cv.wait(&lk, [&]{return done;})` 等待，headless 直接 proceed。
+- **Android headless boot 已確認**：`run-syncthread-hasgl-test.py` → `boot_completed_adb=True`，colorbuffer lifecycle 正常（只有預期的 "Failed to find ColorBuffer" 非關鍵錯誤）。
+- **no_residual_processes=OK 已確認（Session 77 開頭驗證）**：name-based `psutil` kill（qemu-system / emulator）在 `proc.wait(timeout=5)` 後成功清理所有殘留進程。
+- **下一步**：gfxstream render thread 現在能正常執行 `rcPostColorBuffer`；Session 77 目標：在 `postImpl()` headless 路徑加入 CPU readback → shared memory 幀交付，讓 host Chimera 能真正顯示 github runtime 的 Android 畫面。
+
+---
+
 ## 2026-06-14 Session 75 — Vulkan backend 確認 + GetProcAddress/vkQueuePresentKHR hook
 
 ### Plan

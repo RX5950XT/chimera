@@ -472,10 +472,9 @@ std::vector<std::string> buildEmulatorArgsForConfig(const VirtualMachineConfig &
         qemuArgs.push_back("-display");
         qemuArgs.push_back("vnc=127.0.0.1:" + std::to_string(display));
     }
-    if (config.enableAudio && !classicRuntime) {
-        qemuArgs.push_back("-device");
-        qemuArgs.push_back("virtio-snd-pci");
-    }
+    // virtio-snd-pci is not passed: the stock Android Emulator already provides
+    // Goldfish audio when -no-audio is absent. Adding virtio-snd-pci via -qemu
+    // conflicts with the built-in audio HAL and causes guest-side init failures.
     if (!qemuArgs.empty()) {
         args.push_back("-qemu");
         args.insert(args.end(), qemuArgs.begin(), qemuArgs.end());

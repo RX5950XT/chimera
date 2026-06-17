@@ -4,6 +4,10 @@ param(
 
     [string]$SourceDir = "",
 
+    # R&D only: manually specify gfxstream source build ID when git log has no "Snap for" commit.
+    # Requires -AllowMismatchedBuildId to take effect unless it happens to match the SDK build ID.
+    [string]$SourceBuildId = "",
+
     # R&D only: allow mismatched gfxstream source build ID vs SDK emulator build ID.
     # This bypasses the ABI safety gate. Use only for exploratory testing.
     [switch]$AllowMismatchedBuildId
@@ -132,11 +136,18 @@ if (![string]::IsNullOrWhiteSpace($SourceDir)) {
         $gfxstreamSourceSnapBuildId = $Matches[1]
     }
 }
+if ([string]::IsNullOrWhiteSpace($gfxstreamSourceSnapBuildId) -and ![string]::IsNullOrWhiteSpace($SourceBuildId)) {
+    if (-not $AllowMismatchedBuildId) {
+        throw "-SourceBuildId requires -AllowMismatchedBuildId (R&D only)"
+    }
+    $gfxstreamSourceSnapBuildId = $SourceBuildId
+    Write-Warning "R&D: using manually-specified source build ID: $gfxstreamSourceSnapBuildId"
+}
 if ([string]::IsNullOrWhiteSpace($baseEmulatorBuildId)) {
     throw "base emulator build id is missing from source.properties: $sourceProperties"
 }
 if ([string]::IsNullOrWhiteSpace($gfxstreamSourceSnapBuildId)) {
-    throw "gfxstream source snapshot build id is missing; pass -SourceDir pointing at the matching gfxstream checkout"
+    throw "gfxstream source snapshot build id is missing; pass -SourceDir pointing at the matching gfxstream checkout, or -SourceBuildId -AllowMismatchedBuildId for R&D"
 }
 if ($gfxstreamSourceSnapBuildId -ne $baseEmulatorBuildId) {
     if (-not $AllowMismatchedBuildId) {

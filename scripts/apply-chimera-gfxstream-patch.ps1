@@ -808,7 +808,11 @@ if (WIN32 AND MSVC AND DEFINED CHIMERA_SDK_IMPORT_LIB_DIR)
     target_link_options(gfxstream_backend PRIVATE
         "/INCLUDE:__imp_?Callback@LineConsumer@emulation@android@@SAHPEAXPEBDH@Z"
         "/INCLUDE:__imp_??0AllRefArDo@android_emulator@@QEAA@XZ"
-        "/INCLUDE:__imp_??0AdbAssistantStats@android_studio@@QEAA@XZ")
+        "/INCLUDE:__imp_??0AdbAssistantStats@android_studio@@QEAA@XZ"
+        "/DELAYLOAD:libandroid-emu-agents.dll"
+        "/DELAYLOAD:libandroid-emu-protos.dll"
+        "/DELAYLOAD:libandroid-emu-metrics.dll")
+    target_link_libraries(gfxstream_backend PRIVATE delayimp.lib)
 endif()
 '@
 $cmakeTextAfterD3d = [System.IO.File]::ReadAllText($cmake).Replace("`r`n", "`n")
@@ -817,6 +821,28 @@ if (!$cmakeTextAfterD3d.Contains("CHIMERA_SDK_IMPORT_LIB_DIR")) {
 }
 } else {
     Write-Host "legacy_gl_patch=skipped"
+    # Still need SDK import link block for vulkan-only path
+    $cmakeSdkImportBlock = @'
+
+if (WIN32 AND MSVC AND DEFINED CHIMERA_SDK_IMPORT_LIB_DIR)
+    target_link_libraries(gfxstream_backend PRIVATE
+        "${CHIMERA_SDK_IMPORT_LIB_DIR}/libandroid-emu-agents.lib"
+        "${CHIMERA_SDK_IMPORT_LIB_DIR}/libandroid-emu-protos.lib"
+        "${CHIMERA_SDK_IMPORT_LIB_DIR}/libandroid-emu-metrics.lib")
+    target_link_options(gfxstream_backend PRIVATE
+        "/INCLUDE:__imp_?Callback@LineConsumer@emulation@android@@SAHPEAXPEBDH@Z"
+        "/INCLUDE:__imp_??0AllRefArDo@android_emulator@@QEAA@XZ"
+        "/INCLUDE:__imp_??0AdbAssistantStats@android_studio@@QEAA@XZ"
+        "/DELAYLOAD:libandroid-emu-agents.dll"
+        "/DELAYLOAD:libandroid-emu-protos.dll"
+        "/DELAYLOAD:libandroid-emu-metrics.dll")
+    target_link_libraries(gfxstream_backend PRIVATE delayimp.lib)
+endif()
+'@
+    $cmakeText = [System.IO.File]::ReadAllText($cmake).Replace("`r`n", "`n")
+    if (!$cmakeText.Contains("CHIMERA_SDK_IMPORT_LIB_DIR")) {
+        Write-TextFile $cmake ($cmakeText.TrimEnd() + $cmakeSdkImportBlock + "`n")
+    }
 }
 
 if ($hasVulkanDisplay) {
@@ -1258,11 +1284,47 @@ target_compile_options(
     )
 target_compile_definitions(gfxstream_backend_static PRIVATE GFXSTREAM_ENABLE_HOST_GLES=1)
 '@
+# April 2026 variant: -Werror commented out with "# TODO: renable"
+$gfxstreamBackendWarningsApril2026Needle = @'
+# Suppress some warnings
+target_compile_options(
+    gfxstream_backend_static
+    PRIVATE
+    -Wall
+    -Wextra
+    # TODO: renable
+    # -Werror
+    -Wno-missing-field-initializers
+    -Wno-unused-parameter
+    -Wno-unused-private-field
+    -Wno-return-type-c-linkage
+    -Wno-extern-c-compat
+    -DGFXSTREAM_ENABLE_HOST_GLES=1
+    )
+'@
+$gfxstreamBackendWarningsApril2026Replacement = @'
+# Suppress some warnings
+target_compile_options(
+    gfxstream_backend_static
+    PRIVATE
+    "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall>"
+    "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wextra>"
+    "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-missing-field-initializers>"
+    "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-unused-parameter>"
+    "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-unused-private-field>"
+    "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-return-type-c-linkage>"
+    "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-extern-c-compat>"
+    )
+target_compile_definitions(gfxstream_backend_static PRIVATE GFXSTREAM_ENABLE_HOST_GLES=1)
+'@
 $cmakeText = [System.IO.File]::ReadAllText($cmake).Replace("`r`n", "`n")
 if ($cmakeText.Contains($gfxstreamBackendWarningsReplacement.Replace("`r`n", "`n")) -or
     $cmakeText.Contains($gfxstreamBackendWarningsOldReplacement.Replace("`r`n", "`n")) -or
-    $cmakeText.Contains($gfxstreamBackendWarningsModernReplacement.Replace("`r`n", "`n"))) {
+    $cmakeText.Contains($gfxstreamBackendWarningsModernReplacement.Replace("`r`n", "`n")) -or
+    $cmakeText.Contains($gfxstreamBackendWarningsApril2026Replacement.Replace("`r`n", "`n"))) {
     # Already patched.
+} elseif ($cmakeText.Contains($gfxstreamBackendWarningsApril2026Needle.Replace("`r`n", "`n"))) {
+    Replace-Once $cmake $gfxstreamBackendWarningsApril2026Needle $gfxstreamBackendWarningsApril2026Replacement "gfxstream backend MSVC warning options"
 } elseif ($cmakeText.Contains($gfxstreamBackendWarningsNeedle.Replace("`r`n", "`n"))) {
     Replace-Once $cmake $gfxstreamBackendWarningsNeedle $gfxstreamBackendWarningsReplacement "gfxstream backend MSVC warning options"
 } elseif ($cmakeText.Contains($gfxstreamBackendWarningsModernNeedle.Replace("`r`n", "`n"))) {
@@ -1352,10 +1414,40 @@ target_compile_options(gfxstream-vulkan-server
 '@
     $vulkanTargetWarningsOldNeedle = 'target_compile_options(gfxstream-vulkan-server PRIVATE -Wno-unused-value -Wno-return-type -Wno-return-type-c-linkage)'
     $vulkanTargetWarningsOldReplacement = 'target_compile_options(gfxstream-vulkan-server PRIVATE "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-unused-value>" "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-return-type>" "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-return-type-c-linkage>")'
+    # April 2026 variant: -Werror is commented out with "# TODO: renable" above it
+    $vulkanTargetWarningsApril2026Needle = @'
+target_compile_options(gfxstream-vulkan-server
+    PRIVATE
+    -Wall
+    -Wextra
+    # TODO: renable
+    #-Werror
+    -Wno-missing-field-initializers
+    -Wno-unused-parameter
+    -Wno-unused-private-field
+    -Wno-return-type-c-linkage
+    -Wno-extern-c-compat
+    )
+'@
+    $vulkanTargetWarningsApril2026Replacement = @'
+target_compile_options(gfxstream-vulkan-server
+    PRIVATE
+    "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall>"
+    "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wextra>"
+    "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-missing-field-initializers>"
+    "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-unused-parameter>"
+    "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-unused-private-field>"
+    "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-return-type-c-linkage>"
+    "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-extern-c-compat>"
+    )
+'@
     $vulkanCmakeText = [System.IO.File]::ReadAllText($vulkanCmake).Replace("`r`n", "`n")
     if ($vulkanCmakeText.Contains($vulkanTargetWarningsReplacement.Replace("`r`n", "`n")) -or
-        $vulkanCmakeText.Contains($vulkanTargetWarningsOldReplacement.Replace("`r`n", "`n"))) {
+        $vulkanCmakeText.Contains($vulkanTargetWarningsOldReplacement.Replace("`r`n", "`n")) -or
+        $vulkanCmakeText.Contains($vulkanTargetWarningsApril2026Replacement.Replace("`r`n", "`n"))) {
         # Already patched.
+    } elseif ($vulkanCmakeText.Contains($vulkanTargetWarningsApril2026Needle.Replace("`r`n", "`n"))) {
+        Replace-Once $vulkanCmake $vulkanTargetWarningsApril2026Needle $vulkanTargetWarningsApril2026Replacement "gfxstream vulkan MSVC warning options"
     } elseif ($vulkanCmakeText.Contains($vulkanTargetWarningsNeedle.Replace("`r`n", "`n"))) {
         Replace-Once $vulkanCmake $vulkanTargetWarningsNeedle $vulkanTargetWarningsReplacement "gfxstream vulkan MSVC warning options"
     } else {

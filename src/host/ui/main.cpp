@@ -1116,7 +1116,8 @@ int main(int argc, char *argv[]) {
             qDebug() << "[main] Console input disabled (CHIMERA_INPUT_BACKEND=" << inputBackend.c_str() << ")";
         }
 
-        qDebug() << "Guest audio: disabled by default (-no-audio)";
+        // Guest audio is configured per instance (enableAudio field); emulator routes
+        // Android Goldfish audio to host WASAPI automatically when -no-audio is absent.
 
         // Wire gamepad to input bridge
         auto &gp = chimera::input::GamepadManager::instance();
@@ -1417,8 +1418,12 @@ int main(int argc, char *argv[]) {
         requireEmuglSharedTexture ||
         requireGfxstreamSharedTexture;
 
+    // gRPC is the default production capture when no shared D3D11 texture path is wired.
+    // Shmem and window D3D11 paths hand off via signals (wired below), so gRPC provides
+    // frames until a higher-quality path delivers. --allow-raw-capture-fallback enables
+    // MMAP/screenrecord diagnostic variants instead of the default unary gRPC path.
     if (!hcsBackendMode && !qemuBackendMode && !noEmulator && emulatorStarted && streamCapture &&
-        !strictGpuCapture && allowRawCaptureFallback) {
+        !strictGpuCapture && !sharedTextureCapture) {
         const char *transportEnv = std::getenv("CHIMERA_GRPC_TRANSPORT");
         const char *videoTransportEnv = std::getenv("CHIMERA_VIDEO_TRANSPORT");
         const bool useScreenrecordVideo = videoTransportEnv &&
@@ -1491,11 +1496,8 @@ int main(int argc, char *argv[]) {
         }
     } else if (strictGpuCapture) {
         qWarning() << "Strict GPU capture enabled; raw gRPC/ADB fallback is disabled";
-    } else if (!hcsBackendMode && !qemuBackendMode && !noEmulator && emulatorStarted &&
-               streamCapture && !sharedTextureCapture && !sharedMemoryCapture &&
-               !windowD3D11Capture && !allowRawCaptureFallback) {
-        qWarning() << "Raw gRPC/ADB display fallback is disabled by default; "
-                      "use --allow-raw-capture-fallback only for diagnostics";
+    } else if (sharedTextureCapture) {
+        qDebug() << "Shared D3D11 texture path wired; gRPC capture not started";
     }
 
     if ((requireEmuglSharedTexture || requireGfxstreamSharedTexture) && streamCapture) {

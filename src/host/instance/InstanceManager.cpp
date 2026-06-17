@@ -411,6 +411,8 @@ EmulatorRuntimeCapabilities InstanceManager::probeEmulatorRuntime(
     caps.hasChimeraGfxstreamBridgeMarker =
         fileContainsMarker(gfxstreamBackend, "ChimeraGfxstreamSharedTextureBridge") ||
         fileContainsMarker(gfxstreamBackend, "ChimeraGfxstreamVulkanSharedTextureBridge");
+    caps.hasChimeraShmemPublisher =
+        fileContainsMarker(gfxstreamBackend, "ChimeraShmemFramePublisher");
     caps.hasCompatibleGfxstreamAbi = fileContainsMarker(
         gfxstreamBackend, "gfxstream_backend_set_screen_background");
     caps.hasSdkGfxstreamRuntimeImports =
@@ -450,6 +452,8 @@ EmulatorRuntimeCapabilities InstanceManager::probeEmulatorRuntime(
         caps.status = "modified gfxstream shared texture runtime detected";
     } else if (caps.supportsChimeraEmuglSharedTexture) {
         caps.status = "modified EmuGL shared texture runtime detected";
+    } else if (caps.hasChimeraShmemPublisher) {
+        caps.status = "chimera shmem frame publisher detected (CPU readback transport)";
     } else if (caps.hasGfxstreamBackend && !caps.hasChimeraGfxstreamBridgeMarker) {
         caps.status = "stock gfxstream runtime; Chimera gfxstream bridge marker is missing";
     } else if (caps.hasGfxstreamBackend && !caps.hasCompatibleGfxstreamAbi) {
@@ -539,6 +543,19 @@ bool InstanceManager::createInstance(const InstanceConfig &config) {
         vmConfig.emulatorPath = sdkCfg["emulator"].get<std::string>();
     }
     prepareEmulatorRuntimePath(vmConfig.emulatorPath);
+    // Auto-enable shmem transport when the custom gfxstream runtime includes the
+    // CPU readback → Win32 named shmem publisher, and no explicit shmem name is set.
+    if (!vmConfig.emulatorPath.empty() && envValue("CHIMERA_SHMEM_FRAME_NAME").empty()) {
+        const auto probeCaps = InstanceManager::probeEmulatorRuntime(vmConfig.emulatorPath);
+        if (probeCaps.hasChimeraShmemPublisher) {
+            const std::string shmemName  = "chimera_shmem_" + vmConfig.name;
+            const std::string shmemEvent = "chimera_shmem_event_" + vmConfig.name;
+            _putenv_s("CHIMERA_SHMEM_FRAME_NAME",  shmemName.c_str());
+            _putenv_s("CHIMERA_SHMEM_FRAME_EVENT", shmemEvent.c_str());
+            qDebug() << "Chimera shmem transport auto-enabled:"
+                     << QString::fromStdString(shmemName);
+        }
+    }
     if (gfxstreamSharedTextureRequested() || emuglSharedTextureRequested()) {
         const auto caps = InstanceManager::probeEmulatorRuntime(vmConfig.emulatorPath);
         publishRuntimeProbeEnv(caps);

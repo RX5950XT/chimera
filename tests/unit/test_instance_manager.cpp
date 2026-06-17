@@ -23,8 +23,26 @@ private slots:
         QVERIFY(!caps.hasLegacyOpenglRender);
         QVERIFY(!caps.supportsChimeraEmuglSharedTexture);
         QVERIFY(!caps.supportsChimeraGfxstreamSharedTexture);
+        QVERIFY(!caps.hasChimeraShmemPublisher);
         QVERIFY(caps.status.find("stock gfxstream") != std::string::npos);
         QVERIFY(caps.status.find("bridge marker") != std::string::npos);
+    }
+
+    void probeEmulatorRuntimeDetectsShmemPublisher() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const auto root = std::filesystem::path(dir.path().toStdWString());
+        std::filesystem::create_directories(root / "lib64");
+        std::ofstream(root / "emulator.exe").put('\0');
+        std::ofstream(root / "lib64" / "libgfxstream_backend.dll")
+            << "binary marker: ChimeraShmemFramePublisher";
+
+        const auto caps = InstanceManager::probeEmulatorRuntime(root / "emulator.exe");
+        QVERIFY(caps.hasGfxstreamBackend);
+        QVERIFY(caps.hasChimeraShmemPublisher);
+        QVERIFY(!caps.supportsChimeraGfxstreamSharedTexture);
+        QVERIFY(!caps.supportsChimeraEmuglSharedTexture);
+        QVERIFY(caps.status.find("shmem frame publisher") != std::string::npos);
     }
 
     void probeEmulatorRuntimeAcceptsModifiedGfxstreamRuntime() {

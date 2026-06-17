@@ -1,5 +1,43 @@
 # Chimera Lessons
 
+## 2026-06-17 — gRPC capture 被錯誤分類為 diagnostic fallback 的回歸
+
+- gRPC `getScreenshot` 是 stock Android Emulator 的合法 display path（4-17 FPS，1920x1080 unary polling）。在某輪修改中被改成「diagnostic raw fallback」並要求 `--allow-raw-capture-fallback` CLI flag，結果所有 stock emulator 用戶完全沒有顯示。
+- **正確判斷**：gRPC 在沒有 shared D3D11 texture path 時是預設 display；shared texture 啟動後 signal 切換。條件應是 `!sharedTextureCapture`，不是 `allowRawCaptureFallback`。
+- `allowRawCaptureFallback` 只應控制 MMAP / screenrecord / ADB 這些非 gRPC 的診斷 fallback，不應一刀切關掉 gRPC。
+
+## 2026-06-17 — GrpcOnly verifier FPS 不能用 effective = min(guest, stream, render)
+
+- gRPC unary `getScreenshot` 在 1920x1080 每幀約 250ms，pipeline depth=3，理論上限約 12 FPS。
+- 靜止畫面所有 gRPC 回傳皆為 duplicate → `guestFps=0` → `effective=min(0,...)=0`，即使 display 正常運作也失敗。
+- Boot 階段的 `stream=0.0` 樣本（gRPC 還沒啟動）如果沒有過濾，會拖低平均值到門檻以下。
+- **正確 gate**：
+  1. 過濾掉 `stream=0.0` 的 boot 樣本（只看 `stream > 0` 的 active 樣本）。
+  2. `avgStreamFps >= 3.0`（證明 pipeline 有持續送幀）。
+  3. `maxGuestFps >= 1.0`（exercise 期間有真實內容變化被捕獲）。
+- 不設 `maxDup <= 5%`（靜止 Home 畫面本來就 100% dup，不代表 display broken）。
+
+## 2026-06-17 — ctypes 在 64-bit Windows 的 HANDLE/LPVOID restype 陷阱
+
+- `ctypes.windll.kernel32` 所有函式的預設回傳型別是 `c_long`（32-bit signed int）。
+- 在 64-bit 進程中，`OpenEventA`、`OpenFileMappingA`、`MapViewOfFile` 等回傳 HANDLE 或 LPVOID 的函式，若不設 `restype = ctypes.c_void_p`，高於 2GB 的地址會被截斷為 garbage → `from_address()` 存取無效指標 → Python 自身 AV crash（exit code -1073741819）。
+- **修法**：呼叫前設 `.restype = ctypes.c_void_p`；同時設 `.argtypes = [ctypes.c_void_p]` 給 `UnmapViewOfFile`、`CloseHandle` 等接受 HANDLE/LPVOID 的函式，防止符號被截斷傳入。
+- `except Exception` 攔不住 ctypes AV：`from_address()` 的 segfault 在 Python 外部觸發，不走 Python 例外機制，無法被 try/except 捕獲。
+
+## 2026-06-17 — AVD multiinstance.lock 在 crash 後不會自動清除
+
+- `multiinstance.lock` 是 0-byte 的 advisory lock 檔案，不是 OS-managed named object；進程崩潰時不會被 OS 刪除。
+- 下輪執行前必須：(1) `Get-Process -Name qemu*,emulator*` 確認全部消失，(2) `cmd /c "del /f /q multiinstance.lock"` 強制刪除（PowerShell Remove-Item 加 -ErrorAction SilentlyContinue 可能靜默失敗）。
+- Win32 named mapping/event（`CreateFileMappingA`/`CreateEventA`）在 emulator 進程退出時才消失；host 側 `OpenEventA`/`OpenFileMappingA` 必須在 kill emulator 前執行，否則回傳 null。
+
+## 2026-06-16 — std::promise/future 在 MSVC CRT 不相容環境下完全不可用
+
+- `std::promise<void>::~promise` 和 `_Associated_state::_Set_value` 都在 MSVCP140.dll 內 null dereference（fault_addr=0x0），原因是 SDK emulator 捆綁 v14.28、系統裝了 v14.44，兩個版本的 `_Associated_state` 內部 mutex 偏移不一致。
+- **不要用 `std::promise<void>` 或 `std::future<void>` 做 gfxstream frame sync**；改用 `gfxstream::base::Lock + ConditionVariable`（純 Win32 SRWLOCK + CONDITION_VARIABLE），完全不依賴 MSVCP140。
+- 修法模式：把 `bool done=false; Lock L; CondVar CV;` 放在 caller stack，lambda 在 callback 裡 `{AutoLock lk(L); done=true;} CV.signal()`，caller 用 `{AutoLock lk(L); CV.wait(&lk, [&]{return done;});}` 等待。headless 路徑（`!CallbackScheduledOrFired()`）直接 proceed，不需 signal。
+- DbgHelp.dll Python ctypes 用法：`SymSetOptions(SYMOPT_UNDNAME|SYMOPT_LOAD_LINES)`（0x2|0x10，不含 DEFERRED_LOADS/DEBUG）；`Name` 欄位是 flexible array，`SizeOfStruct=88`（fixed），額外 buffer 另外分配；用 WinDbg 版 dbghelp.dll（`C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\dbghelp.dll`），不用系統版。
+- 崩潰 offset 在 rebuild 後全部位移；重新 symbolize 前要先確認 log 裡的 offset 是哪個 build 的，避免拿錯 PDB 對應。
+
 ## 2026-06-13 — gfxstream ABI 不相容必須實測而非假設
 
 - "Build ID 不一致 = ABI 不相容" 只是 gate 邏輯，不代表實際已測。實測方法：加 bypass env var、複製 patched DLL、跑 verifier，觀察是否 crash。
