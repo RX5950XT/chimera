@@ -2,6 +2,48 @@
 
 ---
 
+## 2026-06-19 Session 81 — shmem delivery 路徑確認：非 GuestVulkanOnly 模式 Android 開機 + shmem PASS
+
+### Plan
+
+- [x] 確認舊 DLL 是否已被 aosp（非 github）build 覆寫，若是則重建 github DLL。
+- [x] 加入 `CHIMERA_GFXSTREAM_GUEST_VK_ONLY` env var gate：`frame_buffer.cpp` 中只在 env 設為 1 時才 `GuestVulkanOnly.setEnabled(true)`。
+- [x] 重建 github runtime DLL（`tmp/aosp-github-build/gfxstream`），部署至 `build/chimera-gfxstream-runtime-github/lib64/libgfxstream_backend.dll`。
+- [x] 以 `CHIMERA_GFXSTREAM_GUEST_VK_ONLY=1` + NVIDIA ICD 跑 measure harness v4：確認 `useVkComp=1`，但 Android 300s 內無 boot_completed（SurfaceFlinger 無 GLES hang）。
+- [x] 以非 GuestVulkanOnly 模式（不設 env var）重跑 v4：Android 61s 開機，NVIDIA 選中，shmem event_fps_avg=3.4 / seq_fps_avg=7.6 / max=16.9（idle 主畫面，正常）。
+
+### Review
+
+- **GuestVulkanOnly=true blocker 確認**：`useVkComp=1` 可達，但 SurfaceFlinger 仰賴 host GLES，禁用 EGL 後無法完成 Android boot。此模式目前無法生產使用。
+- **非 GuestVulkanOnly shmem CONFIRMED**：headless 模式 `postImpl` 的 `else` 分支不受 GuestVulkanOnly 影響，直接呼叫 `chimeraPublishFrameToShmem()`；Android 61s 開機後 shmem 正常 deliver 帧。
+- **Idle 主畫面 FPS 正常**：主畫面靜止時 Android 只產約 1-17 fps；seq_avg 7.6 是 rendering 速率，非 readback 瓶頸；遊戲場景下預期可達更高。
+- **VkEmulation 仍選 NVIDIA RTX 3070 Ti**：雖然 GLES 走 EglOnEgl/EmulationGl 路徑，Vulkan emulation 本身已成功走 NVIDIA；composition `useVkComp=0` 因為 `GuestVulkanOnly=false` 且無 NativeSwapchain。
+- **patch script 的 FORCE_VK_COMPOSITION 靜默失敗**：`apply-chimera-gfxstream-patch.ps1` 加入的 `CHIMERA_GFXSTREAM_FORCE_VK_COMPOSITION` 替換搜尋字串 `fb->` 與實際 source `impl->` 不符，從未被套用，對 DLL 無影響。
+- **下一步**：測試 Chimera UI 以 `CHIMERA_EMULATOR_PATH` 指向 github runtime，驗證 InstanceManager 自動偵測 ChimeraShmemFramePublisher 並啟動 shmem 顯示路徑；跑遊戲測量實際 FPS。
+
+---
+
+## 2026-06-18 Session 80 — NVIDIA Vulkan loader 調查收斂：失敗根因是測試 harness 污染
+
+### Plan
+
+- [x] 比對成功組、失敗組與 `runtime-*.log` 的 `VkEmulation::create` 序列，確認真正分歧點。
+- [x] 對照 source，確認 Windows `vkDispatch()` 與 `ANDROID_EMU_VK_ICD` / `VK_ICD_FILENAMES` 的作用邊界。
+- [x] 找出為何 v2/v3/v4 測試永遠只有 `got 4 instance exts`。
+- [x] 修正 `tmp/measure-gfxstream-fps-nvidia-v2.py`、`v3.py`、`v4.py`：把 `-gpu swiftshader_indirect` 改成 `-gpu host`。
+- [x] 重跑 v2 / v3 / v4 驗證，確認是否翻成 `got 20 instance exts`。
+- [x] 更新 `tasks/lessons.md` 記錄這次 false hypothesis 的真正原因。
+
+### Review
+
+- **根因收斂完成**：先前 `got 4 instance exts` + `vkCreateInstance res=-9` 不是 NVIDIA loader/ICD discovery 本身失敗，而是三支測試 harness 都用 `-gpu swiftshader_indirect` 啟動 emulator，導致 `emuglConfig_setupEnv()` 在 gfxstream 初始化前強制 `ANDROID_EMU_VK_ICD=swiftshader`（`tmp/gfxstream-src/host/gl/gl-host-common/opengl/emugl_config.cpp:398-404`）。
+- **直接證據**：同一批 v2/v3/v4 腳本只改 `-gpu host` 後，全部翻成 `VkEmulation::create step 5: got 20 instance exts`、`step 7: vkCreateInstance res=0`、`step 17: vkCreateDevice res=0`，並成功選到 `NVIDIA GeForce RTX 3070 Ti`。
+- **之前三個假說的狀態要修正**：Optimus layer、bundled vs system loader、DriverStore PATH 都不是當時 4-ext 失敗的已證實根因；因為測試條件本身先被 `swiftshader_indirect` 污染，先前結論不成立。
+- **R&D causality probe 結果**：在 patched github runtime 端加入 `CHIMERA_GFXSTREAM_FORCE_VK_COMPOSITION=1` 後，用 `CHIMERA_GFXSTREAM_SKIP_BUILD_ID_CHECK=1` 重跑 `tmp/measure-gfxstream-fps-nvidia-v4.py`，emulator 於初始化極早期直接 `0xC0000005`（exit code 3221225477）早退，連 `VkEmulation::create` instrumentation 都來不及寫進 log。這證明 composition gate 確實是敏感邊界，但也表示單純 force-on 不能當修法；下一步仍要回頭釐清 renderer flags / upstream feature negotiation，不能只靠硬開 `useVulkanComposition`。
+- **runtime-final-err.log 定位**：`runtime-final-err.log` 這類檔案是 stock SDK emulator 路徑，只有 stock `Selecting Vulkan device` 訊號，不能直接拿來推論 custom github runtime 那條 4-ext 失敗鏈。
+
+---
+
 ## 2026-06-17 Session 79 — AdbH264 死路確認 + 背景音樂干擾修正
 
 ### Plan

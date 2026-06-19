@@ -373,6 +373,55 @@ static uint64_t renderer_param_value(stream_renderer_param* params,
     return 0;
 }
 
+static void append_flag_name(char* dest, size_t dest_size, const char* name) {
+    if (dest == NULL || dest_size == 0 || name == NULL || name[0] == '\0') {
+        return;
+    }
+    if (dest[0] != '\0') {
+        strncat(dest, "|", dest_size - strlen(dest) - 1);
+    }
+    strncat(dest, name, dest_size - strlen(dest) - 1);
+}
+
+static void decode_renderer_flags(uint64_t flags, char* dest, size_t dest_size) {
+    const uint64_t known_mask =
+        (1ull << 0) |
+        (1ull << 1) |
+        (1ull << 2) |
+        (1ull << 3) |
+        (1ull << 4) |
+        (1ull << 5) |
+        (1ull << 6) |
+        (1ull << 7) |
+        (1ull << 8) |
+        (1ull << 31);
+    if (dest == NULL || dest_size == 0) {
+        return;
+    }
+    dest[0] = '\0';
+    if (flags & (1ull << 0)) append_flag_name(dest, dest_size, "USE_EGL");
+    if (flags & (1ull << 1)) append_flag_name(dest, dest_size, "THREAD_SYNC");
+    if (flags & (1ull << 2)) append_flag_name(dest, dest_size, "USE_GLX");
+    if (flags & (1ull << 3)) append_flag_name(dest, dest_size, "USE_SURFACELESS");
+    if (flags & (1ull << 4)) append_flag_name(dest, dest_size, "USE_GLES");
+    if (flags & (1ull << 5)) append_flag_name(dest, dest_size, "USE_VK");
+    if (flags & (1ull << 6)) append_flag_name(dest, dest_size, "USE_EXTERNAL_BLOB");
+    if (flags & (1ull << 7)) append_flag_name(dest, dest_size, "USE_SYSTEM_BLOB");
+    if (flags & (1ull << 8)) append_flag_name(dest, dest_size, "VULKAN_NATIVE_SWAPCHAIN");
+    if (flags & (1ull << 31)) append_flag_name(dest, dest_size, "VULKAN_EXTERNAL_SYNC");
+    {
+        const uint64_t unknown_mask = flags & ~known_mask;
+        if (unknown_mask != 0) {
+            char unknown[48] = {0};
+            snprintf(unknown, sizeof(unknown), "UNKNOWN_0x%llx", (unsigned long long)unknown_mask);
+            append_flag_name(dest, dest_size, unknown);
+        }
+    }
+    if (dest[0] == '\0') {
+        strncat(dest, "none", dest_size - 1);
+    }
+}
+
 static bool truthy_env(const char* name) {
     char value[16] = {0};
     const DWORD copied = GetEnvironmentVariableA(name, value, (DWORD)sizeof(value));
@@ -1351,11 +1400,13 @@ __declspec(dllexport) int stream_renderer_init(stream_renderer_param* params,
         const uint64_t flags = renderer_param_value(params, num_params, 2);
         const uint64_t win_w = renderer_param_value(params, num_params, 4);
         const uint64_t win_h = renderer_param_value(params, num_params, 5);
-        char line[224] = {0};
+        char decoded[192] = {0};
+        decode_renderer_flags(flags, decoded, sizeof(decoded));
+        char line[416] = {0};
         snprintf(line, sizeof(line),
-                 "probe stream_renderer_init count=%lld result=%d params=%llu flags=0x%llx win=%llux%llu debug=%llu\n",
+                 "probe stream_renderer_init count=%lld result=%d params=%llu flags=0x%llx decoded=%s win=%llux%llu debug=%llu\n",
                  (long long)count, result, (unsigned long long)num_params,
-                 (unsigned long long)flags, (unsigned long long)win_w,
+                 (unsigned long long)flags, decoded, (unsigned long long)win_w,
                  (unsigned long long)win_h,
                  (unsigned long long)renderer_param_value(params, num_params, 6));
         chimera_gfxstream_proxy_log(line);

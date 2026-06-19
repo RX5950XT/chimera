@@ -6,6 +6,25 @@
 
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 
+## 最新狀態（2026-06-19 Session 81）
+
+- **shmem delivery 路徑 CONFIRMED（非 GuestVulkanOnly）**：custom github runtime（`build/chimera-gfxstream-runtime-github`）在非 GuestVulkanOnly 模式下，Android 61s 開機，shmem `event_fps_avg=3.4 / seq_fps_avg=7.6 / max=16.9`（idle 主畫面正常）。`chimeraPublishFrameToShmem()` 在 headless `postImpl` else 分支不受 GuestVulkanOnly 影響，每幀都呼叫。
+- **GuestVulkanOnly=true blocker**：新增 `CHIMERA_GFXSTREAM_GUEST_VK_ONLY=1` env gate；設定後 `useVkComp=1` 可達，NVIDIA 選中，但 SurfaceFlinger 無 GLES 無法 boot complete（300s timeout）。不可生產使用。
+- **Chimera UI 整合路徑就緒**：InstanceManager 已有 auto-probe `ChimeraShmemFramePublisher` 的邏輯（`InstanceManager.cpp:546-558`），偵測到 marker 後自動設 `CHIMERA_SHMEM_FRAME_NAME/EVENT`。只需 `CHIMERA_EMULATOR_PATH` 指向 github runtime 即可啟用 shmem 顯示，無需手動配置。
+- **下一步**：以 `CHIMERA_EMULATOR_PATH` 指向 github runtime 啟動 Chimera UI，驗證 shmem 顯示路徑在 UI 層正確接入；再跑遊戲場景測 actual FPS。
+
+## 最新狀態（2026-06-18 Session 80）
+
+- **Vulkan loader 調查收斂**：先前 custom github runtime 的 NVIDIA 測試腳本 `tmp/measure-gfxstream-fps-nvidia-v2.py`、`v3.py`、`v4.py` 都以 `-gpu swiftshader_indirect` 啟動 emulator，導致 `emuglConfig_setupEnv()` 在 gfxstream 初始化前強制 `ANDROID_EMU_VK_ICD=swiftshader`（`tmp/gfxstream-src/host/gl/gl-host-common/opengl/emugl_config.cpp:398-404`）。因此當時看到的 `VkEmulation::create step 5: got 4 instance exts` + `vkCreateInstance res=-9` 是**被測試 harness 汙染後的假失敗鏈**，不是已證實的 NVIDIA loader/ICD 根因。
+- **修正後驗證**：三支腳本改成 `-gpu host` 後，v2 / v3 / v4 全部翻成 `got 20 instance exts`、`vkCreateInstance res=0`、`vkCreateDevice res=0`，並成功選到 `NVIDIA GeForce RTX 3070 Ti`。這表示先前關於 Optimus layer、bundled vs system loader、DriverStore PATH 的否證結論都必須降級重審，不能再當既定事實。
+- **目前新結論**：真正已證實的是「不能用 `swiftshader_indirect` 驗證 host/NVIDIA Vulkan ICD 路徑」；`runtime-final-err.log` 這類 stock SDK emulator 樣本也不能直接代入 custom github runtime 的失敗鏈，因為它們只顯示 stock `Selecting Vulkan device` 訊號。
+- **額外觀察**：即使 NVIDIA Vulkan instance/device 已成功建立，當前 headless shmem FPS 仍只有約 2.5-3.1 event FPS（seq 平均約 6.0-11.2），距離 true 1080p/60 還很遠。
+
+- **R&D force-on probe**：在 patched github runtime 端加 `CHIMERA_GFXSTREAM_FORCE_VK_COMPOSITION=1` 後，配合 `CHIMERA_GFXSTREAM_SKIP_BUILD_ID_CHECK=1` 重跑 `tmp/measure-gfxstream-fps-nvidia-v4.py`，emulator 在極早期直接 `0xC0000005`（exit code 3221225477）早退，連 `VkEmulation::create` instrumentation 都來不及落 log。這說明 composition gate 不是可以無腦硬打開的開關；它是敏感邊界，但真正修法仍要回頭追 renderer flags / upstream feature negotiation。
+- **proxy smoke 新結論**：即使用 stock-ABI proxy runtime，headless host path 仍可看到 `glInteropSupported: true`，但同時 `useVulkanComposition: false`、`useVulkanNativeSwapchain: false`。因此 bottleneck 已從「host Vulkan/GL interop 不成立」收斂成「renderer flags / feature gate 沒把 runtime 帶進 Vulkan composition」。
+- **proxy instrumentation 補強**：`src/host/runtime/gfxstream_proxy/gfxstream_proxy.c` 新增 `renderer_flags` bit 解碼 log；`src/host/runtime/gfxstream_proxy/gfxstream_proxy_renderlib.cpp` 新增 `FeatureSet` 摘要 log；`scripts/run-proxy-smoke-test.ps1` 改為尊重外部 `CHIMERA_GFXSTREAM_PROXY_WRAP_RENDERLIB` / `CHIMERA_GFXSTREAM_PROXY_WRAP_RENDERER`，不再強制覆寫成 `0`。目前 renderlib wrapper smoke 會讓 boot 卡住，尚未拿到 `FeatureSet` summary，但不影響上面的 composition gate 結論。
+- **目前最直接下一步**：追 `renderer_flags` 上游來源，或在 patched github runtime 端加 opt-in override，驗證只要強制打開 Vulkan composition，`recordCopy()` / `publishFrame()` 是否會被喚起。
+
 ## 最新狀態（2026-06-17 Session 79）
 
 - **AdbH264 screenrecord 永久死路**：stock Android Emulator `-no-window` headless 模式下，`adb exec-out screenrecord --output-format=h264` 在 5s 內產生 0 bytes。SurfaceFlinger/MediaRecorder API 無法存取 headless virtual display framebuffer。`CHIMERA_VIDEO_TRANSPORT=screenrecord` 不再嘗試。

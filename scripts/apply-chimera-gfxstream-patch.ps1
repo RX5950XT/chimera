@@ -703,6 +703,37 @@ $frameBufferIncludeNeedle = '#include "PostWorkerGl.h"'
 $frameBufferIncludeReplacement = '#include "PostWorkerGl.h"' + "`n" + '#include "gl/ChimeraGfxstreamSharedTextureBridge.h"'
 Replace-Once $frameBuffer $frameBufferIncludeNeedle $frameBufferIncludeReplacement "FrameBuffer include"
 
+$frameBufferCompositionNeedle = @'
+    fb->m_useVulkanComposition = fb->m_features.GuestVulkanOnly.enabled ||
+                                 fb->m_features.VulkanNativeSwapchain.enabled;
+'@
+$frameBufferCompositionReplacement = @'
+    fb->m_useVulkanComposition = fb->m_features.GuestVulkanOnly.enabled ||
+                                 fb->m_features.VulkanNativeSwapchain.enabled;
+    if (android::base::getEnvironmentVariable("CHIMERA_GFXSTREAM_FORCE_VK_COMPOSITION") == "1") {
+        fb->m_useVulkanComposition = true;
+    }
+'@
+Replace-Once $frameBuffer `
+    $frameBufferCompositionNeedle `
+    $frameBufferCompositionReplacement `
+    "FrameBuffer Vulkan composition override"
+
+$frameBufferFeatureNeedle = @'
+        .useVulkanComposition = fb->m_useVulkanComposition,
+        .useVulkanNativeSwapchain = fb->m_features.VulkanNativeSwapchain.enabled,
+'@
+$frameBufferFeatureReplacement = @'
+        .useVulkanComposition = fb->m_useVulkanComposition,
+        .useVulkanNativeSwapchain =
+            fb->m_features.VulkanNativeSwapchain.enabled ||
+            android::base::getEnvironmentVariable("CHIMERA_GFXSTREAM_FORCE_VK_COMPOSITION") == "1",
+'@
+Replace-Once $frameBuffer `
+    $frameBufferFeatureNeedle `
+    $frameBufferFeatureReplacement `
+    "FrameBuffer Vulkan feature override"
+
 if ($hasVulkanDisplay) {
     Replace-Once $frameBuffer `
         '#include "vulkan/PostWorkerVk.h"' `

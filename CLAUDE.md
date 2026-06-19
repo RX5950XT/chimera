@@ -193,6 +193,12 @@ QEMU/debug logs、R&D throwaway scripts、runtime output dirs。
 
 ---
 
+## 2026-06-18 — Session 80
+
+- **Vulkan loader 調查修正**：`tmp/measure-gfxstream-fps-nvidia-v2.py` / `v3.py` / `v4.py` 先前都以 `-gpu swiftshader_indirect` 啟動 emulator；`emuglConfig_setupEnv()` 會在這模式下強制 `ANDROID_EMU_VK_ICD=swiftshader`（`tmp/gfxstream-src/host/gl/gl-host-common/opengl/emugl_config.cpp:398-404`），所以當時的 `got 4 instance exts` + `vkCreateInstance res=-9` 是被測試 harness 汙染的假失敗鏈。
+- 把三支 harness 改成 `-gpu host` 後，v2 / v3 / v4 全部翻成 `got 20 instance exts`、`vkCreateInstance res=0`、`vkCreateDevice res=0`，並成功選到 `NVIDIA GeForce RTX 3070 Ti`。因此先前對 Optimus layer、bundled vs system loader、DriverStore PATH 的否證結論都必須降級重審。
+- 這輪只證明 NVIDIA Vulkan instance/device 可成功建立；headless shmem FPS 仍只有約 2.5-3.1 event FPS（seq 平均約 6.0-11.2），true 1080p/60 仍未完成。
+
 ## 2026-06-13 — Session 70
 
 - `VirtualMachine` 正式啟動前會清理佔住 Chimera 固定 ports `5554/5555/8554` 的 stale emulator/qemu tree，防止前一輪殘留造成雙 VM 與 host audio 卡頓。
@@ -274,5 +280,13 @@ QEMU/debug logs、R&D throwaway scripts、runtime output dirs。
 - **驗證**：GrpcOnly verifier PASS（`grpc_stream_fps_avg=6.7`，`unique_content_fps_max=1.9`，1920x1080）；build PASS；no_residual_processes=OK。
 - true 1080p/60 仍需 matching SDK gfxstream runtime（build ID 15261927）；gRPC 路徑為目前唯一可用 display path。
 
+## 2026-06-19 — Session 81
+
+- **DLL 修復 + CHIMERA_GFXSTREAM_GUEST_VK_ONLY 加入**：前一 session 以錯誤的 `tmp/aosp-build`（非 github）DLL 覆寫 github runtime；本 session 從正確 `tmp/aosp-github` 重建並部署。`frame_buffer.cpp` 新增 `CHIMERA_GFXSTREAM_GUEST_VK_ONLY=1` env var gate，只在 env 設為 1 時才 `GuestVulkanOnly.setEnabled(true)`，預設維持 GLES 正常路徑。
+- **GuestVulkanOnly=true blocker 確認**：`useVkComp=1` 可達，NVIDIA 選中，但 SurfaceFlinger 無 GLES 無法 boot complete（300s timeout）。此模式不可用於生產。
+- **非 GuestVulkanOnly shmem 路徑 CONFIRMED**：Android 61s 開機，NVIDIA RTX 3070 Ti 選中（VkEmulation），`chimeraPublishFrameToShmem()` 在 headless `postImpl` else 分支呼叫；idle 主畫面 `event_fps_avg=3.4 / seq_fps_avg=7.6 / max=16.9`（正常，主畫面靜止低幀率）。
+- **shmem 為 Chimera UI 可用路徑**：InstanceManager 已有 auto-probe 邏輯，偵測 `ChimeraShmemFramePublisher` marker 後自動設 `CHIMERA_SHMEM_FRAME_NAME/EVENT`；manifest 不需要（shmem 路徑不需 gfxstream manifest gate）。
+- **patch script FORCE_VK_COMPOSITION 靜默失敗**：`apply-chimera-gfxstream-patch.ps1` 加入的 `fb->m_useVulkanComposition` 替換在 `impl->m_useVulkanComposition` 的實際 source 上找不到，從未套用，對 DLL 無影響。
+
 ---
-*Updated: 2026-06-17 — Session 79（AdbH264 死路確認 + idle priority 音訊修正；GrpcOnly verifier PASS）*
+*Updated: 2026-06-19 — Session 81（shmem delivery 非 GuestVulkanOnly 路徑 CONFIRMED；Android 61s 開機 + NVIDIA + 7.6 seq_fps）*

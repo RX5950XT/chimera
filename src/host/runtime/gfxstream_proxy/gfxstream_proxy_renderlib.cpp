@@ -60,6 +60,21 @@ void logSize(const char* prefix, int width, int height) {
     logLine(line);
 }
 
+void logFeatureSummary(const char* prefix, const gfxstream::host::FeatureSet& features) {
+    char line[320] = {};
+    std::snprintf(
+        line,
+        sizeof(line),
+        "%s Vulkan=%d GuestVulkanOnly=%d VulkanNativeSwapchain=%d HostComposition=%d PlayStoreImage=%d\n",
+        prefix,
+        features.Vulkan.enabled ? 1 : 0,
+        features.GuestVulkanOnly.enabled ? 1 : 0,
+        features.VulkanNativeSwapchain.enabled ? 1 : 0,
+        features.HostComposition.enabled ? 1 : 0,
+        features.PlayStoreImage.enabled ? 1 : 0);
+    logLine(line);
+}
+
 bool truthyEnv(const char* name) {
     const char* enabled = std::getenv(name);
     return enabled && enabled[0] != '\0' && enabled[0] != '0' &&
@@ -312,6 +327,7 @@ public:
                                         bool useSubWindow,
                                         bool egl2egl) override {
         logSize("renderlib_wrapper initRenderer", width, height);
+        logFeatureSummary("renderlib_wrapper features", features);
         auto renderer = m_inner->initRenderer(width, height, features, useSubWindow, egl2egl);
         if (!renderer) {
             logLine("renderlib_wrapper initRenderer result=null\n");

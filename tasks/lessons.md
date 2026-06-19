@@ -1,5 +1,18 @@
 # Chimera Lessons
 
+## 2026-06-18 — 不可把長期總目標當成已完成事實
+
+- 使用者的長期目標可以是「完成一切，打造出一個完整的模擬器對標 bluestacks」，但**沒有 transcript / log / build / verifier 證據前，不能把這句話改寫成已完成結論**。
+- 若 hook 或使用者指出 `insufficient evidence in transcript`，代表回報把「目標」誤寫成「已證實結果」。
+- **Rule**：所有完成宣告都必須綁定可核對證據（例如 PASS log、verifier 結果、build/test 輸出、實際 runtime 行為），沒有證據就只能描述成「目標」「方向」或「尚未完成」。
+
+## 2026-06-18 — Vulkan ICD 測試不能配 `-gpu swiftshader_indirect`
+
+- `emuglConfig_setupEnv()` 會在 `swiftshader_indirect` 模式下強制 `ANDROID_EMU_VK_ICD=swiftshader`（`tmp/gfxstream-src/host/gl/gl-host-common/opengl/emugl_config.cpp:398-404`）。
+- 這會在 gfxstream 初始化前覆寫任何手動設的 `VK_ICD_FILENAMES` / `VK_DRIVER_FILES` / 自製 `nvidia_icd.json` 測試條件，讓所謂的「NVIDIA Vulkan 測試」其實跑成 SwiftShader loader path。
+- 症狀是 `VkEmulation::create step 5: got 4 instance exts` + `vkCreateInstance res=-9`；把同一支 harness 改成 `-gpu host` 後，立刻翻成 `got 20 instance exts` + `vkCreateInstance res=0` + `vkCreateDevice res=0`。
+- **Rule**：凡是驗證 host/NVIDIA Vulkan loader、ICD discovery、`VK_ICD_FILENAMES`、自製 ICD JSON 等情境，不能用 `swiftshader_indirect`；這次三支 harness 改成 `-gpu host` 後即可正確避免該污染。
+
 ## 2026-06-17 — AdbH264 screenrecord 在 headless emulator 完全無效
 
 - `adb exec-out screenrecord --output-format=h264 --size 1920x1080 --bit-rate 24000000 -` 在 headless QEMU Android Emulator（`-no-window`）下 **0 bytes** 輸出，無任何 stderr error。

@@ -87,8 +87,8 @@ $env:ANDROID_EMULATOR_HOME = $AvdHome
 $env:CHIMERA_GFXSTREAM_PROXY_LOG = $LogPath
 $env:CHIMERA_GFXSTREAM_PROXY_ADD_FRAME_LISTENER = if ($EnableFrameListener) { "1" } else { "0" }
 $env:CHIMERA_GFXSTREAM_PROXY_HOOK_RENDERER_VTABLE = if ($EnableVtableHook) { "1" } else { "0" }
-$env:CHIMERA_GFXSTREAM_PROXY_WRAP_RENDERLIB = "0"
-$env:CHIMERA_GFXSTREAM_PROXY_WRAP_RENDERER = "0"
+$env:CHIMERA_GFXSTREAM_PROXY_WRAP_RENDERLIB = if ([string]::IsNullOrWhiteSpace($env:CHIMERA_GFXSTREAM_PROXY_WRAP_RENDERLIB)) { "0" } else { $env:CHIMERA_GFXSTREAM_PROXY_WRAP_RENDERLIB }
+$env:CHIMERA_GFXSTREAM_PROXY_WRAP_RENDERER = if ([string]::IsNullOrWhiteSpace($env:CHIMERA_GFXSTREAM_PROXY_WRAP_RENDERER)) { "0" } else { $env:CHIMERA_GFXSTREAM_PROXY_WRAP_RENDERER }
 
 # D3D11 shared texture producer: provide named objects so chimera_proxy_try_publish_d3d11_frame
 # knows where to publish the shared texture metadata and frame-ready event.

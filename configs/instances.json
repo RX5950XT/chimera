@@ -17,7 +17,7 @@
       "maxFps": 60,
       "name": "chimera_dev",
       "processPriority": "below_normal",
-      "quickBoot": false,
+      "quickBoot": true,
       "ramMB": 2048,
       "width": 1920
     }
