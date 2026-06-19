@@ -6,6 +6,13 @@
 
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 
+## 最新狀態（2026-06-19 Session 82）
+
+- **direct-to-shmem 優化**：`frame_buffer.cpp` `chimeraPublishFrameToShmem()` 移除 8MB 中間 `pixels` 向量，改為直接 readback 到 `shmem+56`（`readToBytesScaled(... base+56 ...)`）；`SharedFrameHeader` 改首幀寫一次（`headerWritten` flag），後續只更新 seqlock 與像素資料。DLL 從 `tmp/aosp-github-build` 重建至 `build/chimera-gfxstream-runtime-github`。
+- **FPS 瓶頸確認（VCPU 排程非 readback）**：BELOW_NORMAL priority 下 Settings 滾動 `guest=stream=render=15.9 FPS`；改成 NORMAL priority 反而只有 peak 8.7 FPS（emulator 上百執行緒互搶 CPU，19s 巨大 stall），BELOW_NORMAL 讓整個 process tree 在閒置 CPU 統一執行更穩定。瓶頸是 2 vCPU at BELOW_NORMAL 的 VCPU 排程，不是 readback 本身。
+- **真 60 FPS 路徑**：需 D3D11 shared texture（GPU-to-GPU，無 CPU readback）；或遊戲場景（rendering 簡單，VCPU 利用率高，可能達 30-60 FPS）。
+- **下一步選項**：① 安裝遊戲 APK 測量真實遊戲 FPS；② 實作 D3D11 shared texture producer（需在 `postImpl` 呼叫 `ChimeraSharedTexturePublisher`）。
+
 ## 最新狀態（2026-06-19 Session 81）
 
 - **shmem delivery 路徑 CONFIRMED（非 GuestVulkanOnly）**：custom github runtime（`build/chimera-gfxstream-runtime-github`）在非 GuestVulkanOnly 模式下，Android 61s 開機，shmem `event_fps_avg=3.4 / seq_fps_avg=7.6 / max=16.9`（idle 主畫面正常）。`chimeraPublishFrameToShmem()` 在 headless `postImpl` else 分支不受 GuestVulkanOnly 影響，每幀都呼叫。

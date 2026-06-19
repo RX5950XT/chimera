@@ -289,5 +289,13 @@ QEMU/debug logs、R&D throwaway scripts、runtime output dirs。
 - **FPS 瓶頸**：`-gpu host` + NVIDIA，但 `readToBytesScaled` 同步 GL readback（glReadPixels 8MB/幀）限制上限約 16 FPS；真 60 FPS 需 D3D11 shared texture（無 CPU readback）或 async PBO。
 - **patch script FORCE_VK_COMPOSITION 靜默失敗**：`apply-chimera-gfxstream-patch.ps1` 加入的 `fb->m_useVulkanComposition` 替換在 `impl->m_useVulkanComposition` 的實際 source 上找不到，從未套用，對 DLL 無影響。
 
+## 2026-06-19 — Session 82
+
+- **direct-to-shmem 優化**：`chimeraPublishFrameToShmem()` 改為直接 readback 到 `shmem+56`，移除 8MB 中間 `pixels` 向量與 `memcpy`；`SharedFrameHeader` 改為首幀寫一次（`headerWritten` flag）。DLL 從 `tmp/aosp-github-build` 重建。
+- **Settings 滾動 FPS 測量**（優化後 BELOW_NORMAL priority）：`guest=stream=render=15.9 FPS`，無 duplicate；avgMs=73-79ms。
+- **NORMAL priority 實測更差**：peak 8.7 FPS（vs BELOW_NORMAL 15.9）；emulator 有上百個執行緒，NORMAL 造成更多 CPU 競搶與 19s 巨大 stall；BELOW_NORMAL 讓整個 tree 在閒置 CPU 統一執行，反而更流暢。
+- **FPS 瓶頸重新分析**：16 fps 上限來自 VCPU 排程（2 vCPU at BELOW_NORMAL，Settings 複雜 layout）而非 readback；readToBytesScaled GL readback 本身約 5-15ms，不是主瓶頸。真 60 FPS 路徑：D3D11 shared texture（無 CPU readback，GPU-to-GPU）或遊戲場景（rendering 較簡單，VCPU 可跑滿 60 fps）。
+- **git 現況**：gfxstream source 在 `tmp/aosp-github/`（.gitignored），只有 docs/todo 進 commit。
+
 ---
-*Updated: 2026-06-19 — Session 81（shmem delivery 非 GuestVulkanOnly 路徑 CONFIRMED；Android 61s 開機 + NVIDIA + 7.6 seq_fps）*
+*Updated: 2026-06-19 — Session 82（direct-to-shmem 優化；BELOW_NORMAL < NORMAL priority 實測；16 FPS 瓶頸是 VCPU 排程非 readback）*
