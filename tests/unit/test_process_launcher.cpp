@@ -136,6 +136,17 @@ private slots:
             BELOW_NORMAL_PRIORITY_CLASS);
         QVERIFY(process != nullptr);
         QCOMPARE(GetPriorityClass(process), static_cast<DWORD>(BELOW_NORMAL_PRIORITY_CLASS));
+#ifdef MEMORY_PRIORITY_LOW
+        MEMORY_PRIORITY_INFORMATION memoryPriority = {};
+        QVERIFY(GetProcessInformation(process, ProcessMemoryPriority, &memoryPriority, sizeof(memoryPriority)));
+        QCOMPARE(memoryPriority.MemoryPriority, static_cast<ULONG>(MEMORY_PRIORITY_LOW));
+#endif
+#ifdef PROCESS_POWER_THROTTLING_CURRENT_VERSION
+        PROCESS_POWER_THROTTLING_STATE throttling = {};
+        throttling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+        QVERIFY(GetProcessInformation(process, ProcessPowerThrottling, &throttling, sizeof(throttling)));
+        QVERIFY((throttling.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED) == 0);
+#endif
         ProcessLauncher::terminate(process);
         QVERIFY(ProcessLauncher::waitForExit(process, 3000) >= 0);
     }
@@ -150,6 +161,17 @@ private slots:
             IDLE_PRIORITY_CLASS);
         QVERIFY(process != nullptr);
         QCOMPARE(GetPriorityClass(process), static_cast<DWORD>(IDLE_PRIORITY_CLASS));
+#ifdef MEMORY_PRIORITY_LOW
+        MEMORY_PRIORITY_INFORMATION memoryPriority = {};
+        QVERIFY(GetProcessInformation(process, ProcessMemoryPriority, &memoryPriority, sizeof(memoryPriority)));
+        QCOMPARE(memoryPriority.MemoryPriority, static_cast<ULONG>(MEMORY_PRIORITY_LOW));
+#endif
+#ifdef PROCESS_POWER_THROTTLING_CURRENT_VERSION
+        PROCESS_POWER_THROTTLING_STATE throttling = {};
+        throttling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+        QVERIFY(GetProcessInformation(process, ProcessPowerThrottling, &throttling, sizeof(throttling)));
+        QVERIFY((throttling.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED) != 0);
+#endif
         ProcessLauncher::terminate(process);
         QVERIFY(ProcessLauncher::waitForExit(process, 3000) >= 0);
     }

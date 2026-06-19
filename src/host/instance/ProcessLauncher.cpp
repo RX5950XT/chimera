@@ -132,16 +132,18 @@ void applyPriority(DWORD pid, DWORD priorityClass) {
     priorityClass = safePriorityClass(priorityClass);
     HANDLE process = OpenProcess(PROCESS_SET_INFORMATION, FALSE, pid);
     if (!process) return;
+    const bool lowMemoryPriority =
+        priorityClass == BELOW_NORMAL_PRIORITY_CLASS || priorityClass == IDLE_PRIORITY_CLASS;
     // EcoQoS (power throttling + timer suppression) only for IDLE.
     // BELOW_NORMAL keeps full CPU clock speed to allow decent guest rendering;
     // the lower scheduling priority is enough to protect host audio on its own cores.
-    const bool lowInterference = priorityClass == IDLE_PRIORITY_CLASS;
+    const bool ecoQos = priorityClass == IDLE_PRIORITY_CLASS;
     if (!SetPriorityClass(process, priorityClass)) {
         warnPolicyFailureOnce("SetPriorityClass", pid, GetLastError());
     }
 #ifdef MEMORY_PRIORITY_LOW
     MEMORY_PRIORITY_INFORMATION memoryPriority = {};
-    memoryPriority.MemoryPriority = lowInterference ? MEMORY_PRIORITY_LOW : MEMORY_PRIORITY_NORMAL;
+    memoryPriority.MemoryPriority = lowMemoryPriority ? MEMORY_PRIORITY_LOW : MEMORY_PRIORITY_NORMAL;
     if (!SetProcessInformation(process, ProcessMemoryPriority,
                                &memoryPriority, sizeof(memoryPriority))) {
         warnPolicyFailureOnce("SetProcessInformation(ProcessMemoryPriority)", pid, GetLastError());
@@ -151,11 +153,11 @@ void applyPriority(DWORD pid, DWORD priorityClass) {
     PROCESS_POWER_THROTTLING_STATE throttling = {};
     throttling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
     throttling.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
-    if (lowInterference)
+    if (ecoQos)
         throttling.StateMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
 #ifdef PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
     throttling.ControlMask |= PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
-    if (lowInterference)
+    if (ecoQos)
         throttling.StateMask |= PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
 #endif
     if (!SetProcessInformation(process, ProcessPowerThrottling, &throttling, sizeof(throttling))) {

@@ -1,5 +1,13 @@
 # Chimera Lessons
 
+## 2026-06-19 — `BELOW_NORMAL` 與 EcoQoS / memory priority 必須分開建模
+
+- `BELOW_NORMAL_PRIORITY_CLASS` 的目的是把 emulator/qemu 的**排程優先級**降到低於前景 app，這通常已足夠保護 host audio。
+- `PROCESS_POWER_THROTTLING_EXECUTION_SPEED`（EcoQoS）是另一個維度：它會進一步壓低 CPU frequency / execution speed。把它跟 `BELOW_NORMAL` 綁在一起，會讓 guest render throughput 大幅下降（本輪 triangle demo 約 7-9 FPS → 22-25 FPS 的差異就是這裡）。
+- 但 `ProcessMemoryPriority=MEMORY_PRIORITY_LOW` 仍然對背景 emulator 有價值；不要因為移除 EcoQoS 就順手把 low memory priority 也拿掉。
+- **Rule**：資源策略至少拆成三個概念獨立思考／測試：`PriorityClass`、`ProcessMemoryPriority`、`ProcessPowerThrottling`。若需求是「BELOW_NORMAL 保持效能、IDLE 才進 EcoQoS」，實作上必須用不同旗標，不可共用單一 `lowInterference` 布林。
+- `test_process_launcher.cpp` 不能只驗 `GetPriorityClass()`；要直接用 `GetProcessInformation()` 驗證 `ProcessMemoryPriority` 與 `ProcessPowerThrottling`，否則 reviewer 指出的回歸不會被測到。
+
 ## 2026-06-18 — 不可把長期總目標當成已完成事實
 
 - 使用者的長期目標可以是「完成一切，打造出一個完整的模擬器對標 bluestacks」，但**沒有 transcript / log / build / verifier 證據前，不能把這句話改寫成已完成結論**。

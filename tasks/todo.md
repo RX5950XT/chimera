@@ -2,6 +2,34 @@
 
 ---
 
+## 2026-06-19 Session 82 — shmem 吞吐量確認 + BELOW_NORMAL 移除 EcoQoS + reviewer follow-up
+
+### Plan
+
+- [x] 以 `tmp/test-shmem-throughput.py` 建立合成 60 FPS producer，量測 Chimera shmem consumer 真正吞吐量上限。
+- [x] 建立最小 Android OpenGL ES triangle demo APK（`tmp/gl-triangle-demo.apk`），作為真實 3D 渲染 workload。
+- [x] 量測 triangle demo 與 Settings scroll 在 2 vCPU / BELOW_NORMAL 下的 FPS。
+- [x] 在 github gfxstream runtime 加入 `readToBytesScaled` timing instrumentation，確認 CPU readback 平均成本。
+- [x] 驗證 `readToBytesScaled` 平均約 7-10 ms，不是 20-25 FPS 主瓶頸。
+- [x] 將 `ProcessLauncher` 的 EcoQoS（power throttling）從 `BELOW_NORMAL` 移除，只保留在 `IDLE`。
+- [x] 修正 reviewer 指出的行為擴大：保留 `BELOW_NORMAL` 的 low memory priority，只移除 EcoQoS。
+- [x] 修正 `test_gamepad_manager.cpp` 的環境相依 false negative（主機插實體手把時失敗）。
+- [x] 新增 `test_process_launcher.cpp` 驗證 `BELOW_NORMAL` 無 `ProcessPowerThrottling`、`IDLE` 仍有 EcoQoS，且兩者維持 low memory priority。
+- [x] 重建 `chimera-ui.exe` / targeted tests / full non-integration tests；20/20 PASS。
+- [x] 用最終版 `chimera-ui.exe` 重跑 triangle demo，確認 `effective=24.8 FPS` 仍成立。
+
+### Review
+
+- **shmem consumer ceiling CONFIRMED**：合成 producer `56.7 FPS` → Chimera `guest=stream=render=50.6 FPS`，`dupPct=0`、`avgMs=19.3ms`。這證明 shmem 基礎設施本身不是 16 FPS 瓶頸。
+- **真實 3D workload baseline**：最小 OpenGL ES triangle demo 在原始 2 vCPU + BELOW_NORMAL + EcoQoS 下僅約 `7-9 FPS`；移除 BELOW_NORMAL 的 EcoQoS 後提升到 `22.8-24.8 FPS`。Settings scroll 也從 `15.9 FPS` 提升到 `24.9 FPS`。
+- **瓶頸重新收斂**：`readToBytesScaled` 平均只要 `7-10 ms`，理論上足以支撐 >60Hz readback；當前 `24.8 FPS` 的主瓶頸不是 CPU readback API 本身，而是 guest/render thread cadence + headless GL pipeline 的同步提交模式。也就是說，EcoQoS 確實是前一個大瓶頸，但移除後仍未達 60。
+- **4 vCPU 無助於 triangle demo**：4 vCPU 測試中 app 正常啟動、`EGL_emulation app_time_stats avg=2.49ms count=61`，但 Chimera 只看到前段少量 frame 後長時間 0 FPS；這表示「增加 vCPU 數」不是當前問題的直接解法，且可能引入新的 cadence / scheduling 異常。
+- **reviewer issue 已關閉**：`ProcessLauncher.cpp` 現在將 `lowMemoryPriority` 與 `ecoQos` 分離，避免把 `BELOW_NORMAL` 意外升回 `MEMORY_PRIORITY_NORMAL`；`test_process_launcher` 直接驗證這兩個資源策略。
+- **測試穩定化**：`test_gamepad_manager.cpp` 改檢查 XInput 範圍外 slot `4-7`，不再假設主機「一定沒有」接手把；`test-process-launcher` / `test-gamepad-manager` targeted PASS，完整 non-integration `20/20 PASS`。
+- **下一步**：① async PBO（把 GL readback 由同步 `glReadPixels` 改成 DMA + delayed map）；② D3D11 shared texture（GPU-to-GPU，最終正解）；③ 若只求短期提升，可再量測是否有 guest side vsync / swap cadence 可調整。
+
+---
+
 ## 2026-06-19 Session 81 — shmem delivery 路徑確認：非 GuestVulkanOnly 模式 Android 開機 + shmem PASS
 
 ### Plan
