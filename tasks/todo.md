@@ -19,8 +19,15 @@
 - **Idle 主畫面 FPS 正常**：主畫面靜止時 Android 只產約 1-17 fps；seq_avg 7.6 是 rendering 速率，非 readback 瓶頸；遊戲場景下預期可達更高。
 - **VkEmulation 仍選 NVIDIA RTX 3070 Ti**：雖然 GLES 走 EglOnEgl/EmulationGl 路徑，Vulkan emulation 本身已成功走 NVIDIA；composition `useVkComp=0` 因為 `GuestVulkanOnly=false` 且無 NativeSwapchain。
 - **patch script 的 FORCE_VK_COMPOSITION 靜默失敗**：`apply-chimera-gfxstream-patch.ps1` 加入的 `CHIMERA_GFXSTREAM_FORCE_VK_COMPOSITION` 替換搜尋字串 `fb->` 與實際 source `impl->` 不符，從未被套用，對 DLL 無影響。
-- **Chimera UI shmem 整合 CONFIRMED**：以 `CHIMERA_EMULATOR_PATH` 指向 github runtime 啟動 Chimera UI，InstanceManager 正確自動啟用 shmem（log line 429: `shmem ready`, line 434: `capture started`）。開機動畫期間 `guest=16.3 stream=16.3 render=15.4 effective=15.4 FPS`（真實 Android 渲染）；Chimera Launcher 靜止 Home 後 0 FPS 是預期行為（push-based）。
-- **下一步**：在 Android 中啟動遊戲測量 60 FPS shmem 路徑；或新增 shmem verifier 腳本（要求遊戲場景 >= 30 FPS）。
+- **Chimera UI shmem 整合 CONFIRMED + 滾動 FPS 測量**：
+  - InstanceManager 正確自動啟用 shmem（`chimera_shmem_chimera_dev`）
+  - 開機動畫期間 `effective=16.3 FPS`（真實 Android 幀）
+  - Settings 連續滾動：`guest=stream=render=15.9 FPS`（無 duplicate，真實唯一幀）
+  - 靜止 Home 0 FPS 是 push-based 正常行為
+- **FPS 瓶頸分析**：`-gpu host` 使用 NVIDIA RTX 3070 Ti，但 `readToBytesScaled` 同步 GL readback（glReadPixels 8MB/幀）限制上限約 15-17 FPS；真正 60 FPS 需要 D3D11 shared texture（無 CPU readback）或 async PBO。
+- **下一步選項**：
+  1. 實作 async PBO 或 D3D11 shared texture producer（無 CPU readback，60 FPS 可達）
+  2. 或以 IDLE priority 降低的 power throttling 改為 `below_normal` + 不加 power throttle（可能提升 FPS）
 
 ---
 

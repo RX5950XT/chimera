@@ -285,7 +285,8 @@ QEMU/debug logs、R&D throwaway scripts、runtime output dirs。
 - **DLL 修復 + CHIMERA_GFXSTREAM_GUEST_VK_ONLY 加入**：前一 session 以錯誤的 `tmp/aosp-build`（非 github）DLL 覆寫 github runtime；本 session 從正確 `tmp/aosp-github` 重建並部署。`frame_buffer.cpp` 新增 `CHIMERA_GFXSTREAM_GUEST_VK_ONLY=1` env var gate，只在 env 設為 1 時才 `GuestVulkanOnly.setEnabled(true)`，預設維持 GLES 正常路徑。
 - **GuestVulkanOnly=true blocker 確認**：`useVkComp=1` 可達，NVIDIA 選中，但 SurfaceFlinger 無 GLES 無法 boot complete（300s timeout）。此模式不可用於生產。
 - **非 GuestVulkanOnly shmem 路徑 CONFIRMED**：Android 61s 開機，NVIDIA RTX 3070 Ti 選中（VkEmulation），`chimeraPublishFrameToShmem()` 在 headless `postImpl` else 分支呼叫；idle 主畫面 `event_fps_avg=3.4 / seq_fps_avg=7.6 / max=16.9`（正常，主畫面靜止低幀率）。
-- **Chimera UI shmem 整合 CONFIRMED**：以 `CHIMERA_EMULATOR_PATH` 指向 github runtime 啟動 Chimera UI；InstanceManager 自動啟用 shmem（`chimera_shmem_chimera_dev`）；開機動畫期間 `guest=16.3 stream=16.3 render=15.4 effective=15.4 FPS`（真實 Android 渲染，push-based shmem 路徑）；靜止 Home 後 0 FPS 為預期行為。shmem 路徑不需 gfxstream manifest gate，僅需 DLL marker probe。
+- **Chimera UI shmem 整合 CONFIRMED**：以 `CHIMERA_EMULATOR_PATH` 指向 github runtime 啟動 Chimera UI；InstanceManager 自動啟用 shmem；開機動畫 `effective=16.3 FPS`；Settings 連續滾動 `guest=stream=render=15.9 FPS`（無 duplicate，真實唯一幀）；靜止 Home 0 FPS 為 push-based 正常行為。shmem 路徑不需 manifest gate。
+- **FPS 瓶頸**：`-gpu host` + NVIDIA，但 `readToBytesScaled` 同步 GL readback（glReadPixels 8MB/幀）限制上限約 16 FPS；真 60 FPS 需 D3D11 shared texture（無 CPU readback）或 async PBO。
 - **patch script FORCE_VK_COMPOSITION 靜默失敗**：`apply-chimera-gfxstream-patch.ps1` 加入的 `fb->m_useVulkanComposition` 替換在 `impl->m_useVulkanComposition` 的實際 source 上找不到，從未套用，對 DLL 無影響。
 
 ---
