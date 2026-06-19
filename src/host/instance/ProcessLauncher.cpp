@@ -132,8 +132,10 @@ void applyPriority(DWORD pid, DWORD priorityClass) {
     priorityClass = safePriorityClass(priorityClass);
     HANDLE process = OpenProcess(PROCESS_SET_INFORMATION, FALSE, pid);
     if (!process) return;
-    const bool lowInterference =
-        priorityClass == BELOW_NORMAL_PRIORITY_CLASS || priorityClass == IDLE_PRIORITY_CLASS;
+    // EcoQoS (power throttling + timer suppression) only for IDLE.
+    // BELOW_NORMAL keeps full CPU clock speed to allow decent guest rendering;
+    // the lower scheduling priority is enough to protect host audio on its own cores.
+    const bool lowInterference = priorityClass == IDLE_PRIORITY_CLASS;
     if (!SetPriorityClass(process, priorityClass)) {
         warnPolicyFailureOnce("SetPriorityClass", pid, GetLastError());
     }

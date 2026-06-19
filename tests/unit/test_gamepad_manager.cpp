@@ -15,15 +15,16 @@ private slots:
 
     void isConnectedReturnsFalseForInvalidDevice() {
         GamepadManager::instance().initialize();
-        // No physical gamepads in test env — all 4 XInput slots should be disconnected
-        for (int i = 0; i < 4; ++i)
+        // Indices outside XInput range must always be disconnected
+        for (int i = 4; i < 8; ++i)
             QVERIFY(!GamepadManager::instance().isConnected(i));
         GamepadManager::instance().shutdown();
     }
 
     void getStateReturnsDefaultForDisconnectedDevice() {
         GamepadManager::instance().initialize();
-        const GamepadState st = GamepadManager::instance().getState(0);
+        // Out-of-range index always disconnected regardless of host gamepad state
+        const GamepadState st = GamepadManager::instance().getState(7);
         QVERIFY(!st.connected);
         GamepadManager::instance().shutdown();
     }
