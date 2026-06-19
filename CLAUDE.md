@@ -292,10 +292,10 @@ QEMU/debug logs、R&D throwaway scripts、runtime output dirs。
 ## 2026-06-19 — Session 82
 
 - **direct-to-shmem 優化**：`chimeraPublishFrameToShmem()` 改為直接 readback 到 `shmem+56`，移除 8MB 中間 `pixels` 向量與 `memcpy`；`SharedFrameHeader` 改為首幀寫一次（`headerWritten` flag）。DLL 從 `tmp/aosp-github-build` 重建。
-- **Settings 滾動 FPS 測量**（優化後 BELOW_NORMAL priority）：`guest=stream=render=15.9 FPS`，無 duplicate；avgMs=73-79ms。
-- **NORMAL priority 實測更差**：peak 8.7 FPS（vs BELOW_NORMAL 15.9）；emulator 有上百個執行緒，NORMAL 造成更多 CPU 競搶與 19s 巨大 stall；BELOW_NORMAL 讓整個 tree 在閒置 CPU 統一執行，反而更流暢。
-- **FPS 瓶頸重新分析**：16 fps 上限來自 VCPU 排程（2 vCPU at BELOW_NORMAL，Settings 複雜 layout）而非 readback；readToBytesScaled GL readback 本身約 5-15ms，不是主瓶頸。真 60 FPS 路徑：D3D11 shared texture（無 CPU readback，GPU-to-GPU）或遊戲場景（rendering 較簡單，VCPU 可跑滿 60 fps）。
-- **git 現況**：gfxstream source 在 `tmp/aosp-github/`（.gitignored），只有 docs/todo 進 commit。
+- **Settings 滾動 FPS**（BELOW_NORMAL priority）：`guest=stream=render=15.9 FPS`，avgMs=73ms。
+- **NORMAL priority 更差**：peak 8.7 FPS，19s stall；BELOW_NORMAL 反而更穩。
+- **shmem 吞吐量測試 CRITICAL FINDING**：合成 56.7 FPS producer → Chimera 消費 `guest=stream=render=50.6 FPS`（`dupPct=0`，`avgMs=19.3ms`）。shmem consumer 上限約 50-56 FPS；16 FPS 瓶頸完全是 Android Settings 複雜 UI 渲染速率，不是 shmem 基礎設施。**3D 遊戲預期達 50-60 FPS**（GPU 主導渲染，VCPU 只需提交 draw call）。
+- **真 60 FPS 路徑**：① 遊戲 APK 測試（GPU 渲染場景）；② D3D11 shared texture（GPU-to-GPU，無 CPU readback，可達理論 60+ FPS）。
 
 ---
-*Updated: 2026-06-19 — Session 82（direct-to-shmem 優化；BELOW_NORMAL < NORMAL priority 實測；16 FPS 瓶頸是 VCPU 排程非 readback）*
+*Updated: 2026-06-19 — Session 82（direct-to-shmem 優化；shmem 吞吐量測試 50.6 FPS CONFIRMED；16 FPS 是 Android Settings UI 渲染速率，非 shmem 瓶頸）*
