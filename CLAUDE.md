@@ -292,10 +292,12 @@ QEMU/debug logs、R&D throwaway scripts、runtime output dirs。
 ## 2026-06-19 — Session 82
 
 - **direct-to-shmem 優化**：`chimeraPublishFrameToShmem()` 改為直接 readback 到 `shmem+56`，移除 8MB 中間 `pixels` 向量與 `memcpy`；`SharedFrameHeader` 改為首幀寫一次（`headerWritten` flag）。DLL 從 `tmp/aosp-github-build` 重建。
-- **Settings 滾動 FPS**（BELOW_NORMAL priority）：`guest=stream=render=15.9 FPS`，avgMs=73ms。
-- **NORMAL priority 更差**：peak 8.7 FPS，19s stall；BELOW_NORMAL 反而更穩。
-- **shmem 吞吐量測試 CRITICAL FINDING**：合成 56.7 FPS producer → Chimera 消費 `guest=stream=render=50.6 FPS`（`dupPct=0`，`avgMs=19.3ms`）。shmem consumer 上限約 50-56 FPS；16 FPS 瓶頸完全是 Android Settings 複雜 UI 渲染速率，不是 shmem 基礎設施。**3D 遊戲預期達 50-60 FPS**（GPU 主導渲染，VCPU 只需提交 draw call）。
-- **真 60 FPS 路徑**：① 遊戲 APK 測試（GPU 渲染場景）；② D3D11 shared texture（GPU-to-GPU，無 CPU readback，可達理論 60+ FPS）。
+- **shmem 吞吐量測試 CRITICAL FINDING**：合成 56.7 FPS producer → Chimera 消費 `guest=stream=render=50.6 FPS`（`dupPct=0`，`avgMs=19.3ms`）。shmem consumer 基礎設施最高約 50-56 FPS。
+- **EcoQoS 移除（重大優化）**：`ProcessLauncher.cpp` `applyPriority()` 改為 EcoQoS（`PROCESS_POWER_THROTTLING_EXECUTION_SPEED` + `PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION`）只套用於 `IDLE_PRIORITY_CLASS`，不再套用於 `BELOW_NORMAL_PRIORITY_CLASS`。BELOW_NORMAL 的 CPU 排程優先級已足夠保護 host audio；EcoQoS 降頻是額外不必要的 VCPU 性能懲罰。
+- **FPS 改善結果**：GL triangle demo BELOW_NORMAL 無 EcoQoS：`effective=22.8 FPS`（+3x，前為 7-9）；Settings scroll：`effective=24.9 FPS`（+1.6x，前為 15.9）；`dupPct=0`，avgMs=40-47ms。
+- **gamepad 測試修正**：`test_gamepad_manager.cpp` 從檢查 slot 0-3（在實體 controller 接入時 false negative）改為 slot 4-7（超出 XInput 範圍，永遠斷線）。
+- **20/20 unit tests PASS**。
+- **下一步**：① 進一步提升 FPS（async PBO / D3D11 shared texture）；② 真 60 FPS 仍需 matching SDK gfxstream producer。
 
 ---
-*Updated: 2026-06-19 — Session 82（direct-to-shmem 優化；shmem 吞吐量測試 50.6 FPS CONFIRMED；16 FPS 是 Android Settings UI 渲染速率，非 shmem 瓶頸）*
+*Updated: 2026-06-19 — Session 82（EcoQoS 移除 BELOW_NORMAL 使 FPS 提升 1.6-3x；shmem 50.6 FPS consumer CONFIRMED；20/20 tests PASS）*
