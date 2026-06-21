@@ -4,8 +4,10 @@ param(
     [string]$InstallDir = "build\chimera-gfxstream-runtime",
     [string]$BaseEmulatorDir = "third_party\android-sdk\emulator",
     [string]$Branch = "main",
+    [string]$SourceBuildId = "",
     [switch]$PrepareDeps,
-    [switch]$SkipConfigure
+    [switch]$SkipConfigure,
+    [switch]$AllowMismatchedBuildId
 )
 
 $ErrorActionPreference = "Stop"
@@ -169,10 +171,14 @@ if ($LASTEXITCODE -gt 7) {
 New-Item -ItemType Directory -Force -Path (Join-Path $installPath "lib64") | Out-Null
 Copy-Item -LiteralPath $dll -Destination (Join-Path $installPath "lib64\libgfxstream_backend.dll") -Force
 
-powershell -NoProfile -ExecutionPolicy Bypass `
-    -File (Join-Path $PSScriptRoot "write-chimera-gfxstream-runtime-manifest.ps1") `
-    -RuntimeDir $installPath `
-    -SourceDir $sourcePath
+$manifestArgs = @(
+    "-File", (Join-Path $PSScriptRoot "write-chimera-gfxstream-runtime-manifest.ps1"),
+    "-RuntimeDir", $installPath,
+    "-SourceDir", $sourcePath
+)
+if ($AllowMismatchedBuildId) { $manifestArgs += "-AllowMismatchedBuildId" }
+if (![string]::IsNullOrWhiteSpace($SourceBuildId)) { $manifestArgs += "-SourceBuildId"; $manifestArgs += $SourceBuildId }
+powershell -NoProfile -ExecutionPolicy Bypass @manifestArgs
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }

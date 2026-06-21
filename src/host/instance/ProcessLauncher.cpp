@@ -92,6 +92,15 @@ BOOL CALLBACK collectVisibleWindowTitles(HWND hwnd, LPARAM lParam) {
     GetWindowThreadProcessId(hwnd, &pid);
     if (pid == 0 || context->processIds.find(pid) == context->processIds.end()) return TRUE;
 
+    RECT rect = {};
+    if (!GetWindowRect(hwnd, &rect)) return TRUE;
+    const LONG width = rect.right - rect.left;
+    const LONG height = rect.bottom - rect.top;
+    // Some emulator child helpers create visible event-target/tool windows (for example
+    // netsim/Qt utility windows) that are not the stock Android Emulator display.
+    // The safety gate is meant to reject large native emulator windows, not tiny helpers.
+    if (width < 160 || height < 120) return TRUE;
+
     wchar_t title[512] = {};
     GetWindowTextW(hwnd, title, static_cast<int>(std::size(title)));
     std::wstring text(title);
@@ -101,7 +110,9 @@ BOOL CALLBACK collectVisibleWindowTitles(HWND hwnd, LPARAM lParam) {
         text = className;
     }
     if (!text.empty()) {
-        context->titles.push_back(wideToUtf8(text));
+        std::wstringstream summary;
+        summary << text << L" (" << width << L"x" << height << L")";
+        context->titles.push_back(wideToUtf8(summary.str()));
     }
     return TRUE;
 }

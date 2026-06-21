@@ -14,6 +14,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <d3d11_1.h>
 #include <dxgi1_2.h>
 #else
 #include <strings.h>
@@ -165,6 +166,128 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::isEnabled() const {
     return mEnabled;
 }
 
+bool ChimeraGfxstreamVulkanSharedTextureBridge::ensureD3D11Initialized(VkExtent2D extent) {
+#ifndef _WIN32
+    (void)extent;
+    return false;
+#else
+    if (!mEnabled || mHardUnavailable) return false;
+    if (extent.width < kMinimumSharedTextureWidth || extent.height < kMinimumSharedTextureHeight) {
+        std::fprintf(stderr,
+                     "Chimera gfxstream Vulkan bridge: refusing undersized D3D11 texture %ux%u\n",
+                     extent.width, extent.height);
+        return false;
+    }
+    if (mD3D11Texture && mExtent.width == extent.width && mExtent.height == extent.height) {
+        return true;
+    }
+
+    reset();
+    mExtent = extent;
+    mMapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+                                  0, sizeof(SharedD3D11TextureHeader),
+                                  mMetadataName.c_str());
+    if (!mMapping) {
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: CreateFileMappingW failed %lu\n",
+                     GetLastError());
+        mHardUnavailable = true;
+        return false;
+    }
+    mView = MapViewOfFile(static_cast<HANDLE>(mMapping), FILE_MAP_WRITE, 0, 0,
+                          sizeof(SharedD3D11TextureHeader));
+    if (!mView) {
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: MapViewOfFile failed %lu\n",
+                     GetLastError());
+        reset();
+        mHardUnavailable = true;
+        return false;
+    }
+    if (!mEventName.empty()) {
+        mEvent = CreateEventW(nullptr, FALSE, FALSE, mEventName.c_str());
+        if (!mEvent) {
+            std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: CreateEventW failed %lu\n",
+                         GetLastError());
+            reset();
+            mHardUnavailable = true;
+            return false;
+        }
+    }
+
+    ID3D11Device* d3dDevice = nullptr;
+    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
+                                   nullptr, 0, D3D11_SDK_VERSION, &d3dDevice, nullptr, nullptr);
+    if (FAILED(hr) || !d3dDevice) {
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: D3D11CreateDevice failed hr=0x%lx\n",
+                     static_cast<unsigned long>(hr));
+        reset();
+        mHardUnavailable = true;
+        return false;
+    }
+
+    ID3D11Texture2D* d3dTex = nullptr;
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = extent.width;
+    desc.Height = extent.height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+    hr = d3dDevice->CreateTexture2D(&desc, nullptr, &d3dTex);
+    if (FAILED(hr) || !d3dTex) {
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: CreateTexture2D failed hr=0x%lx\n",
+                     static_cast<unsigned long>(hr));
+        d3dDevice->Release();
+        reset();
+        mHardUnavailable = true;
+        return false;
+    }
+
+    HANDLE sharedHandle = nullptr;
+    IDXGIResource1* dxgiRes = nullptr;
+    hr = d3dTex->QueryInterface(__uuidof(IDXGIResource1), reinterpret_cast<void**>(&dxgiRes));
+    if (SUCCEEDED(hr) && dxgiRes) {
+        hr = dxgiRes->CreateSharedHandle(nullptr,
+                                         DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+                                         mTextureName.c_str(), &sharedHandle);
+        dxgiRes->Release();
+    }
+    if (FAILED(hr) || !sharedHandle) {
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: CreateSharedHandle failed hr=0x%lx\n",
+                     static_cast<unsigned long>(hr));
+        d3dTex->Release();
+        d3dDevice->Release();
+        reset();
+        mHardUnavailable = true;
+        return false;
+    }
+
+    ID3D11DeviceContext* d3dCtx = nullptr;
+    d3dDevice->GetImmediateContext(&d3dCtx);
+    if (!d3dCtx) {
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: GetImmediateContext failed\n");
+        CloseHandle(sharedHandle);
+        d3dTex->Release();
+        d3dDevice->Release();
+        reset();
+        mHardUnavailable = true;
+        return false;
+    }
+
+    mD3D11Device = d3dDevice;
+    mD3D11Texture = d3dTex;
+    mD3D11SharedHandle = sharedHandle;
+    mD3D11Context = d3dCtx;
+    *static_cast<SharedD3D11TextureHeader*>(mView) = {};
+    std::fprintf(stderr,
+                 "Chimera gfxstream Vulkan bridge: initialized %ux%u shared texture (D3D11 CPU path)\n",
+                 extent.width, extent.height);
+    return true;
+#endif
+}
+
 bool ChimeraGfxstreamVulkanSharedTextureBridge::ensureInitialized(
     const VulkanDispatch& vk,
     VkPhysicalDevice physicalDevice,
@@ -225,23 +348,100 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::ensureInitialized(
         }
     }
 
-    VkExternalMemoryImageCreateInfo externalImage = {
-        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
-        .pNext = nullptr,
-        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT,
-    };
+    // D3D11 is the primary owner of the shared texture; Vulkan imports from it.
+    // This lets the host call OpenSharedResourceByName on the same name.
+    ID3D11Device* d3dDevice = nullptr;
+    {
+        HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
+                                       nullptr, 0, D3D11_SDK_VERSION, &d3dDevice, nullptr, nullptr);
+        if (FAILED(hr) || !d3dDevice) {
+            std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: D3D11CreateDevice failed hr=0x%lx\n",
+                         static_cast<unsigned long>(hr));
+            reset(&vk, device);
+            mHardUnavailable = true;
+            return false;
+        }
+    }
+
+    ID3D11Texture2D* d3dTex = nullptr;
+    {
+        D3D11_TEXTURE2D_DESC desc = {};
+        desc.Width = extent.width;
+        desc.Height = extent.height;
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+        HRESULT hr = d3dDevice->CreateTexture2D(&desc, nullptr, &d3dTex);
+        if (FAILED(hr) || !d3dTex) {
+            std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: CreateTexture2D failed hr=0x%lx\n",
+                         static_cast<unsigned long>(hr));
+            d3dDevice->Release();
+            reset(&vk, device);
+            mHardUnavailable = true;
+            return false;
+        }
+    }
+
+    HANDLE sharedHandle = nullptr;
+    {
+        IDXGIResource1* dxgiRes = nullptr;
+        HRESULT hr = d3dTex->QueryInterface(__uuidof(IDXGIResource1),
+                                            reinterpret_cast<void**>(&dxgiRes));
+        if (FAILED(hr) || !dxgiRes) {
+            std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: IDXGIResource1 unavailable hr=0x%lx\n",
+                         static_cast<unsigned long>(hr));
+            d3dTex->Release();
+            d3dDevice->Release();
+            reset(&vk, device);
+            mHardUnavailable = true;
+            return false;
+        }
+        hr = dxgiRes->CreateSharedHandle(nullptr,
+                                         DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+                                         mTextureName.c_str(), &sharedHandle);
+        dxgiRes->Release();
+        if (FAILED(hr) || !sharedHandle) {
+            std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: CreateSharedHandle failed hr=0x%lx\n",
+                         static_cast<unsigned long>(hr));
+            d3dTex->Release();
+            d3dDevice->Release();
+            reset(&vk, device);
+            mHardUnavailable = true;
+            return false;
+        }
+        // sharedHandle kept open so the NT kernel name remains valid.
+    }
+
+    // Get the immediate D3D11 context for UpdateSubresource calls on the render thread.
+    ID3D11DeviceContext* d3dCtx = nullptr;
+    d3dDevice->GetImmediateContext(&d3dCtx);
+    if (!d3dCtx) {
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: GetImmediateContext failed\n");
+        CloseHandle(sharedHandle);
+        d3dTex->Release();
+        d3dDevice->Release();
+        reset(&vk, device);
+        mHardUnavailable = true;
+        return false;
+    }
+
+    // Vulkan device-local image: blit destination (D3D11 is sole owner, no import needed).
     VkImageCreateInfo imageCi = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .pNext = &externalImage,
+        .pNext = nullptr,
         .flags = 0,
         .imageType = VK_IMAGE_TYPE_2D,
-        .format = VK_FORMAT_B8G8R8A8_UNORM,
+        .format = VK_FORMAT_R8G8B8A8_UNORM,
         .extent = {extent.width, extent.height, 1},
         .mipLevels = 1,
         .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .queueFamilyIndexCount = 0,
         .pQueueFamilyIndices = nullptr,
@@ -250,6 +450,10 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::ensureInitialized(
     VkResult res = vk.vkCreateImage(device, &imageCi, nullptr, &mImage);
     if (res != VK_SUCCESS) {
         std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkCreateImage failed %d\n", res);
+        CloseHandle(sharedHandle);
+        d3dCtx->Release();
+        d3dTex->Release();
+        d3dDevice->Release();
         reset(&vk, device);
         mHardUnavailable = true;
         return false;
@@ -261,32 +465,28 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::ensureInitialized(
         vk, physicalDevice, reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (memoryType == UINT32_MAX) {
         std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: no compatible memory type\n");
+        CloseHandle(sharedHandle);
+        d3dCtx->Release();
+        d3dTex->Release();
+        d3dDevice->Release();
         reset(&vk, device);
         mHardUnavailable = true;
         return false;
     }
 
-    VkExportMemoryWin32HandleInfoKHR win32Export = {
-        .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_WIN32_HANDLE_INFO_KHR,
-        .pNext = nullptr,
-        .pAttributes = nullptr,
-        .dwAccess = DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
-        .name = mTextureName.c_str(),
-    };
-    VkExportMemoryAllocateInfo exportAlloc = {
-        .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
-        .pNext = &win32Export,
-        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT,
-    };
     VkMemoryAllocateInfo allocInfo = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .pNext = &exportAlloc,
+        .pNext = nullptr,
         .allocationSize = reqs.size,
         .memoryTypeIndex = memoryType,
     };
     res = vk.vkAllocateMemory(device, &allocInfo, nullptr, &mMemory);
     if (res != VK_SUCCESS) {
         std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkAllocateMemory failed %d\n", res);
+        CloseHandle(sharedHandle);
+        d3dCtx->Release();
+        d3dTex->Release();
+        d3dDevice->Release();
         reset(&vk, device);
         mHardUnavailable = true;
         return false;
@@ -294,29 +494,104 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::ensureInitialized(
     res = vk.vkBindImageMemory(device, mImage, mMemory, 0);
     if (res != VK_SUCCESS) {
         std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkBindImageMemory failed %d\n", res);
+        CloseHandle(sharedHandle);
+        d3dCtx->Release();
+        d3dTex->Release();
+        d3dDevice->Release();
         reset(&vk, device);
         mHardUnavailable = true;
         return false;
     }
-    mLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    if (vk.vkGetMemoryWin32HandleKHR) {
-        VkMemoryGetWin32HandleInfoKHR handleInfo = {
-            .sType = VK_STRUCTURE_TYPE_MEMORY_GET_WIN32_HANDLE_INFO_KHR,
-            .pNext = nullptr,
-            .memory = mMemory,
-            .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT,
-        };
-        HANDLE exportedHandle = nullptr;
-        if (vk.vkGetMemoryWin32HandleKHR(device, &handleInfo, &exportedHandle) == VK_SUCCESS &&
-            exportedHandle) {
-            CloseHandle(exportedHandle);
-        }
+    // Staging buffer: host-coherent, for readback from mImage → UpdateSubresource → D3D11 texture.
+    const VkDeviceSize stagingSize = static_cast<VkDeviceSize>(extent.width) * extent.height * 4;
+    VkBufferCreateInfo bufCI = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = stagingSize,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    res = vk.vkCreateBuffer(device, &bufCI, nullptr, &mStagingBuffer);
+    if (res != VK_SUCCESS) {
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkCreateBuffer (staging) failed %d\n", res);
+        CloseHandle(sharedHandle);
+        d3dCtx->Release();
+        d3dTex->Release();
+        d3dDevice->Release();
+        reset(&vk, device);
+        mHardUnavailable = true;
+        return false;
     }
+
+    VkMemoryRequirements bufReqs = {};
+    vk.vkGetBufferMemoryRequirements(device, mStagingBuffer, &bufReqs);
+    const uint32_t stagingMemType = findMemoryType(
+        vk, physicalDevice, bufReqs.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (stagingMemType == UINT32_MAX) {
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: no host-coherent memory type\n");
+        CloseHandle(sharedHandle);
+        d3dCtx->Release();
+        d3dTex->Release();
+        d3dDevice->Release();
+        reset(&vk, device);
+        mHardUnavailable = true;
+        return false;
+    }
+
+    VkMemoryAllocateInfo stagingAlloc = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = nullptr,
+        .allocationSize = bufReqs.size,
+        .memoryTypeIndex = stagingMemType,
+    };
+    res = vk.vkAllocateMemory(device, &stagingAlloc, nullptr, &mStagingMemory);
+    if (res != VK_SUCCESS) {
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkAllocateMemory (staging) failed %d\n", res);
+        CloseHandle(sharedHandle);
+        d3dCtx->Release();
+        d3dTex->Release();
+        d3dDevice->Release();
+        reset(&vk, device);
+        mHardUnavailable = true;
+        return false;
+    }
+
+    res = vk.vkBindBufferMemory(device, mStagingBuffer, mStagingMemory, 0);
+    if (res != VK_SUCCESS) {
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkBindBufferMemory failed %d\n", res);
+        CloseHandle(sharedHandle);
+        d3dCtx->Release();
+        d3dTex->Release();
+        d3dDevice->Release();
+        reset(&vk, device);
+        mHardUnavailable = true;
+        return false;
+    }
+
+    void* stagingData = nullptr;
+    res = vk.vkMapMemory(device, mStagingMemory, 0, bufReqs.size, 0, &stagingData);
+    if (res != VK_SUCCESS || !stagingData) {
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkMapMemory (staging) failed %d\n", res);
+        CloseHandle(sharedHandle);
+        d3dCtx->Release();
+        d3dTex->Release();
+        d3dDevice->Release();
+        reset(&vk, device);
+        mHardUnavailable = true;
+        return false;
+    }
+
+    mD3D11Device = d3dDevice;
+    mD3D11Texture = d3dTex;
+    mD3D11SharedHandle = sharedHandle;
+    mD3D11Context = d3dCtx;
+    mStagingData = stagingData;
+    mLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     *static_cast<SharedD3D11TextureHeader*>(mView) = {};
     std::fprintf(stderr,
-                 "Chimera gfxstream Vulkan bridge: initialized %ux%u shared texture\n",
+                 "Chimera gfxstream Vulkan bridge: initialized %ux%u shared texture (D3D11 owner)\n",
                  extent.width, extent.height);
     return true;
 #endif
@@ -395,28 +670,70 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::recordCopy(
     vk.vkCmdBlitImage(commandBuffer, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                       mImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, filter);
 
-    VkImageMemoryBarrier releaseTargetBarrier = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .pNext = nullptr,
-        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
-        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = mImage,
-        .subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        },
-    };
-    vk.vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1,
-                            &releaseTargetBarrier);
-    mLayout = VK_IMAGE_LAYOUT_GENERAL;
+    if (mStagingBuffer != VK_NULL_HANDLE) {
+        // Transition mImage from TRANSFER_DST_OPTIMAL → TRANSFER_SRC_OPTIMAL for the buffer copy.
+        VkImageMemoryBarrier toSrcBarrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = mImage,
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+        };
+        vk.vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr,
+                                1, &toSrcBarrier);
+
+        VkBufferImageCopy copyRegion = {
+            .bufferOffset = 0,
+            .bufferRowLength = 0,
+            .bufferImageHeight = 0,
+            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .imageOffset = {0, 0, 0},
+            .imageExtent = {targetExtent.width, targetExtent.height, 1},
+        };
+        vk.vkCmdCopyImageToBuffer(commandBuffer, mImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                  mStagingBuffer, 1, &copyRegion);
+
+        // Ensure the staging buffer write is visible to the host after the fence signals.
+        VkBufferMemoryBarrier bufBarrier = {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = mStagingBuffer,
+            .offset = 0,
+            .size = VK_WHOLE_SIZE,
+        };
+        vk.vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr,
+                                1, &bufBarrier, 0, nullptr);
+        mLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    } else {
+        // DisplayVk path: no staging buffer, just transition to GENERAL.
+        VkImageMemoryBarrier releaseTargetBarrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = nullptr,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = mImage,
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+        };
+        vk.vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr,
+                                1, &releaseTargetBarrier);
+        mLayout = VK_IMAGE_LAYOUT_GENERAL;
+    }
     ++mRecordSuccesses;
     if (shouldLogCounter(mRecordSuccesses)) {
         std::fprintf(stderr,
@@ -455,7 +772,7 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::publishFrame(VkExtent2D extent) 
     header->headerSize = sizeof(SharedD3D11TextureHeader);
     header->width = extent.width;
     header->height = extent.height;
-    header->dxgiFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+    header->dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
     header->flags = kD3D11FlagHasAlpha;
     if (!writeTextureName(header->textureName, mTextureName)) {
         ++mPublishFailures;
@@ -480,10 +797,39 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::publishFrame(VkExtent2D extent) 
 #endif
 }
 
+bool ChimeraGfxstreamVulkanSharedTextureBridge::postFrameCpu(
+    const void* pixels, uint32_t width, uint32_t height, uint32_t strideBytes) {
+#ifndef _WIN32
+    (void)pixels; (void)width; (void)height; (void)strideBytes;
+    return false;
+#else
+    if (!pixels || width == 0 || height == 0 || strideBytes < width * 4) return false;
+    const VkExtent2D extent = {width, height};
+    if (!ensureD3D11Initialized(extent)) return false;
+    auto* ctx = static_cast<ID3D11DeviceContext*>(mD3D11Context);
+    auto* tex = static_cast<ID3D11Texture2D*>(mD3D11Texture);
+    if (!ctx || !tex) return false;
+    ctx->UpdateSubresource(tex, 0, nullptr, pixels, strideBytes, 0);
+    return publishFrame(extent);
+#endif
+}
+
 void ChimeraGfxstreamVulkanSharedTextureBridge::reset(const VulkanDispatch* vk,
                                                       VkDevice device) {
 #ifdef _WIN32
     if (vk && device != VK_NULL_HANDLE) {
+        if (mStagingData) {
+            vk->vkUnmapMemory(device, mStagingMemory);
+            mStagingData = nullptr;
+        }
+        if (mStagingBuffer != VK_NULL_HANDLE) {
+            vk->vkDestroyBuffer(device, mStagingBuffer, nullptr);
+            mStagingBuffer = VK_NULL_HANDLE;
+        }
+        if (mStagingMemory != VK_NULL_HANDLE) {
+            vk->vkFreeMemory(device, mStagingMemory, nullptr);
+            mStagingMemory = VK_NULL_HANDLE;
+        }
         if (mImage != VK_NULL_HANDLE) {
             vk->vkDestroyImage(device, mImage, nullptr);
         }
@@ -491,11 +837,31 @@ void ChimeraGfxstreamVulkanSharedTextureBridge::reset(const VulkanDispatch* vk,
             vk->vkFreeMemory(device, mMemory, nullptr);
         }
     }
+    mStagingData = nullptr;
+    mStagingBuffer = VK_NULL_HANDLE;
+    mStagingMemory = VK_NULL_HANDLE;
     mImage = VK_NULL_HANDLE;
     mMemory = VK_NULL_HANDLE;
     mDevice = VK_NULL_HANDLE;
     mLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     mExtent = {};
+    // Release D3D11 resources.
+    if (mD3D11Context) {
+        static_cast<ID3D11DeviceContext*>(mD3D11Context)->Release();
+        mD3D11Context = nullptr;
+    }
+    if (mD3D11SharedHandle) {
+        CloseHandle(static_cast<HANDLE>(mD3D11SharedHandle));
+        mD3D11SharedHandle = nullptr;
+    }
+    if (mD3D11Texture) {
+        static_cast<ID3D11Texture2D*>(mD3D11Texture)->Release();
+        mD3D11Texture = nullptr;
+    }
+    if (mD3D11Device) {
+        static_cast<ID3D11Device*>(mD3D11Device)->Release();
+        mD3D11Device = nullptr;
+    }
     if (mView) {
         UnmapViewOfFile(mView);
         mView = nullptr;
@@ -512,6 +878,158 @@ void ChimeraGfxstreamVulkanSharedTextureBridge::reset(const VulkanDispatch* vk,
 #else
     (void)vk;
     (void)device;
+#endif
+}
+
+bool ChimeraGfxstreamVulkanSharedTextureBridge::initDirectVkResources(
+    const VulkanDispatch* vk,
+    VkPhysicalDevice physicalDevice,
+    VkDevice device,
+    uint32_t queueFamilyIndex,
+    VkQueue queue,
+    std::shared_ptr<android::base::Lock> queueLock) {
+#ifndef _WIN32
+    (void)vk; (void)physicalDevice; (void)device; (void)queueFamilyIndex;
+    (void)queue; (void)queueLock;
+    return false;
+#else
+    if (!mEnabled || !vk || device == VK_NULL_HANDLE || queue == VK_NULL_HANDLE) {
+        return false;
+    }
+    if (mDirectVkReady) return true;
+
+    mDirectVk = vk;
+    mDirectPhysDev = physicalDevice;
+    mDirectDevice = device;
+    mDirectQueueFamilyIndex = queueFamilyIndex;
+    mDirectQueue = queue;
+    mDirectQueueLock = queueLock;
+
+    VkCommandPoolCreateInfo poolCI = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = queueFamilyIndex,
+    };
+    VkResult res = vk->vkCreateCommandPool(device, &poolCI, nullptr, &mDirectCommandPool);
+    if (res != VK_SUCCESS) {
+        std::fprintf(stderr, "Chimera Vulkan bridge: vkCreateCommandPool failed %d\n", res);
+        return false;
+    }
+
+    VkCommandBufferAllocateInfo cbAI = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = mDirectCommandPool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    res = vk->vkAllocateCommandBuffers(device, &cbAI, &mDirectCommandBuffer);
+    if (res != VK_SUCCESS) {
+        std::fprintf(stderr, "Chimera Vulkan bridge: vkAllocateCommandBuffers failed %d\n", res);
+        vk->vkDestroyCommandPool(device, mDirectCommandPool, nullptr);
+        mDirectCommandPool = VK_NULL_HANDLE;
+        return false;
+    }
+
+    VkFenceCreateInfo fenceCI = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+    };
+    res = vk->vkCreateFence(device, &fenceCI, nullptr, &mDirectFence);
+    if (res != VK_SUCCESS) {
+        std::fprintf(stderr, "Chimera Vulkan bridge: vkCreateFence failed %d\n", res);
+        vk->vkDestroyCommandPool(device, mDirectCommandPool, nullptr);
+        mDirectCommandPool = VK_NULL_HANDLE;
+        mDirectCommandBuffer = VK_NULL_HANDLE;
+        return false;
+    }
+
+    mDirectVkReady = true;
+    std::fprintf(stderr, "[chimera-display-vk] Direct GPU bridge resources initialized\n");
+    return true;
+#endif
+}
+
+bool ChimeraGfxstreamVulkanSharedTextureBridge::isDirectVkReady() const {
+    return mDirectVkReady;
+}
+
+void ChimeraGfxstreamVulkanSharedTextureBridge::postFrameDirectGpu(
+    const BorrowedImageInfoVk& src, VkExtent2D extent) {
+#ifndef _WIN32
+    (void)src; (void)extent;
+#else
+    if (!mDirectVkReady || !mDirectVk) return;
+    const VulkanDispatch& vk = *mDirectVk;
+
+    // Wait for previous submission, then reset fence.
+    vk.vkWaitForFences(mDirectDevice, 1, &mDirectFence, VK_TRUE, UINT64_MAX);
+    vk.vkResetFences(mDirectDevice, 1, &mDirectFence);
+    vk.vkResetCommandBuffer(mDirectCommandBuffer, 0);
+
+    // Compute pre-acquire barriers for the source image (layout → TRANSFER_SRC_OPTIMAL).
+    std::vector<VkImageMemoryBarrier> preAcqQueue, preAcqLayout, postRelLayout, postRelQueue;
+    addNeededBarriersToUseBorrowedImage(
+        src, mDirectQueueFamilyIndex,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        VK_ACCESS_TRANSFER_READ_BIT,
+        &preAcqQueue, &preAcqLayout, &postRelLayout, &postRelQueue);
+
+    VkCommandBuffer cmdBuf = mDirectCommandBuffer;
+    VkCommandBufferBeginInfo beginInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    vk.vkBeginCommandBuffer(cmdBuf, &beginInfo);
+
+    constexpr VkPipelineStageFlags kMemStages =
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+    if (!preAcqQueue.empty()) {
+        vk.vkCmdPipelineBarrier(cmdBuf, kMemStages, kMemStages, 0, 0, nullptr, 0, nullptr,
+                                static_cast<uint32_t>(preAcqQueue.size()), preAcqQueue.data());
+    }
+    if (!preAcqLayout.empty()) {
+        vk.vkCmdPipelineBarrier(cmdBuf, kMemStages, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                                nullptr, 0, nullptr,
+                                static_cast<uint32_t>(preAcqLayout.size()), preAcqLayout.data());
+    }
+
+    const bool copied = recordCopy(vk, mDirectPhysDev, mDirectDevice, cmdBuf,
+                                   src, extent, VK_FILTER_LINEAR);
+
+    if (!postRelLayout.empty()) {
+        vk.vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr,
+                                static_cast<uint32_t>(postRelLayout.size()), postRelLayout.data());
+    }
+    if (!postRelQueue.empty()) {
+        vk.vkCmdPipelineBarrier(cmdBuf, kMemStages, kMemStages, 0, 0, nullptr, 0, nullptr,
+                                static_cast<uint32_t>(postRelQueue.size()), postRelQueue.data());
+    }
+
+    vk.vkEndCommandBuffer(cmdBuf);
+
+    VkSubmitInfo submitInfo = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &cmdBuf,
+    };
+    {
+        android::base::AutoLock lock(*mDirectQueueLock);
+        vk.vkQueueSubmit(mDirectQueue, 1, &submitInfo, mDirectFence);
+    }
+
+    if (copied) {
+        vk.vkWaitForFences(mDirectDevice, 1, &mDirectFence, VK_TRUE, UINT64_MAX);
+        // Staging buffer is now HOST_COHERENT and the fence has signalled: push to D3D11 texture.
+        if (mStagingData && mD3D11Texture && mD3D11Context) {
+            auto* ctx = static_cast<ID3D11DeviceContext*>(mD3D11Context);
+            auto* tex = static_cast<ID3D11Texture2D*>(mD3D11Texture);
+            ctx->UpdateSubresource(tex, 0, nullptr, mStagingData,
+                                   mExtent.width * 4, 0);
+        }
+        publishFrame(extent);
+    }
 #endif
 }
 

@@ -740,7 +740,51 @@ if ($hasVulkanDisplay) {
         ('#include "vulkan/PostWorkerVk.h"' + "`n" + '#include "vulkan/ChimeraGfxstreamVulkanSharedTextureBridge.h"') `
         "FrameBuffer Vulkan Chimera bridge include"
 
-    $frameBufferHeadlessVkNeedle = @'
+    $frameBufferD3D11CpuProducerNeedle = 'bool FrameBuffer::Impl::postImplSync(HandleType p_colorbuffer, bool needLockAndBind, bool repaint) {'
+    $frameBufferD3D11CpuProducerReplacement = @'
+static void chimeraPublishFrameToD3D11Texture(ColorBuffer* cb, int fbW, int fbH) {
+    const uint32_t width = std::max(1920u, static_cast<uint32_t>(fbW));
+    const uint32_t height = std::max(1080u, static_cast<uint32_t>(fbH));
+    static std::vector<uint8_t> s_pixels;
+    const size_t bytes = static_cast<size_t>(width) * height * 4u;
+    if (s_pixels.size() != bytes) {
+        s_pixels.assign(bytes, 0);
+    }
+
+    LARGE_INTEGER t0, t1, freq;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&t0);
+
+    Rect fullRect = {{0, 0}, {static_cast<int>(width), static_cast<int>(height)}};
+    cb->readToBytesScaled(static_cast<int>(width), static_cast<int>(height), /*rotation=*/0,
+                           fullRect, GfxstreamFormat::R8G8B8A8_UNORM,
+                           s_pixels.data(), /*colorTransform=*/{});
+    vk::ChimeraGfxstreamVulkanSharedTextureBridge::get().postFrameCpu(
+        s_pixels.data(), width, height, width * 4u);
+
+    QueryPerformanceCounter(&t1);
+    {
+        static int s_logFrameCount = 0;
+        static double s_logTotalMs = 0.0;
+        const double ms = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / freq.QuadPart;
+        s_logTotalMs += ms;
+        if (++s_logFrameCount >= 30) {
+            GFXSTREAM_INFO("[chimera] readToD3D11Texture avg=%.1f ms over 30 frames",
+                           s_logTotalMs / 30.0);
+            s_logFrameCount = 0;
+            s_logTotalMs = 0.0;
+        }
+    }
+}
+
+bool FrameBuffer::Impl::postImplSync(HandleType p_colorbuffer, bool needLockAndBind, bool repaint) {
+'@
+    if ([System.IO.File]::ReadAllText($frameBuffer).Replace("`r`n", "`n") -notmatch 'chimeraPublishFrameToD3D11Texture') {
+        Replace-Once $frameBuffer $frameBufferD3D11CpuProducerNeedle $frameBufferD3D11CpuProducerReplacement "FrameBuffer D3D11 CPU producer helper"
+    }
+
+    # Needle variants: (1) original unpatched source, (2) Session 77-82 intermediate (shmem-only)
+    $frameBufferHeadlessVkNeedleOrig = @'
     colorBuffer->touch();
     if (m_subWin) {
         Post postCmd;
@@ -756,7 +800,46 @@ if ($hasVulkanDisplay) {
         ret = AsyncResult::OK_AND_CALLBACK_NOT_SCHEDULED;
     }
 '@
-    $frameBufferHeadlessVkReplacement = @'
+    $frameBufferHeadlessVkNeedleIntermediate = @'
+    colorBuffer->touch();
+    if (m_subWin) {
+        Post postCmd;
+        postCmd.cmd = PostCmd::Post;
+        postCmd.cb = colorBuffer.get();
+        postCmd.cbHandle = p_colorbuffer;
+        postCmd.colorTransform = GetColorTransform();
+        postCmd.completionCallback = std::make_unique<Post::CompletionCallback>(callback);
+        sendPostWorkerCmd(std::move(postCmd));
+        ret = AsyncResult::OK_AND_CALLBACK_SCHEDULED;
+    } else {
+        // Headless: no sub-window; choose transport based on what's configured
+        ret = AsyncResult::OK_AND_CALLBACK_NOT_SCHEDULED;
+        chimeraPublishFrameToShmem(colorBuffer.get(), m_framebufferWidth, m_framebufferHeight);
+    }
+'@
+    # Old VkComp variant (sendPostWorkerCmd path) — intermediate state before MSVCP140 fix
+    $frameBufferHeadlessVkNeedleVkCompOld = @'
+    colorBuffer->touch();
+    const bool chimeraHeadlessVkPost =
+        !m_subWin && m_displayVk &&
+        vk::ChimeraGfxstreamVulkanSharedTextureBridge::get().isEnabled();
+    if (m_subWin || chimeraHeadlessVkPost) {
+        Post postCmd;
+        postCmd.cmd = PostCmd::Post;
+        postCmd.cb = colorBuffer.get();
+        postCmd.cbHandle = p_colorbuffer;
+        postCmd.colorTransform = GetColorTransform();
+        postCmd.completionCallback = std::make_unique<Post::CompletionCallback>(callback);
+        sendPostWorkerCmd(std::move(postCmd));
+        ret = AsyncResult::OK_AND_CALLBACK_SCHEDULED;
+    } else {
+        // Headless: no sub-window; choose transport based on what's configured
+        ret = AsyncResult::OK_AND_CALLBACK_NOT_SCHEDULED;
+        chimeraPublishFrameToShmem(colorBuffer.get(), m_framebufferWidth, m_framebufferHeight);
+    }
+'@
+    # Legacy GLES FrameBuffer.cpp VkComp variant (no colorTransform, no shmem else)
+    $frameBufferHeadlessVkNeedleLegacyVkComp = @'
     colorBuffer->touch();
     const bool chimeraHeadlessVkPost =
         !m_subWin && m_displayVk &&
@@ -775,14 +858,87 @@ if ($hasVulkanDisplay) {
         ret = AsyncResult::OK_AND_CALLBACK_NOT_SCHEDULED;
     }
 '@
-    Replace-Once $frameBuffer `
-        $frameBufferHeadlessVkNeedle `
+    # Old design with m_displayVk->postHeadlessBridge (superseded: m_displayVk is always null headless)
+    $frameBufferHeadlessVkNeedleDisplayVkOld = @'
+    colorBuffer->touch();
+    if (m_subWin) {
+        Post postCmd;
+        postCmd.cmd = PostCmd::Post;
+        postCmd.cb = colorBuffer.get();
+        postCmd.cbHandle = p_colorbuffer;
+        postCmd.colorTransform = GetColorTransform();
+        postCmd.completionCallback = std::make_unique<Post::CompletionCallback>(callback);
+        sendPostWorkerCmd(std::move(postCmd));
+        ret = AsyncResult::OK_AND_CALLBACK_SCHEDULED;
+    } else if (m_displayVk && vk::ChimeraGfxstreamVulkanSharedTextureBridge::get().isEnabled()) {
+        // Direct GPU D3D11 bridge path: bypass sendPostWorkerCmd/PostWorkerVk to avoid MSVCP140 ABI crash.
+        // Call colorBuffer->borrowForDisplay directly (no FrameBuffer lock re-entry via invalidateColorBufferForVk).
+        auto borrowedImg = colorBuffer->borrowForDisplay(ColorBuffer::UsedApi::kVk);
+        if (borrowedImg) {
+            vk::DisplayVk::PostLayer layer;
+            layer.info = borrowedImg.get();
+            layer.rotationDegrees = 0.0f;
+            layer.displayFrame = {0, 0, (int32_t)m_framebufferWidth, (int32_t)m_framebufferHeight};
+            vk::DisplayVk::Post postCmd;
+            postCmd.frameWidth = m_framebufferWidth;
+            postCmd.frameHeight = m_framebufferHeight;
+            postCmd.layers.push_back(std::move(layer));
+            m_displayVk->postHeadlessBridge(postCmd);
+        }
+        ret = AsyncResult::OK_AND_CALLBACK_NOT_SCHEDULED;
+    } else {
+        // Headless: no sub-window; choose transport based on what's configured
+        ret = AsyncResult::OK_AND_CALLBACK_NOT_SCHEDULED;
+        chimeraPublishFrameToShmem(colorBuffer.get(), m_framebufferWidth, m_framebufferHeight);
+    }
+'@
+    # Current design: direct GPU bridge via bridge.postFrameDirectGpu (no DisplayVk/CompositorVk/MSVCP140)
+    $frameBufferHeadlessVkReplacement = @'
+    colorBuffer->touch();
+    if (m_subWin) {
+        Post postCmd;
+        postCmd.cmd = PostCmd::Post;
+        postCmd.cb = colorBuffer.get();
+        postCmd.cbHandle = p_colorbuffer;
+        postCmd.colorTransform = GetColorTransform();
+        postCmd.completionCallback = std::make_unique<Post::CompletionCallback>(callback);
+        sendPostWorkerCmd(std::move(postCmd));
+        ret = AsyncResult::OK_AND_CALLBACK_SCHEDULED;
+    } else {
+        // Headless: no sub-window. Direct GPU bridge is safe only when the frame is already
+        // Vulkan-backed; GLES-backed boot frames keep the existing shmem readback path.
+        ret = AsyncResult::OK_AND_CALLBACK_NOT_SCHEDULED;
+        auto& bridge = vk::ChimeraGfxstreamVulkanSharedTextureBridge::get();
+        if (bridge.isEnabled() && bridge.isDirectVkReady() && m_useVulkanComposition) {
+            auto borrowedImg = colorBuffer->borrowForDisplay(ColorBuffer::UsedApi::kVk);
+            if (borrowedImg) {
+                const auto* vkInfo = static_cast<const vk::BorrowedImageInfoVk*>(borrowedImg.get());
+                const uint32_t srcW = vkInfo->imageCreateInfo.extent.width;
+                const uint32_t srcH = vkInfo->imageCreateInfo.extent.height;
+                const VkExtent2D extent = {std::max(1920u, srcW), std::max(1080u, srcH)};
+                bridge.postFrameDirectGpu(*vkInfo, extent);
+            } else {
+                chimeraPublishFrameToD3D11Texture(colorBuffer.get(), m_framebufferWidth, m_framebufferHeight);
+            }
+        } else {
+            chimeraPublishFrameToD3D11Texture(colorBuffer.get(), m_framebufferWidth, m_framebufferHeight);
+        }
+    }
+'@
+    Replace-FirstAvailable $frameBuffer `
+        @($frameBufferHeadlessVkNeedleOrig, $frameBufferHeadlessVkNeedleIntermediate,
+          $frameBufferHeadlessVkNeedleVkCompOld, $frameBufferHeadlessVkNeedleLegacyVkComp,
+          $frameBufferHeadlessVkNeedleDisplayVkOld) `
         $frameBufferHeadlessVkReplacement `
         "FrameBuffer headless Vulkan shared texture post"
 
-    Replace-Once $frameBuffer `
+    # Fix refcount guard: remove chimeraHeadlessVkPost variable from condition if it was removed above.
+    Replace-FirstAvailable $frameBuffer `
+        @(
+            '    if (!m_subWin && !chimeraHeadlessVkPost) {  // m_subWin is supposed to be false',
+            '    if (!m_subWin) {  // m_subWin is supposed to be false'
+        ) `
         '    if (!m_subWin) {  // m_subWin is supposed to be false' `
-        '    if (!m_subWin && !chimeraHeadlessVkPost) {  // m_subWin is supposed to be false' `
         "FrameBuffer headless Vulkan refcount ownership"
 }
 
@@ -883,8 +1039,46 @@ if ($hasVulkanDisplay) {
     if ($modernVulkanLayout) {
         foreach ($path in @($vulkanBridgeHeader, $vulkanBridgeCpp)) {
             Replace-AllLiteral $path '#include "BorrowedImageVk.h"' '#include "borrowed_image_vk.h"'
-            Replace-AllLiteral $path "namespace gfxstream {`nnamespace vk {" "namespace gfxstream {`nnamespace host {`nnamespace vk {"
-            Replace-AllLiteral $path "}  // namespace vk`n}  // namespace gfxstream" "}  // namespace vk`n}  // namespace host`n}  // namespace gfxstream"
+            Replace-AllLiteral $path "namespace gfxstream {`nnamespace vk {" "namespace gfxstream::host::vk {"
+            Replace-AllLiteral $path "}  // namespace vk`n}  // namespace gfxstream" "}  // namespace gfxstream::host::vk"
+        }
+    }
+
+    # Patch vk_common_operations.h/.cpp with direct GPU bridge accessors (no DisplayVk needed).
+    if ($modernVulkanLayout) {
+        $vkCommonOpsH   = Join-Path $vulkanDir "vk_common_operations.h"
+        $vkCommonOpsCpp = Join-Path $vulkanDir "vk_common_operations.cpp"
+        if ((Test-Path -LiteralPath $vkCommonOpsH -PathType Leaf) -and
+            (Test-Path -LiteralPath $vkCommonOpsCpp -PathType Leaf)) {
+
+            # Header: add 6 accessors after getDisplay()
+            $vkEmulationAccessorHNeedle = '    DisplayVk* getDisplay();'
+            $vkEmulationAccessorHReplacement = @'
+    DisplayVk* getDisplay();
+
+    // Chimera: headless GPU bridge accessors (no DisplayVk/CompositorVk needed)
+    const VulkanDispatch* getVkInstanceDispatch() const;
+    VkPhysicalDevice getVkPhysicalDevice() const;
+    VkDevice getVkDevice() const;
+    VkQueue getVkQueue() const;
+    std::shared_ptr<gfxstream::base::Lock> getVkQueueLock() const;
+    uint32_t getVkQueueFamilyIndex() const;
+'@
+            Replace-Once $vkCommonOpsH $vkEmulationAccessorHNeedle $vkEmulationAccessorHReplacement "VkEmulation bridge accessor declarations"
+
+            # Impl: add 6 accessor implementations after getDisplay()
+            $vkEmulationAccessorCppNeedle = 'DisplayVk* VkEmulation::getDisplay() { return mDisplayVk.get(); }'
+            $vkEmulationAccessorCppReplacement = @'
+DisplayVk* VkEmulation::getDisplay() { return mDisplayVk.get(); }
+
+const VulkanDispatch* VkEmulation::getVkInstanceDispatch() const { return mIvk; }
+VkPhysicalDevice VkEmulation::getVkPhysicalDevice() const { return mPhysicalDevice; }
+VkDevice VkEmulation::getVkDevice() const { return mDevice; }
+VkQueue VkEmulation::getVkQueue() const { return mQueue; }
+std::shared_ptr<gfxstream::base::Lock> VkEmulation::getVkQueueLock() const { return mQueueLock; }
+uint32_t VkEmulation::getVkQueueFamilyIndex() const { return mQueueFamilyIndex; }
+'@
+            Replace-Once $vkCommonOpsCpp $vkEmulationAccessorCppNeedle $vkEmulationAccessorCppReplacement "VkEmulation bridge accessor implementations"
         }
     }
 
@@ -898,6 +1092,59 @@ if ($hasVulkanDisplay) {
         '#include "host-common/logging.h"' + "`n" + '#include "vulkan/ChimeraGfxstreamVulkanSharedTextureBridge.h"'
     }
     Replace-FirstAvailable $displayVk $displayVkIncludeNeedles $displayVkIncludeReplacement "DisplayVk Chimera bridge include"
+
+    # Modern frame_buffer.cpp: add Vulkan bridge include + direct GPU bridge init after VkDecoderGlobalState.
+    if ($modernVulkanLayout) {
+        $modernFrameBuffer = Join-Path $hostDir "frame_buffer.cpp"
+        if (Test-Path -LiteralPath $modernFrameBuffer -PathType Leaf) {
+            $fbVkBridgeIncludeNeedle = '#include "vulkan/post_worker_vk.h"'
+            $fbVkBridgeIncludeReplacement = '#include "vulkan/post_worker_vk.h"' + "`n" + '#include "vulkan/ChimeraGfxstreamVulkanSharedTextureBridge.h"'
+            Replace-Once $modernFrameBuffer $fbVkBridgeIncludeNeedle $fbVkBridgeIncludeReplacement "frame_buffer Vulkan bridge include"
+
+            # Inject bridge init block before SyncThread::initialize (handles both comment variants)
+            $fbBridgeInitNeedles = @(
+                '    SyncThread::initialize(/* hasGL */ impl->m_emulationGl != nullptr);',
+                '    SyncThread::initialize(impl->m_emulationGl != nullptr);'
+            )
+            $fbBridgeInitReplacementWithComment = @'
+    // Chimera: init direct GPU bridge resources from VkEmulation (no DisplayVk/CompositorVk)
+    if (impl->m_vulkanEnabled && impl->m_emulationVk) {
+        auto& bridge = vk::ChimeraGfxstreamVulkanSharedTextureBridge::get();
+        if (bridge.isEnabled()) {
+            const bool bridgeOk = bridge.initDirectVkResources(
+                impl->m_emulationVk->getVkInstanceDispatch(),
+                impl->m_emulationVk->getVkPhysicalDevice(),
+                impl->m_emulationVk->getVkDevice(),
+                impl->m_emulationVk->getVkQueueFamilyIndex(),
+                impl->m_emulationVk->getVkQueue(),
+                impl->m_emulationVk->getVkQueueLock());
+            std::fprintf(stderr, "[chimera-gfxstream] Direct GPU bridge init: %s\n",
+                         bridgeOk ? "OK" : "FAILED"); std::fflush(stderr);
+        }
+    }
+    SyncThread::initialize(/* hasGL */ impl->m_emulationGl != nullptr);
+'@
+            $fbBridgeInitReplacementNoComment = @'
+    // Chimera: init direct GPU bridge resources from VkEmulation (no DisplayVk/CompositorVk)
+    if (impl->m_vulkanEnabled && impl->m_emulationVk) {
+        auto& bridge = vk::ChimeraGfxstreamVulkanSharedTextureBridge::get();
+        if (bridge.isEnabled()) {
+            const bool bridgeOk = bridge.initDirectVkResources(
+                impl->m_emulationVk->getVkInstanceDispatch(),
+                impl->m_emulationVk->getVkPhysicalDevice(),
+                impl->m_emulationVk->getVkDevice(),
+                impl->m_emulationVk->getVkQueueFamilyIndex(),
+                impl->m_emulationVk->getVkQueue(),
+                impl->m_emulationVk->getVkQueueLock());
+            std::fprintf(stderr, "[chimera-gfxstream] Direct GPU bridge init: %s\n",
+                         bridgeOk ? "OK" : "FAILED"); std::fflush(stderr);
+        }
+    }
+    SyncThread::initialize(impl->m_emulationGl != nullptr);
+'@
+            Replace-FirstAvailable $modernFrameBuffer $fbBridgeInitNeedles $fbBridgeInitReplacementWithComment "frame_buffer direct GPU bridge init"
+        }
+    }
 
     $displayVkNoSurfaceNeedle = @'
     const auto* surface = getBoundSurface();
@@ -949,8 +1196,9 @@ if ($hasVulkanDisplay) {
 '@
     $displayVkText = [System.IO.File]::ReadAllText($displayVk).Replace("`r`n", "`n")
     if ($displayVkText.Contains($displayVkNoSurfaceReplacement.Replace("`r`n", "`n")) -or
-        $displayVkText.Contains($displayVkNoSurfaceModernReplacement.Replace("`r`n", "`n"))) {
-        # Already patched.
+        $displayVkText.Contains($displayVkNoSurfaceModernReplacement.Replace("`r`n", "`n")) -or
+        $displayVkText.Contains("return postImplHeadlessBridge(postCmd);")) {
+        # Already patched (direct headless bridge path or old surface gate replacement).
     } elseif ($displayVkText.Contains($displayVkNoSurfaceNeedle.Replace("`r`n", "`n"))) {
         Replace-Once $displayVk $displayVkNoSurfaceNeedle $displayVkNoSurfaceReplacement "DisplayVk headless Chimera post gate"
     } else {

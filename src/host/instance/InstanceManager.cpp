@@ -287,6 +287,7 @@ void InstanceManager::loadInstances() {
             cfg.deviceProfile = item.value("deviceProfile", "");
             cfg.headless = item.value("headless", true);
             cfg.processPriority = item.value("processPriority", "below_normal");
+            cfg.qmpPort = item.value("qmpPort", 5554);
             cfg.dataDir  = item.value("dataDir", "");
             cfg.gridRow  = item.value("gridRow", 0);
             cfg.gridCol  = item.value("gridCol", 0);
@@ -323,6 +324,7 @@ void InstanceManager::saveInstances() const {
         item["deviceProfile"] = normalized.deviceProfile;
         item["headless"] = normalized.headless;
         item["processPriority"] = normalized.processPriority;
+        item["qmpPort"] = normalized.qmpPort;
         item["dataDir"]  = normalized.dataDir.string();
         item["gridRow"]  = normalized.gridRow;
         item["gridCol"]  = normalized.gridCol;
@@ -370,6 +372,7 @@ void InstanceManager::saveInstances() const {
         item["deviceProfile"] = normalized.deviceProfile;
         item["headless"] = normalized.headless;
         item["processPriority"] = normalized.processPriority;
+        item["qmpPort"] = normalized.qmpPort;
         item["dataDir"] = normalized.dataDir.string();
         arr.push_back(item);
     }
@@ -519,6 +522,15 @@ bool InstanceManager::createInstance(const InstanceConfig &config) {
     vmConfig.quickBoot = normalizedConfig.quickBoot;
     vmConfig.processPriority = normalizedConfig.processPriority;
     vmConfig.qmpPort = normalizedConfig.qmpPort;
+    if (const auto overridePort = envValue("CHIMERA_EMULATOR_CONSOLE_PORT"); !overridePort.empty()) {
+        try {
+            vmConfig.qmpPort = std::stoi(overridePort);
+        } catch (...) {
+            qWarning() << "Ignoring invalid CHIMERA_EMULATOR_CONSOLE_PORT:" << QString::fromStdString(overridePort);
+        }
+    }
+    vmConfig.adbPort = vmConfig.qmpPort + 1;
+    vmConfig.grpcPort = 8554 + ((vmConfig.qmpPort - 5554) / 2) * 2;
     vmConfig.deviceProfile = normalizedConfig.deviceProfile;
     vmConfig.dataDir = normalizedConfig.dataDir.empty()
         ? (d->instancesDir / normalizedConfig.name)
@@ -560,6 +572,15 @@ bool InstanceManager::createInstance(const InstanceConfig &config) {
         const auto caps = InstanceManager::probeEmulatorRuntime(vmConfig.emulatorPath);
         publishRuntimeProbeEnv(caps);
         if (gfxstreamSharedTextureRequested() && caps.supportsChimeraGfxstreamSharedTexture) {
+            // Auto-set D3D11 metadata name so the headless bridge can activate without manual env
+            if (envValue("CHIMERA_D3D11_TEXTURE_METADATA").empty()) {
+                const std::string metaName = "chimera_gfxstream_d3d11_meta_" + vmConfig.name;
+                const std::string evtName  = "chimera_gfxstream_d3d11_evt_" + vmConfig.name;
+                _putenv_s("CHIMERA_D3D11_TEXTURE_METADATA", metaName.c_str());
+                _putenv_s("CHIMERA_D3D11_TEXTURE_EVENT",    evtName.c_str());
+                qDebug() << "Chimera gfxstream D3D11 texture metadata auto-set:"
+                         << QString::fromStdString(metaName);
+            }
             qDebug() << "Chimera gfxstream shared texture runtime ready:"
                      << QString::fromStdString(caps.status);
         } else if (emuglSharedTextureRequested() && caps.supportsChimeraEmuglSharedTexture) {
@@ -804,19 +825,21 @@ void InstanceManager::setStateCallback(StateCallback cb) {
 }
 
 InstanceRuntimeConfig InstanceManager::getRuntimeConfig(const std::string &name) const {
-    // Port assignment: instance at sorted index N → base + 2*N
-    // Standard emulator spacing: even port = console, odd = ADB
-    static constexpr int kBaseConsole = 5554;
-    static constexpr int kBaseGrpc    = 8554;
-
-    const auto names = listInstances();
-    const auto it = std::find(names.begin(), names.end(), name);
-    const int idx = (it == names.end()) ? 0 : static_cast<int>(it - names.begin());
+    const auto saved = std::find_if(d->savedConfigs.begin(), d->savedConfigs.end(),
+                                    [&](const InstanceConfig& cfg) { return cfg.name == name; });
+    int consolePort = (saved == d->savedConfigs.end()) ? 5554 : normalizedInstanceConfig(*saved).qmpPort;
+    if (const auto overridePort = envValue("CHIMERA_EMULATOR_CONSOLE_PORT"); !overridePort.empty()) {
+        try {
+            consolePort = std::stoi(overridePort);
+        } catch (...) {
+            qWarning() << "Ignoring invalid CHIMERA_EMULATOR_CONSOLE_PORT:" << QString::fromStdString(overridePort);
+        }
+    }
 
     InstanceRuntimeConfig rc;
-    rc.consolePort = kBaseConsole + idx * 2;
-    rc.adbPort     = kBaseConsole + idx * 2 + 1;
-    rc.grpcPort    = kBaseGrpc    + idx * 2;
+    rc.consolePort = consolePort;
+    rc.adbPort     = consolePort + 1;
+    rc.grpcPort    = 8554 + ((consolePort - 5554) / 2) * 2;
     rc.adbSerial   = "emulator-" + std::to_string(rc.consolePort);
     return rc;
 }

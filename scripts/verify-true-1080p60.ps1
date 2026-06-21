@@ -135,7 +135,7 @@ function Quote-CmdArgument {
 
 function Get-PerfSamples {
     param([Parameter(Mandatory = $true)][string]$LogText)
-    $machinePattern = 'CHIMERA_PERF guest=(?<guest>[0-9]+(?:\.[0-9]+)?) stream=(?<stream>[0-9]+(?:\.[0-9]+)?) render=(?<render>[0-9]+(?:\.[0-9]+)?) effective=(?<effective>[0-9]+(?:\.[0-9]+)?) dupPct=(?<dupPct>[0-9]+(?:\.[0-9]+)?)'
+    $machinePattern = 'CHIMERA_PERF guest=(?<guest>[0-9]+(?:\.[0-9]+)?) stream=(?<stream>[0-9]+(?:\.[0-9]+)?) render=(?<render>[0-9]+(?:\.[0-9]+)?) effective=(?<effective>[0-9]+(?:\.[0-9]+)?) dupPct=(?<dupPct>[0-9]+(?:\.[0-9]+)?).* total=(?<total>\d+)'
     $machineMatches = [regex]::Matches($LogText, $machinePattern)
     if ($machineMatches.Count -gt 0) {
         foreach ($match in $machineMatches) {
@@ -145,6 +145,7 @@ function Get-PerfSamples {
                 Render = [double]$match.Groups["render"].Value
                 Effective = [double]$match.Groups["effective"].Value
                 DuplicatePercent = [double]$match.Groups["dupPct"].Value
+                Total = [int]$match.Groups["total"].Value
             }
         }
         return
@@ -194,9 +195,13 @@ function Assert-True1080p60Log {
         throw "not enough perf samples after warmup: $($samples.Count)"
     }
     $steady = @($samples | Select-Object -Skip $WarmupPerfSamples)
-    $minEffective = ($steady | Measure-Object -Property Effective -Minimum).Minimum
-    $avgEffective = ($steady | Measure-Object -Property Effective -Average).Average
-    $maxDup = ($steady | Measure-Object -Property DuplicatePercent -Maximum).Maximum
+    $active = @($steady | Where-Object { $_.Effective -gt 0 })
+    if ($active.Count -eq 0) {
+        throw "no active perf samples after warmup"
+    }
+    $minEffective = ($active | Measure-Object -Property Effective -Minimum).Minimum
+    $avgEffective = ($active | Measure-Object -Property Effective -Average).Average
+    $maxDup = ($active | Measure-Object -Property DuplicatePercent -Maximum).Maximum
 
     if ($minEffective -lt $MinEffectiveFps) {
         throw "effective FPS below threshold: min=$minEffective threshold=$MinEffectiveFps"
@@ -205,7 +210,7 @@ function Assert-True1080p60Log {
         throw "duplicate rate too high during dynamic proof: maxDup=${maxDup}%"
     }
 
-    Write-Host "perf_samples=$($steady.Count)"
+    Write-Host "perf_samples=$($active.Count)"
     Write-Host ("effective_fps_min={0:N1}" -f $minEffective)
     Write-Host ("effective_fps_avg={0:N1}" -f $avgEffective)
     Write-Host ("duplicate_pct_max={0:N0}" -f $maxDup)

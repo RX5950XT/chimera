@@ -260,6 +260,19 @@ QSGNode *GuestDisplay::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) 
                         DXGI_SHARED_RESOURCE_READ,
                         IID_PPV_ARGS(&texture));
                     if (SUCCEEDED(hr)) {
+                        D3D11_TEXTURE2D_DESC desc = {};
+                        texture->GetDesc(&desc);
+                        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> probeSrv;
+                        const HRESULT srvHr = device->CreateShaderResourceView(
+                            texture.Get(), nullptr, &probeSrv);
+                        qDebug() << "Opened shared D3D11 texture"
+                                 << m_sharedD3D11TextureName
+                                 << "size" << desc.Width << desc.Height
+                                 << "format" << desc.Format
+                                 << "bind" << QStringLiteral("0x%1").arg(desc.BindFlags, 0, 16)
+                                 << "misc" << QStringLiteral("0x%1").arg(desc.MiscFlags, 0, 16)
+                                 << "srvProbe" << QStringLiteral("0x%1")
+                                                       .arg(static_cast<quint32>(srvHr), 8, 16, QLatin1Char('0'));
                         state->texture = texture;
                         m_nativeD3D11State = std::move(state);
                     } else {
