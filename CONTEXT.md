@@ -6,6 +6,15 @@
 
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 
+## 最新狀態（2026-06-21 Session 83-84）
+
+- **D3D11 shared texture DXGI fix CONFIRMED**：`CreateSharedHandle` 第二參數從 `GENERIC_ALL (0x10000000)` 改為 `DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE`；修正後 `OpenSharedResourceByName` 不再回傳 `hr=0x80070057`，D3D11 shared texture 成功建立。
+- **aosp-github namespace 修正**：bridge 類別從 `namespace gfxstream::vk` 改為 `namespace gfxstream::host::vk`（與 host vulkan layer 一致），`borrowed_image_vk.h` 改為 snake_case include；build 成功（`gfxstream_backend.dll` 8,645,120 bytes）。
+- **端到端驗證 PASS**：bridge enabled、`readToD3D11Texture avg=10.3ms over 30 frames`、`Guest=Stream=Render=7 FPS` during boot animation、Android boot 39s、no `hr=0x80070057`；manifest gate 通過（`buildIdOk=true`）；20/20 unit tests PASS。
+- **DLL 部署**：同一 DLL 覆蓋至 `build/chimera-gfxstream-runtime/lib64/` 與 `build/chimera-gfxstream-runtime-github/lib64/`。
+- **現有 FPS 限制**：D3D11 CPU path（Vulkan staging buffer → UpdateSubresource → D3D11 texture），約 10-19ms/frame，可達 ~52-100fps 理論上限，但 guest render cadence 仍限制在 ~7 FPS boot animation / idle 0 FPS（push-based 正常）。
+- **下一步**：① async PBO 降低 GL readback 同步阻塞；② 真正 GPU-to-GPU 路徑（Vulkan Composition 啟用）；③ 更新 manifest 簽名以 `-AllowMismatchedBuildId` 以外的方式通過 ABI gate。
+
 ## 最新狀態（2026-06-19 Session 82）
 
 - **direct-to-shmem 優化**：`frame_buffer.cpp` `chimeraPublishFrameToShmem()` 移除 8MB 中間 `pixels` 向量，直接 readback 到 `shmem+56`；`headerWritten` flag 讓 header 只寫一次。DLL 重建至 `build/chimera-gfxstream-runtime-github`。

@@ -299,5 +299,12 @@ QEMU/debug logs、R&D throwaway scripts、runtime output dirs。
 - **20/20 unit tests PASS**。
 - **下一步**：① async PBO（降低 headless GL 同步 readback 阻塞）；② D3D11 shared texture（GPU-to-GPU，最終正解）。
 
+## 2026-06-21 — Session 83-84
+
+- **D3D11 DXGI fix CONFIRMED**：`CreateSharedHandle` 從 `GENERIC_ALL (0x10000000)` 改為 `DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE`；修正後 `OpenSharedResourceByName` 不再回傳 `hr=0x80070057`（`E_INVALIDARG`），D3D11 named shared texture 成功建立。
+- **aosp-github namespace 修正**：`ChimeraGfxstreamVulkanSharedTextureBridge` 從 `namespace gfxstream::vk` 改為 `namespace gfxstream::host::vk`（match host vulkan layer）；`BorrowedImageVk.h` → `borrowed_image_vk.h`（snake_case）；DLL build 成功（8,645,120 bytes）。
+- **端到端驗證**：bridge enabled；`readToD3D11Texture avg=10.3ms over 30 frames`；`Guest=Stream=Render=7 FPS` boot animation；Android boot 39s；manifest gate PASS（buildIdOk=true）；no `hr=0x80070057`；20/20 unit tests PASS。
+- **現存限制**：D3D11 CPU path（Vulkan staging → UpdateSubresource）約 10-19ms/frame；guest render cadence 仍約 7 FPS boot animation / idle 0 FPS（push-based 正常）；真 60 FPS 仍需 GPU-to-GPU path（Vulkan Composition）。
+
 ---
-*Updated: 2026-06-19 — Session 82（BELOW_NORMAL 移除 EcoQoS 後 triangle 24.8 FPS / Settings 24.9 FPS；shmem 50.6 FPS consumer CONFIRMED；20/20 tests PASS）*
+*Updated: 2026-06-21 — Session 83-84（D3D11 DXGI fix + aosp-github namespace fix；30 frames delivered avg 10ms；7 FPS boot animation；20/20 tests PASS）*
