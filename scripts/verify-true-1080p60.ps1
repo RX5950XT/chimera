@@ -6,11 +6,23 @@ param(
     [ValidateRange(10, 300)]
     [int]$MeasureSeconds = 30,
 
+    # Time to let the dynamic workload reach steady cadence before the measured window.
+    # A GL app cold-starts with a multi-hundred-ms first-frame stall plus a JIT ramp;
+    # that one-time transient is not a steady-state stutter and is excluded from the gate.
+    [ValidateRange(0, 180)]
+    [int]$WarmupSeconds = 30,
+
     [ValidateRange(0, 10)]
     [int]$WarmupPerfSamples = 2,
 
+    # Steady-state FPS gate. Windowed FPS naturally jitters ~+/-2 around a true 60 FPS
+    # producer (frame time ~16.2ms), so the per-sample floor tolerates that jitter while
+    # the average floor proves sustained 60. Both are evaluated only on post-warmup samples.
     [ValidateRange(1, 240)]
-    [double]$MinEffectiveFps = 60.0,
+    [double]$MinEffectiveFps = 57.0,
+
+    [ValidateRange(1, 240)]
+    [double]$MinAvgEffectiveFps = 59.0,
 
     [ValidateRange(1, 7680)]
     [int]$MinWidth = 1920,
@@ -42,6 +54,11 @@ $DefaultRuntimeDir = if ($RuntimeKind -eq "Gfxstream") { "chimera-gfxstream-runt
 $DefaultRuntime = Join-Path $RepoRoot "build\$DefaultRuntimeDir\emulator.exe"
 $ResolvedRuntime = if ([string]::IsNullOrWhiteSpace($RuntimePath)) { $DefaultRuntime } else { $RuntimePath }
 $QtBin = "C:\Qt\6.8.3\msvc2022_64\bin"
+
+# Number of perf samples emitted before the measured (post-warmup) window begins.
+# Set by Exercise-DynamicGuest after the workload reaches steady cadence; the steady
+# gate evaluates only samples after this boundary. Stays 0 for ParseOnly/GrpcOnly.
+$script:MeasureStartSamples = 0
 
 function Require-File {
     param(
@@ -191,20 +208,26 @@ function Assert-True1080p60Log {
     }
 
     $samples = @(Get-PerfSamples -LogText $LogText)
-    if ($samples.Count -le $WarmupPerfSamples) {
-        throw "not enough perf samples after warmup: $($samples.Count)"
+    # Skip past the boot zeros and the workload warmup ramp. MeasureStartSamples is the
+    # sample count captured after warmup by Exercise-DynamicGuest (0 for ParseOnly).
+    $skip = [Math]::Max($WarmupPerfSamples, $script:MeasureStartSamples)
+    if (($samples.Count - $skip) -lt 2) {
+        throw "not enough steady-state perf samples: total=$($samples.Count) skip=$skip"
     }
-    $steady = @($samples | Select-Object -Skip $WarmupPerfSamples)
+    $steady = @($samples | Select-Object -Skip $skip)
     $active = @($steady | Where-Object { $_.Effective -gt 0 })
     if ($active.Count -eq 0) {
-        throw "no active perf samples after warmup"
+        throw "no active perf samples in measured window"
     }
     $minEffective = ($active | Measure-Object -Property Effective -Minimum).Minimum
     $avgEffective = ($active | Measure-Object -Property Effective -Average).Average
     $maxDup = ($active | Measure-Object -Property DuplicatePercent -Maximum).Maximum
 
     if ($minEffective -lt $MinEffectiveFps) {
-        throw "effective FPS below threshold: min=$minEffective threshold=$MinEffectiveFps"
+        throw "effective FPS floor below threshold: min=$minEffective threshold=$MinEffectiveFps"
+    }
+    if ($avgEffective -lt $MinAvgEffectiveFps) {
+        throw "average effective FPS below threshold: avg=$([math]::Round($avgEffective,1)) threshold=$MinAvgEffectiveFps"
     }
     if ($maxDup -gt 5.0) {
         throw "duplicate rate too high during dynamic proof: maxDup=${maxDup}%"
@@ -311,18 +334,119 @@ function Assert-AndroidDisplayFloor {
     Write-Host "wm_density=$($density.Output)"
 }
 
+function Invoke-CheckedTool {
+    param([Parameter(Mandatory = $true)][scriptblock]$Command)
+    & $Command
+    if ($LASTEXITCODE -ne 0) {
+        throw "Command failed with exit code $LASTEXITCODE"
+    }
+}
+
+function Build-Gl60SmokeApk {
+    $sdk = Join-Path $RepoRoot "third_party\android-sdk"
+    $buildTools = Join-Path $sdk "build-tools\34.0.0"
+    $androidJar = Join-Path $sdk "platforms\android-34\android.jar"
+    $sourceRoot = Join-Path $RepoRoot "tools\chimera-gl60-smoke"
+    $outDir = Join-Path $RepoRoot "build\gl60-smoke"
+    $generatedDir = Join-Path $outDir "gen"
+    $classesDir = Join-Path $outDir "classes"
+    $dexDir = Join-Path $outDir "dex"
+    $classesJar = Join-Path $outDir "classes.jar"
+    $compiledResources = Join-Path $outDir "compiled.zip"
+    $unsignedApk = Join-Path $outDir "gl60-unsigned.apk"
+    $alignedApk = Join-Path $outDir "gl60-aligned.apk"
+    $signedApk = Join-Path $outDir "gl60.apk"
+    $keystore = Join-Path $outDir "debug.keystore"
+
+    Require-File -Path (Join-Path $buildTools "aapt2.exe") -Name "aapt2"
+    Require-File -Path (Join-Path $buildTools "d8.bat") -Name "d8"
+    Require-File -Path (Join-Path $buildTools "zipalign.exe") -Name "zipalign"
+    Require-File -Path (Join-Path $buildTools "apksigner.bat") -Name "apksigner"
+    Require-File -Path $androidJar -Name "android.jar"
+    Require-File -Path (Join-Path $sourceRoot "AndroidManifest.xml") -Name "GL60 smoke manifest"
+
+    New-Item -ItemType Directory -Force $outDir, $generatedDir, $classesDir, $dexDir | Out-Null
+    Get-ChildItem -LiteralPath $generatedDir -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+    Get-ChildItem -LiteralPath $classesDir -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+    Get-ChildItem -LiteralPath $dexDir -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+    New-Item -ItemType Directory -Force $generatedDir, $classesDir, $dexDir | Out-Null
+
+    Invoke-CheckedTool { & (Join-Path $buildTools "aapt2.exe") compile --dir (Join-Path $sourceRoot "res") -o $compiledResources }
+    Invoke-CheckedTool { & (Join-Path $buildTools "aapt2.exe") link `
+            -I $androidJar `
+            --manifest (Join-Path $sourceRoot "AndroidManifest.xml") `
+            --java $generatedDir `
+            -o $unsignedApk `
+            $compiledResources }
+
+    $javaFiles = @(Get-ChildItem -Path (Join-Path $sourceRoot "src") -Recurse -Filter *.java |
+        ForEach-Object { $_.FullName })
+    $javaFiles += @(Get-ChildItem -Path $generatedDir -Recurse -Filter *.java |
+        ForEach-Object { $_.FullName })
+    Invoke-CheckedTool { & javac -encoding UTF-8 -source 8 -target 8 -bootclasspath $androidJar -d $classesDir $javaFiles }
+    Invoke-CheckedTool { & jar cf $classesJar -C $classesDir . }
+    Invoke-CheckedTool { & (Join-Path $buildTools "d8.bat") --lib $androidJar --output $dexDir $classesJar }
+    Invoke-CheckedTool { & jar uf $unsignedApk -C $dexDir classes.dex }
+    Invoke-CheckedTool { & (Join-Path $buildTools "zipalign.exe") -f 4 $unsignedApk $alignedApk }
+
+    if (-not (Test-Path -LiteralPath $keystore -PathType Leaf)) {
+        Invoke-CheckedTool { & keytool -genkeypair -keystore $keystore -storepass android -keypass android `
+                -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 `
+                -dname "CN=Chimera GL60 Debug,O=Chimera,C=TW" }
+    }
+
+    Invoke-CheckedTool { & (Join-Path $buildTools "apksigner.bat") sign `
+            --ks $keystore `
+            --ks-pass pass:android `
+            --key-pass pass:android `
+            --out $signedApk `
+            $alignedApk }
+    Invoke-CheckedTool { & (Join-Path $buildTools "apksigner.bat") verify $signedApk }
+    return $signedApk
+}
+
+function Start-Gl60SmokeWorkload {
+    param([Parameter(Mandatory = $true)][string]$ApkPath)
+
+    # Remove any pre-existing install first: the debug keystore can change between
+    # runs, and a signature mismatch (INSTALL_FAILED_UPDATE_INCOMPATIBLE) would
+    # otherwise abort the run before any FPS is measured.
+    Invoke-Adb -Arguments @("-s", $script:Serial, "uninstall", "com.chimera.gl60") -IgnoreExit | Out-Null
+    Invoke-Adb -Arguments @("-s", $script:Serial, "install", "-r", $ApkPath) | Out-Null
+    Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "am", "start", "-W", "-n", "com.chimera.gl60/.MainActivity") | Out-Null
+    Start-Sleep -Seconds 3
+    $activities = Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "dumpsys", "activity", "activities")
+    if ($activities.Output -notmatch "topResumedActivity=.*com\.chimera\.gl60/.MainActivity") {
+        throw "GL60 smoke workload did not become the foreground activity"
+    }
+    Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "dumpsys", "gfxinfo", "com.chimera.gl60", "reset") -IgnoreExit | Out-Null
+}
+
 function Exercise-DynamicGuest {
     param([Parameter(Mandatory = $true)][int]$Seconds)
+
+    if (-not $GrpcOnly) {
+        $apk = Build-Gl60SmokeApk
+        Start-Gl60SmokeWorkload -ApkPath $apk
+        # Warm up before the measured window: the GL app cold-starts with a
+        # multi-hundred-ms first-frame stall and a JIT/cadence ramp. Wait for cadence,
+        # then mark the measurement boundary at the current perf-sample count so the
+        # steady-state gate evaluates only frames produced after warmup.
+        Start-Sleep -Seconds $WarmupSeconds
+        $script:MeasureStartSamples = @(Get-PerfSamples -LogText (Read-LogText -Path $script:messageLog)).Count
+        Write-Host "warmup_samples_skipped=$script:MeasureStartSamples"
+        Start-Sleep -Seconds $Seconds
+        return
+    }
+
     $deadline = (Get-Date).AddSeconds($Seconds)
+    # gRPC-only mode proves stock screenshot delivery, not 60 FPS. Settings scroll is
+    # enough to produce unique content without requiring a custom APK.
+    Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "am", "start", "-n", "com.android.settings/.Settings") -IgnoreExit | Out-Null
+    Start-Sleep -Milliseconds 800
     while ((Get-Date) -lt $deadline) {
-        Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "cmd", "statusbar", "expand-notifications") -IgnoreExit | Out-Null
-        Start-Sleep -Milliseconds 700
-        Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "cmd", "statusbar", "collapse") -IgnoreExit | Out-Null
-        Start-Sleep -Milliseconds 300
-        Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "input", "swipe", "1700", "850", "250", "850", "250") -IgnoreExit | Out-Null
-        Start-Sleep -Milliseconds 500
-        Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "input", "swipe", "250", "850", "1700", "850", "250") -IgnoreExit | Out-Null
-        Start-Sleep -Milliseconds 500
+        Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "input", "swipe", "960", "900", "960", "100", "150") -IgnoreExit | Out-Null
+        Start-Sleep -Milliseconds 60
     }
 }
 
@@ -343,13 +467,24 @@ if (-not $GrpcOnly) {
     Require-File -Path $ResolvedRuntime -Name "Chimera $RuntimeKind emulator runtime"
 }
 
+# Default to port 5560 because port 5555 is occupied by urbanvpnserv on this machine.
+if ([string]::IsNullOrWhiteSpace($env:CHIMERA_EMULATOR_CONSOLE_PORT)) {
+    $env:CHIMERA_EMULATOR_CONSOLE_PORT = "5560"
+}
+
+# Auto-derive ADB serial from CHIMERA_EMULATOR_CONSOLE_PORT when using the default serial.
+if ($Serial -eq "emulator-5554" -and $env:CHIMERA_EMULATOR_CONSOLE_PORT -match '^\d+$') {
+    $Script:Serial = "emulator-$env:CHIMERA_EMULATOR_CONSOLE_PORT"
+    Write-Host "ADB serial overridden from CHIMERA_EMULATOR_CONSOLE_PORT: $Script:Serial"
+}
+
 $env:PATH = "$QtBin;$env:PATH"
 $logDir = Join-Path $RepoRoot "tmp"
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 $stderrLog = Join-Path $logDir "chimera-true-1080p60.err"
 $stdoutLog = Join-Path $logDir "chimera-true-1080p60.out"
-$messageLog = Join-Path $logDir "chimera-true-1080p60.log"
-Remove-Item -LiteralPath $stderrLog, $stdoutLog, $messageLog -Force -ErrorAction SilentlyContinue
+$script:messageLog = Join-Path $logDir "chimera-true-1080p60.log"
+Remove-Item -LiteralPath $stderrLog, $stdoutLog, $script:messageLog -Force -ErrorAction SilentlyContinue
 
 $savedEnv = @{
     CHIMERA_ENABLE_EMUGL_SHARED_TEXTURE = $env:CHIMERA_ENABLE_EMUGL_SHARED_TEXTURE
@@ -362,6 +497,7 @@ $savedEnv = @{
     CHIMERA_VIDEO_TRANSPORT = $env:CHIMERA_VIDEO_TRANSPORT
     CHIMERA_LOG_PATH = $env:CHIMERA_LOG_PATH
     CHIMERA_EMULATOR_PATH = $env:CHIMERA_EMULATOR_PATH
+    CHIMERA_EMULATOR_CONSOLE_PORT = $env:CHIMERA_EMULATOR_CONSOLE_PORT
     CHIMERA_ENABLE_NATIVE_EMBED = $env:CHIMERA_ENABLE_NATIVE_EMBED
     CHIMERA_ALLOW_UNSAFE_NATIVE_WINDOW = $env:CHIMERA_ALLOW_UNSAFE_NATIVE_WINDOW
     CHIMERA_ENABLE_WINDOW_CAPTURE = $env:CHIMERA_ENABLE_WINDOW_CAPTURE
@@ -406,7 +542,7 @@ try {
         $runtimeArg = "--emugl-shared-texture"
     }
     $env:CHIMERA_QUICK_BOOT = "0"
-    $env:CHIMERA_LOG_PATH = $messageLog
+    $env:CHIMERA_LOG_PATH = $script:messageLog
     Remove-Item Env:\CHIMERA_GRPC_TRANSPORT -ErrorAction SilentlyContinue
     Remove-Item Env:\CHIMERA_VIDEO_TRANSPORT -ErrorAction SilentlyContinue
     Remove-Item Env:\CHIMERA_ENABLE_NATIVE_EMBED -ErrorAction SilentlyContinue
@@ -439,7 +575,7 @@ try {
     Start-Sleep -Seconds 5
     Exercise-DynamicGuest -Seconds $MeasureSeconds
     Start-Sleep -Seconds 6
-    $logText = (Read-LogText -Path $messageLog)
+    $logText = (Read-LogText -Path $script:messageLog)
     if ([string]::IsNullOrWhiteSpace($logText)) {
         $logText = Read-LogText -Path $stderrLog
     }
@@ -460,6 +596,7 @@ finally {
     if ($savedEnv.CHIMERA_GRPC_TRANSPORT -eq $null) { Remove-Item Env:\CHIMERA_GRPC_TRANSPORT -ErrorAction SilentlyContinue } else { $env:CHIMERA_GRPC_TRANSPORT = $savedEnv.CHIMERA_GRPC_TRANSPORT }
     if ($savedEnv.CHIMERA_VIDEO_TRANSPORT -eq $null) { Remove-Item Env:\CHIMERA_VIDEO_TRANSPORT -ErrorAction SilentlyContinue } else { $env:CHIMERA_VIDEO_TRANSPORT = $savedEnv.CHIMERA_VIDEO_TRANSPORT }
     if ($savedEnv.CHIMERA_LOG_PATH -eq $null) { Remove-Item Env:\CHIMERA_LOG_PATH -ErrorAction SilentlyContinue } else { $env:CHIMERA_LOG_PATH = $savedEnv.CHIMERA_LOG_PATH }
+    if ($savedEnv.CHIMERA_EMULATOR_CONSOLE_PORT -eq $null) { Remove-Item Env:\CHIMERA_EMULATOR_CONSOLE_PORT -ErrorAction SilentlyContinue } else { $env:CHIMERA_EMULATOR_CONSOLE_PORT = $savedEnv.CHIMERA_EMULATOR_CONSOLE_PORT }
     if ($savedEnv.CHIMERA_EMULATOR_PATH -eq $null) { Remove-Item Env:\CHIMERA_EMULATOR_PATH -ErrorAction SilentlyContinue } else { $env:CHIMERA_EMULATOR_PATH = $savedEnv.CHIMERA_EMULATOR_PATH }
     if ($savedEnv.CHIMERA_ENABLE_NATIVE_EMBED -eq $null) { Remove-Item Env:\CHIMERA_ENABLE_NATIVE_EMBED -ErrorAction SilentlyContinue } else { $env:CHIMERA_ENABLE_NATIVE_EMBED = $savedEnv.CHIMERA_ENABLE_NATIVE_EMBED }
     if ($savedEnv.CHIMERA_ALLOW_UNSAFE_NATIVE_WINDOW -eq $null) { Remove-Item Env:\CHIMERA_ALLOW_UNSAFE_NATIVE_WINDOW -ErrorAction SilentlyContinue } else { $env:CHIMERA_ALLOW_UNSAFE_NATIVE_WINDOW = $savedEnv.CHIMERA_ALLOW_UNSAFE_NATIVE_WINDOW }

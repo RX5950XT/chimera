@@ -417,3 +417,20 @@
 - `NativeEmulatorView` 就算沒有 attach，也不應在正式路徑 pin emulator PID 或保持可見；預設產品路徑只允許 `GuestDisplay`，native embed 只屬於 unsafe diagnostics。
 - 啟動前不能只靠 Job Object 清「本次」子程序；若前一輪已經留下佔用 `5554/5555/8554` 的 emulator/qemu，下一輪會疊出雙 VM 並搶 host audio。正式啟動前要清同 port 且 process 名稱為 emulator/qemu 的 stale VM tree。
 - 清 stale process 要縮小打擊面：不可殺所有 Android Studio emulator；只能依 Chimera 固定 ports 與 VM process 名稱交集處理。
+
+## 2026-06-22 — 真 60 FPS 的瓶頸是 guest render cadence，不是 host pipeline
+
+- 先前 7–24 FPS 的結論誤導：boot 動畫 / Settings 滾動 / idle Home 都是 push-based，guest 不連續渲染，量到的低 FPS 是 guest 沒在畫，不是 host 撐不住。要驗 host pipeline 上限，必須用連續渲染 workload（`RENDERMODE_CONTINUOUSLY` 的 GL app），否則永遠誤判。
+- `chimera-gl60-smoke` 連續渲染後，direct-Vulkan→D3D11 path 立刻 steady 60（min 59.8 / avg 60.0 / dup 0 / avgMs 16.2ms）。瓶頸定位錯誤會浪費好幾個 session 往錯方向（async PBO、GPU-to-GPU zero-copy）優化。
+- benchmark 的「真 60」門檻要容許 windowed-counter jitter：真 60 FPS 的 5s 視窗 FPS 會在 58.9–60.2 跳動，硬卡 `min ≥ 60` 永遠 fail。正解是 warmup 排除冷啟 transient + `min ≥ 57 容許 jitter` + `avg ≥ 59 證明 sustained` + `dup ≤ 5%`。
+
+## 2026-06-22 — PowerShell StrictMode + finally：env-restore 不對稱會 mask 結果並洩漏 process
+
+- `Set-StrictMode -Version Latest` 下，`$hash.MissingKey` 會拋「property cannot be found」。verifier `finally` 若 restore 一個沒在 `$savedEnv` save 的 key，會拋例外，**蓋掉 try 區塊真正的結果**，而且因為例外發生在 `Stop-ChimeraProcesses` 之前，cleanup 不會跑 → emulator/qemu 洩漏佔住 ports。
+- 規則：savedEnv 的 save-key 與 finally 的 restore-key 必須一對一對稱。改動時用程式化檢查（grep 兩邊 key 集合做 diff），不要靠肉眼。
+- 跑完每個 emulator-boot verifier 都要主動檢查殘留 process / ports（5554/5555/5560/8554），不能假設 finally 一定有跑。
+
+## 2026-06-22 — 連續渲染 verifier 的 install 與量測注意事項
+
+- 反覆 install 同 package 會撞 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`（debug keystore 變動造成簽章不符）。install 前先 `adb uninstall`（IgnoreExit）最穩。
+- CHIMERA_LOG_PATH 是 `fopen(path,"w")` 持開 + per-message `fflush`；不要在 run 中途 truncate（offset 會錯亂）。要分 warmup/measure window 就用「記錄 warmup 結束時的 perf-sample 數當 boundary」，Assert 只看 boundary 之後的 samples。

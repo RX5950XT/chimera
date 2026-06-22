@@ -1999,3 +1999,32 @@ HANDLE acquireKillOnCloseJob() {
 
 - blockers 實測確認：gfxstream shared texture → Vulkan struct ABI mismatch（非假設）；EmuGL → HAXM/WHPX absent。
 - production gRPC path（`-GrpcOnly`）是目前可驗最佳 display path；true shared texture 1080p/60 待 SDK 15261927 matching gfxstream source。
+
+---
+
+## Session 85 — TRUE 1080p/60 verifier PASS（2026-06-22）
+
+### 結果
+
+- **首次達成真 1080p/60**：`scripts\verify-true-1080p60.ps1`（預設 Gfxstream）+ `tools\chimera-gl60-smoke`（GLES `RENDERMODE_CONTINUOUSLY` 連續渲染 app）量到 steady-state `effective_fps_min=59.8 / avg=60.0 / dup=0`，1920x1080，`result=pass` exit 0。perf samples 全程 58.1–60.2 FPS、`avgMs 16.0–16.2ms`、`maxMs 19–26ms`、`dropped=0`。run3/run4 兩次重現。
+
+### 修正
+
+- **direct GPU path 接入**：`apply-chimera-gfxstream-patch.ps1` 把 `FrameBuffer::Impl::postImplSync()` headless 分支從 `bridge.isEnabled() && bridge.isDirectVkReady() && m_useVulkanComposition` 放寬為 `bridge.isEnabled() && bridge.isDirectVkReady()`，讓 GLES-backed 連續渲染也能走 `postFrameDirectGpu`（guest VK image → `recordCopy` GPU blit → HOST_COHERENT staging → D3D11 `UpdateSubresource`）。kVk borrow 失敗才退回 `chimeraPublishFrameToD3D11Texture`。另補 aosp-github 的 `gfxstream::base::Lock` namespace 修正。
+- **resource bump**：`normalizedInstanceConfig()` 與 `configs/instances.json` 提到 4 vCPU / 4096MB、`qmpPort 5554`。
+- **verifier 3 bug + 方法論**：
+  1. `finally` env-restore 缺 `CHIMERA_EMULATOR_PATH` save-key → StrictMode 拋例外、mask 真正結果、且跳過 `Stop-ChimeraProcesses`（洩漏 emulator/qemu，需手動清）。已補進 `$savedEnv`。
+  2. 缺 `CHIMERA_EMULATOR_CONSOLE_PORT` 的 restore line（已 save 未 restore）。
+  3. `Start-Gl60SmokeWorkload` install 前先 `adb uninstall com.chimera.gl60`，避免 keystore 變動造成 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`。
+  4. 新增 `-WarmupSeconds`（依 perf-sample 數標 measurement boundary，排除 app 冷啟的 1.1s first-frame stall + JIT ramp）+ steady gate（`min ≥ MinEffectiveFps 57` 容許 windowed jitter、`avg ≥ MinAvgEffectiveFps 59`、`dup ≤ 5%`）。
+
+### 證據
+
+- direct path：log `Direct GPU bridge init: OK`、157× `postFrameDirectGpu` / `borrowForDisplay`、**0× CPU readback fallback**。
+- manifest gate：`gfxstreamSourceSnapBuildId == baseEmulatorBuildId == 15261927`（buildIdOk）。
+- cleanup：每次 run 結束 `chimera-ui` / `emulator` / `qemu-system*` 皆無殘留，ports 5554/5555/5560/8554 free。
+
+### 誠實邊界
+
+- 這是 synthetic 連續渲染 app 的證明：證實 host pipeline + direct-Vulkan→D3D11 path 能撐 1080p/60。push-based 的 boot 動畫 / idle Home 仍低 FPS 屬正常（guest 不連續渲染）。真實遊戲 flow 尚未逐一重測。
+- `postFrameDirectGpu` 仍含一次 `UpdateSubresource` CPU staging copy（非 zero-copy），但在 16.67ms budget 內足以撐 60。後續若要更省，可往 VK external memory 直接共享到 D3D11（免 staging）方向。

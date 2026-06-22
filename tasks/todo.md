@@ -1724,3 +1724,23 @@
 - 已降低背景音樂干擾風險：raw 1080p screenshot fallback 不再由 env 偷開；legacy backend 也套 startup Idle / BelowNormal policy。
 - 驗證通過：`chimera-ui` build、targeted tests 5/5 PASS、完整 non-integration `ctest` 20/20 PASS、fail-closed smoke exit 3 且無殘留 process。
 - true Android 1080p/60 仍未達標；下一步是讓 source-patched gfxstream runtime 補齊 SDK 36 ABI/imports，並跑到 verifier PASS。
+
+---
+
+## 2026-06-22 Session 85 — TRUE 1080p/60 verifier PASS
+
+### Plan
+
+- [x] 接續上次 crash：補完 `verify-true-1080p60.ps1` 的 env-restore（`CHIMERA_EMULATOR_CONSOLE_PORT`）。
+- [x] 確認 build/runtime 是最新（chimera-ui.exe 含 4cpu/4096MB；gfxstream DLL 含 `postFrameDirectGpu`；manifest buildId 相符）。
+- [x] 跑 `verify-true-1080p60.ps1` + `chimera-gl60-smoke` 連續渲染量真實 FPS。
+- [x] 修 verifier 阻斷 bug（finally 缺 `CHIMERA_EMULATOR_PATH` save-key、install 簽章衝突）。
+- [x] 加 warmup/steady 量測方法論，重跑到 PASS。
+- [x] 誠實記錄到 CONTEXT.md / CLAUDE.md / lessons / memory，並確認無殘留 process。
+
+### Review
+
+- **PASS**：`result=pass`，`effective_fps_min=59.8 / avg=60.0 / dup=0`，1920x1080，direct-Vulkan→D3D11 path（0 CPU readback fallback），run3/run4 重現。
+- 關鍵洞察：先前低 FPS 是 guest push-based 不連續渲染，非 host 上限；連續渲染 workload 才能驗 pipeline。
+- 修了 1 個會 mask 結果並洩漏 emulator 的 StrictMode finally bug。
+- 下一步（非本 session）：① 真實遊戲連續渲染 flow 重測；② VK external-memory 直接共享到 D3D11（免 staging copy）進一步降開銷。

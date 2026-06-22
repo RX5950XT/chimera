@@ -892,7 +892,9 @@ bool FrameBuffer::Impl::postImplSync(HandleType p_colorbuffer, bool needLockAndB
         chimeraPublishFrameToShmem(colorBuffer.get(), m_framebufferWidth, m_framebufferHeight);
     }
 '@
-    # Current design: direct GPU bridge via bridge.postFrameDirectGpu (no DisplayVk/CompositorVk/MSVCP140)
+    # Current design: direct GPU bridge via bridge.postFrameDirectGpu (no DisplayVk/CompositorVk/MSVCP140).
+    # Try Vulkan kVk path first (enabled when VulkanNativeSwapchain/GuestVulkanOnly makes ColorBuffers Vulkan-backed);
+    # fall back to synchronous GL readback if kVk borrow fails (GLES-backed normal mode).
     $frameBufferHeadlessVkReplacement = @'
     colorBuffer->touch();
     if (m_subWin) {
@@ -905,11 +907,11 @@ bool FrameBuffer::Impl::postImplSync(HandleType p_colorbuffer, bool needLockAndB
         sendPostWorkerCmd(std::move(postCmd));
         ret = AsyncResult::OK_AND_CALLBACK_SCHEDULED;
     } else {
-        // Headless: no sub-window. Direct GPU bridge is safe only when the frame is already
-        // Vulkan-backed; GLES-backed boot frames keep the existing shmem readback path.
+        // Headless: no sub-window. Try Vulkan GPU path (requires VulkanNativeSwapchain feature
+        // so ColorBuffers are Vulkan-backed); fall back to synchronous GL readback otherwise.
         ret = AsyncResult::OK_AND_CALLBACK_NOT_SCHEDULED;
         auto& bridge = vk::ChimeraGfxstreamVulkanSharedTextureBridge::get();
-        if (bridge.isEnabled() && bridge.isDirectVkReady() && m_useVulkanComposition) {
+        if (bridge.isEnabled() && bridge.isDirectVkReady()) {
             auto borrowedImg = colorBuffer->borrowForDisplay(ColorBuffer::UsedApi::kVk);
             if (borrowedImg) {
                 const auto* vkInfo = static_cast<const vk::BorrowedImageInfoVk*>(borrowedImg.get());
@@ -918,6 +920,7 @@ bool FrameBuffer::Impl::postImplSync(HandleType p_colorbuffer, bool needLockAndB
                 const VkExtent2D extent = {std::max(1920u, srcW), std::max(1080u, srcH)};
                 bridge.postFrameDirectGpu(*vkInfo, extent);
             } else {
+                // kVk borrow failed (GLES-backed): fall back to synchronous GL readback.
                 chimeraPublishFrameToD3D11Texture(colorBuffer.get(), m_framebufferWidth, m_framebufferHeight);
             }
         } else {
@@ -1041,6 +1044,10 @@ if ($hasVulkanDisplay) {
             Replace-AllLiteral $path '#include "BorrowedImageVk.h"' '#include "borrowed_image_vk.h"'
             Replace-AllLiteral $path "namespace gfxstream {`nnamespace vk {" "namespace gfxstream::host::vk {"
             Replace-AllLiteral $path "}  // namespace vk`n}  // namespace gfxstream" "}  // namespace gfxstream::host::vk"
+            # aosp-github uses gfxstream::base::Lock (not android::base::Lock)
+            Replace-AllLiteral $path '#include "aemu/base/synchronization/Lock.h"' '#include "gfxstream/synchronization/Lock.h"'
+            Replace-AllLiteral $path 'android::base::Lock' 'gfxstream::base::Lock'
+            Replace-AllLiteral $path 'android::base::AutoLock' 'gfxstream::base::AutoLock'
         }
     }
 

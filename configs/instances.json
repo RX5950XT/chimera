@@ -1,7 +1,7 @@
 {
   "instances": [
     {
-      "cpus": 2,
+      "cpus": 4,
       "dataDir": "D:\\Workspace_cloud\\Personal_Project\\chimera\\instances\\chimera_dev",
       "deviceProfile": "Samsung Galaxy S24 Ultra",
       "dpi": 320,
@@ -17,8 +17,9 @@
       "maxFps": 60,
       "name": "chimera_dev",
       "processPriority": "below_normal",
+      "qmpPort": 5554,
       "quickBoot": false,
-      "ramMB": 2048,
+      "ramMB": 4096,
       "width": 1920
     }
   ]

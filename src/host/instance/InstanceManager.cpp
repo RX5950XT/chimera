@@ -47,6 +47,8 @@ static bool unsafeVisibleWindowDiagnosticsAllowed() {
 }
 
 static InstanceConfig normalizedInstanceConfig(InstanceConfig config) {
+    config.cpus = (std::max)(config.cpus, 4);
+    config.ramMB = (std::max)(config.ramMB, 4096);
     config.width = (std::max)(config.width, 1920);
     config.height = (std::max)(config.height, 1080);
     if (config.allowVisibleEmulatorWindow && !unsafeVisibleWindowDiagnosticsAllowed()) {

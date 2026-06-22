@@ -364,6 +364,24 @@ private slots:
         mgr.deleteInstance("LowResUnitTest");
     }
 
+    void createInstanceKeepsCpuRamFloor() {
+        // Continuous-render guests need enough headroom to sustain 1080p/60 through the
+        // shared-texture path; normalize low configs up to the 4 vCPU / 4096 MB floor.
+        auto &mgr = InstanceManager::instance();
+        InstanceConfig cfg;
+        cfg.name = "LowResourceUnitTest";
+        cfg.cpus = 1;
+        cfg.ramMB = 1024;
+        cfg.dataDir = std::filesystem::temp_directory_path() / "chimera_lowresource_test_instance";
+
+        QVERIFY(mgr.createInstance(cfg));
+        const auto saved = mgr.getInstanceConfig("LowResourceUnitTest");
+        QCOMPARE(saved.cpus, 4);
+        QCOMPARE(saved.ramMB, 4096);
+
+        mgr.deleteInstance("LowResourceUnitTest");
+    }
+
     void createInstanceForcesHeadlessUnlessUnsafeVisibleWindowAllowed() {
         auto &mgr = InstanceManager::instance();
         qunsetenv("CHIMERA_ALLOW_UNSAFE_VISIBLE_EMULATOR_WINDOW");
