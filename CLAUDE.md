@@ -313,7 +313,8 @@ QEMU/debug logs、R&D throwaway scripts、runtime output dirs。
 - **direct GPU path 確認**：`postImpl` headless 分支移除 `&& m_useVulkanComposition` 條件，改為 `bridge.isDirectVkReady()` 即走 `postFrameDirectGpu`（guest VK image → `recordCopy` GPU blit → HOST_COHERENT staging → D3D11 `UpdateSubresource`）。log：`Direct GPU bridge init: OK`、157× `postFrameDirectGpu`/`borrowForDisplay`、**0× CPU readback fallback**。kVk borrow 失敗（GLES-backed 無法借成 VK image）才退 `chimeraPublishFrameToD3D11Texture`。
 - **resource bump**：`normalizedInstanceConfig` 與 `instances.json` 提到 4 vCPU / 4096MB（含 `qmpPort 5554`），給 guest 連續渲染足夠 headroom。
 - **verifier 修正（3 個 bug + 方法論）**：① `finally` env-restore 缺 `CHIMERA_EMULATOR_PATH` save-key（StrictMode 下 mask 真正結果且跳過 cleanup → 洩漏 emulator/qemu）；② 缺 `CHIMERA_EMULATOR_CONSOLE_PORT` restore；③ install 前先 `adb uninstall` 避免 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`；④ 新增 `-WarmupSeconds`（依 perf-sample 數標 measurement boundary，排除 app 冷啟 1.1s first-frame stall）+ steady gate（min ≥ 57 容許 windowed jitter / avg ≥ 59 / dup ≤ 5%）。
+- **real-geometry 強化**：`chimera-gl60-smoke` 從只 `glClear` 升級為 shader-based 旋轉三角形（VBO + vertex/fragment shader + 旋轉 uniform + 動畫背景），確保 60 FPS 證明是真實 draw call、真實 GLES ColorBuffer → gfxstream → D3D11 post，而非空畫面 fast-path。重測仍 PASS：`min 59.6 / avg 60.0 / dup 0`，無 shader compile/link error，157× `postFrameDirectGpu` / 0× CPU readback。
 - **誠實邊界**：這是 synthetic 連續渲染 app 的證明，證實 host pipeline + direct-Vulkan→D3D11 path 能撐 1080p/60；真實遊戲（連續渲染）應同樣受益，但尚未逐一重測。`UpdateSubresource` 仍有一次 CPU staging copy（非 zero-copy），但在 16.67ms budget 內，足以撐 60。
 
 ---
-*Updated: 2026-06-22 — Session 85（TRUE 1080p/60 verifier PASS：gl60 連續渲染 min 59.8 / avg 60.0 / dup 0；direct-Vulkan→D3D11 postFrameDirectGpu，0 CPU readback；verifier warmup/steady gate + 3 bug 修正）*
+*Updated: 2026-06-22 — Session 85（TRUE 1080p/60 verifier PASS：gl60 real-geometry 連續渲染 min 59.6 / avg 60.0 / dup 0；direct-Vulkan→D3D11 postFrameDirectGpu，0 CPU readback；verifier warmup/steady gate + 3 bug 修正）*

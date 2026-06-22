@@ -2028,3 +2028,10 @@ HANDLE acquireKillOnCloseJob() {
 
 - 這是 synthetic 連續渲染 app 的證明：證實 host pipeline + direct-Vulkan→D3D11 path 能撐 1080p/60。push-based 的 boot 動畫 / idle Home 仍低 FPS 屬正常（guest 不連續渲染）。真實遊戲 flow 尚未逐一重測。
 - `postFrameDirectGpu` 仍含一次 `UpdateSubresource` CPU staging copy（非 zero-copy），但在 16.67ms budget 內足以撐 60。後續若要更省，可往 VK external memory 直接共享到 D3D11（免 staging）方向。
+
+### 收尾（real-geometry 強化）
+
+- `chimera-gl60-smoke` 從只 `glClear` 升級為 shader-based 旋轉三角形（interleaved VBO、vertex/fragment shader、旋轉 uniform、動畫背景、shader compile/link 錯誤檢查），確保 60 FPS 是真實 draw call 而非空畫面。重測 PASS：`warmup_samples_skipped=15, perf_samples=9, min=59.6, avg=60.0, dup=0`，steady 60.0–60.3 FPS、avgMs 16.1–16.3ms、無 shader error、157× `postFrameDirectGpu` / 0× CPU readback。
+- 驗 verifier 其他模式無回歸：ParseOnly 對 synthetic steady-60 log → `result=pass`，對 30 FPS log → 正確 throw `min=29.5 threshold=57`。GrpcOnly assertion 未動。
+- `instances.json` 的 `qmpPort:5554` 經查無衝突：它是 production console/serial 基準埠（`serial=emulator-{qmpPort}`、`adbPort=+1`、`grpcPort` 由它推導），runtime 由 `CHIMERA_EMULATOR_CONSOLE_PORT` override 成 5560 避開 5555 的 urbanvpnserv。
+- 移除 root 層 throwaway `gfxstream_smoke_run.txt`；20/20 unit tests PASS（含新增 `createInstanceKeepsCpuRamFloor`）。
