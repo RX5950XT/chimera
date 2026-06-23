@@ -1055,11 +1055,25 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Populate runtime config (consolePort=5554, adbPort=5555, serial=emulator-5554)
-        g_runtimeCfg.consolePort = 5554;
-        g_runtimeCfg.adbPort     = 5555;
-        g_runtimeCfg.grpcPort    = 8554;
-        g_runtimeCfg.adbSerial   = "emulator-5554";
+        // Populate runtime config. Honor CHIMERA_EMULATOR_CONSOLE_PORT so the
+        // host's adb/console/gRPC wiring targets the same device the emulator
+        // actually launches on (InstanceManager applies the same override and
+        // derivation). Without this, a non-default port leaves the host wired to
+        // emulator-5554 while the device is e.g. emulator-5560 — every post-boot
+        // adb command (wake, dismiss keyguard, set HOME) fails and the screen
+        // stays black.
+        int consolePort = 5554;
+        if (const char *overridePort = std::getenv("CHIMERA_EMULATOR_CONSOLE_PORT")) {
+            try {
+                consolePort = std::stoi(overridePort);
+            } catch (...) {
+                qWarning() << "Ignoring invalid CHIMERA_EMULATOR_CONSOLE_PORT:" << overridePort;
+            }
+        }
+        g_runtimeCfg.consolePort = consolePort;
+        g_runtimeCfg.adbPort     = consolePort + 1;
+        g_runtimeCfg.grpcPort    = 8554 + ((consolePort - 5554) / 2) * 2;
+        g_runtimeCfg.adbSerial   = "emulator-" + std::to_string(consolePort);
 
         // Configure input bridge for ADB forwarding (fallback)
         chimera::input::InputBridge::instance().setAdbConfig(g_adbPath, g_runtimeCfg.adbPort,

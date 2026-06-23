@@ -31,6 +31,12 @@ std::pair<int, int> guestDisplaySizeForConfig(const VirtualMachineConfig &config
 }
 
 std::string emulatorGpuMode(const std::string &renderer) {
+    // Experimental override: lets us select the emulator -gpu mode (e.g.
+    // angle_indirect for hardware host GLES via ANGLE) without editing config.
+    if (const char *modeOverride = std::getenv("CHIMERA_GPU_MODE");
+        modeOverride && *modeOverride) {
+        return modeOverride;
+    }
     if (renderer == "swiftshader" || renderer == "swiftshader_indirect") {
         return "swiftshader_indirect";
     }
