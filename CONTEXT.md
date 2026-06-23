@@ -2035,3 +2035,38 @@ HANDLE acquireKillOnCloseJob() {
 - 驗 verifier 其他模式無回歸：ParseOnly 對 synthetic steady-60 log → `result=pass`，對 30 FPS log → 正確 throw `min=29.5 threshold=57`。GrpcOnly assertion 未動。
 - `instances.json` 的 `qmpPort:5554` 經查無衝突：它是 production console/serial 基準埠（`serial=emulator-{qmpPort}`、`adbPort=+1`、`grpcPort` 由它推導），runtime 由 `CHIMERA_EMULATOR_CONSOLE_PORT` override 成 5560 避開 5555 的 urbanvpnserv。
 - 移除 root 層 throwaway `gfxstream_smoke_run.txt`；20/20 unit tests PASS（含新增 `createInstanceKeepsCpuRamFloor`）。
+
+## Session 86 — 「能像 BlueStacks 正常用嗎」實測 + 一鍵啟動器（2026-06-23）
+
+### 觸發
+使用者問「現在能像 BlueStacks 正常使用嗎」。不引用舊筆記，直接以實機 boot + ADB 截圖求證，結果發現兩個真 bug 與一個重大限制。
+
+### 關鍵發現（實機證據）
+- **stock SDK + gRPC 路徑 = 可用日常 driver**：boot 到乾淨的 **Chimera Launcher** 首頁（CHIMERA 標題 + Google Play / 檔案管理 / 瀏覽器 / 設定 / GL60、狀態列完整），ADB 截圖 1920x1080 正常渲染。輸入/安裝/多開等功能在此路徑可用，但 FPS 偏低（push-based ~4–17）。
+- **custom gfxstream「60fps」runtime = 一般 UI 黑屏**：同樣 boot 流程、同樣 launcher install，但 ADB 截圖全黑（10KB vs stock 76KB）。log 大量重複 **host GL 合成器 shader 編譯/連結失敗**：`'core' : invalid version directive`、`'layout' : syntax error`、`storage qualifier supported in GLSL ES 3.00 only`、`'texture' : no matching overloaded function`、`fail to link program`（`tmp/gfxstream-src/host/gl/TextureDraw.cpp` 等的 desktop-GL shader 餵進 GLES context）。
+- **為何 gl60 能 60fps 但 Home 黑**：gl60 連續渲染走 `postFrameDirectGpu`（direct-VK blit）**繞過**壞掉的 host GL 合成器；SurfaceFlinger 合成的一般 UI 是 GLES-backed，VK borrow 失敗 → 退回 GL 路徑 → shader 編不過 → 黑。所以 Session 85 的 60fps 是真的，但**只對連續渲染內容，且不等於可用的日常 UI**。
+
+### 修正（已驗證）
+1. **`main.cpp` honor `CHIMERA_EMULATOR_CONSOLE_PORT`**：原本寫死 `consolePort=5554 / adbPort=5555 / grpcPort=8554 / serial=emulator-5554`。override 成 5560 時,host 所有開機後 adb setup（wake / dismiss keyguard / set HOME）打到不存在的 emulator-5554 → 螢幕沒喚醒 → **黑屏**。改為讀 env 並以 InstanceManager 同一公式推導（`adbPort=+1`、`grpcPort=8554+((cp-5554)/2)*2`、`serial=emulator-{cp}`）。實測：`-ConsolePort 5560` 從黑屏(10KB) → Chimera home(76KB)。
+2. **一鍵啟動器 `scripts/start-chimera.ps1` + 根目錄 `start-chimera.cmd`**：雙擊即用。**預設走 stock(可用 home)**;`-Fast` 才 opt-in custom 60fps runtime(並警告一般 UI 可能黑)。修了我自己第一版的 bug：`CHIMERA_EMULATOR_PATH` 必須指向 **emulator.exe 檔**（host 用 `parent_path()` 推 runtimeDir 並直接 exec），指向目錄會同時害死 runtime 偵測與程序啟動。`-SelfTest` 會 boot→驗 1920x1080→截圖→清理。
+
+### 結論（誠實回答使用者）
+- 「能正常用嗎」→ **可以,走 stock 路徑(現在 `start-chimera.cmd` 雙擊即是)**:真實 Chimera home、可裝可開 app、完整輸入。但**不是 BlueStacks 等級的順**(FPS 低)。
+- custom 60fps runtime **還不能當日常 driver**(一般 UI 黑屏)。要同時拿到「60fps + 可用 UI」需修 host GL 合成器 shader,或讓 direct-VK 路徑涵蓋 GLES-backed 合成輸出(VK/GL interop),皆為深層 gfxstream R&D,不在本回合冒險動已驗證狀態。
+
+### 驗證
+- launcher SelfTest：default(stock,5554) `result=pass` 76KB Chimera home；`-ConsolePort 5560`(override 修正後) `result=pass` 76KB(非黑)；`-Fast` 路徑 boot pass 但截圖黑(已知限制)。每次結束 `residual_processes=0`。
+- `verify-true-1080p60.ps1` 預設仍 PASS：`min 59.8 / avg 60.0 / dup 0`（custom runtime 引擎本身正常,問題在合成器路徑）。
+- chimera-ui 重建成功（main.cpp 改動）。
+
+### 深層根因定位（custom runtime 黑屏）
+- host GLES adapter 實測是 **SwiftShader（軟體 OpenGL ES 3.0）**（log:`Graphics Adapter ... (Google SwiftShader)`、`OpenGL ES 3.0 SwiftShader`）;Vulkan 才是 NVIDIA。`-gpu host` 在此 Windows 無原生 desktop GL,host GLES 一律退 SwiftShader。
+- gfxstream GLES 翻譯層在 `isCoreProfile()==true` 時對 shader 發 `#version 330 core`（desktop),否則 `#version 300 es`（`GLEScontext.cpp` 多處 + `ANGLEShaderParser`）。SwiftShader-**ES** 收到 `core` → `'core' : invalid version directive` + 回退 ES 1.00 解析 → guest 的 GLES 3.x 合成 shader（SurfaceFlinger/HWUI）全掛 → 黑。`isCoreProfile` 由 `EglContext.cpp` 依第一個 context 的 profile mask 設定,且「第一個是 core 後續全 core」會污染全域。
+- **stock SDK 用同一顆 SwiftShader 卻正常** → core-profile 是 custom build（patch/設定）引入,非 SwiftShader 本身問題。
+- **即使修好 shader,一般 UI 仍跑軟體 SwiftShader GLES（慢）**;只有連續渲染走硬體 direct-VK。故 custom runtime 對「日常 UI」報酬有限。
+- 排除過的無需重建解:`CHIMERA_GPU_MODE=angle_indirect`（新增的 env 旋鈕,`VirtualMachine::emulatorGpuMode`)→ 此 build `'angle_indirect' is not valid, switching to auto`(lavapipe/swiftshader)→ boot 失敗,還原。
+
+### 結論與建議
+- **日常用 = stock 路徑**(`start-chimera.cmd` 預設):已驗證 boot 到 Chimera home、截圖 76KB 真實畫面、`am start com.android.settings` → `interactivity=ok`(app 可啟動到前景)。FPS 低但功能完整可用。
+- **custom 60fps runtime = R&D**:一般 UI 黑(SwiftShader core-profile shader bug)。要「60fps + 可用 UI」需 ① 修 gfxstream EGL/translator 強制 ES profile + 重建 DLL(fragile,build-id 須維持),且 ② 一般 UI 仍受限軟體 GLES——屬獨立 R&D,本回合不冒險動已驗證的 60fps 路徑。
+- SelfTest 強化:截圖前送 `KEYCODE_WAKEUP` + `wm dismiss-keyguard`(否則螢幕休眠時 screencap 黑);`resumed` 改讀 `mCurrentFocus`;新增啟動 Settings 的互動驗證。

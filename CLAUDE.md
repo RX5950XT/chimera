@@ -316,5 +316,14 @@ QEMU/debug logs、R&D throwaway scripts、runtime output dirs。
 - **real-geometry 強化**：`chimera-gl60-smoke` 從只 `glClear` 升級為 shader-based 旋轉三角形（VBO + vertex/fragment shader + 旋轉 uniform + 動畫背景），確保 60 FPS 證明是真實 draw call、真實 GLES ColorBuffer → gfxstream → D3D11 post，而非空畫面 fast-path。重測仍 PASS：`min 59.6 / avg 60.0 / dup 0`，無 shader compile/link error，157× `postFrameDirectGpu` / 0× CPU readback。
 - **誠實邊界**：這是 synthetic 連續渲染 app 的證明，證實 host pipeline + direct-Vulkan→D3D11 path 能撐 1080p/60；真實遊戲（連續渲染）應同樣受益，但尚未逐一重測。`UpdateSubresource` 仍有一次 CPU staging copy（非 zero-copy），但在 16.67ms budget 內，足以撐 60。
 
+## 2026-06-23 — Session 86 — 日常可用性實測 + 一鍵啟動器
+
+- **誠實修正 Session 85 框架**：60fps 是真的,但**只對連續渲染內容,且不等於可用的日常 UI**。實機 ADB 截圖證明:
+  - **stock SDK + gRPC = 可用日常 driver**:boot 到乾淨的 Chimera Launcher 首頁(Google Play / 檔案管理 / 瀏覽器 / 設定 / GL60),1920x1080 正常渲染(76KB)。FPS 低(~4–17)。
+  - **custom gfxstream 60fps runtime = 一般 UI 黑屏**:同流程 ADB 截圖全黑(10KB)。log 大量 host GL 合成器 shader 編譯失敗(`'core' : invalid version directive` 等,desktop-GL shader 餵進 GLES context)。gl60 能 60fps 是因為走 `postFrameDirectGpu` 繞過合成器;SurfaceFlinger 合成的一般 UI(GLES-backed)VK borrow 失敗 → 退 GL 路徑 → shader 編不過 → 黑。
+- **`main.cpp` 修正(根因)**：runtime config 不再寫死 `5554/5555/8554/emulator-5554`,改讀 `CHIMERA_EMULATOR_CONSOLE_PORT` 並以 InstanceManager 同公式推導。原本 override 成 5560 時 host 開機後 adb setup 全打到不存在的 emulator-5554 → 黑屏。實測 `-ConsolePort 5560` 從黑(10KB)→ home(76KB)。
+- **一鍵啟動器**：`scripts/start-chimera.ps1` + 根目錄 `start-chimera.cmd`。**預設 stock(可用)**,`-Fast` opt-in custom 60fps(警告一般 UI 可能黑)。`CHIMERA_EMULATOR_PATH` 必須指向 **emulator.exe 檔**(非目錄,否則 `parent_path()` 推錯 + exec 失敗)。`-SelfTest` boot→驗 1080p→截圖→清理。
+- **結論**：要使用者「像 BlueStacks 正常用」→ `start-chimera.cmd` 雙擊(stock 路徑)即可,有真實 home/app/輸入,但 FPS 非 BlueStacks 等級。「60fps + 可用 UI」同時達成需修 host GL 合成器 shader 或讓 direct-VK 涵蓋 GLES-backed 合成,屬深層 gfxstream R&D。
+
 ---
-*Updated: 2026-06-22 — Session 85（TRUE 1080p/60 verifier PASS：gl60 real-geometry 連續渲染 min 59.6 / avg 60.0 / dup 0；direct-Vulkan→D3D11 postFrameDirectGpu，0 CPU readback；verifier warmup/steady gate + 3 bug 修正）*
+*Updated: 2026-06-23 — Session 86（日常可用性實測:stock 路徑可用 home/app 但 FPS 低;custom 60fps runtime 一般 UI 黑屏=host GL 合成器 shader 編譯失敗;修 main.cpp port override + 新增一鍵啟動器 start-chimera.cmd 預設 stock）*
