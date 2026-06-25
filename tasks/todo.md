@@ -2,6 +2,51 @@
 
 ---
 
+## 2026-06-26 Session 88 — custom runtime 一般 UI 黑屏修復
+
+### Plan
+- [x] 用 systematic debugging 重新驗證 Session 87 結論，拆分 ANGLE init / shader version / SurfaceFlinger draw 三層。
+- [x] 反查 ANGLE crash stack：`libGLESv2.dll` AV 由 `translator::gles2::glDrawArrays()` 觸發，program 28/31，ANGLE 新舊版本皆可重現。
+- [x] 驗證 SwiftShader ES shader path：`CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES=1` 讓一般 UI boot completed、截圖非黑、shader error=0。
+- [x] 收斂正式修法：只在 gate 開啟時關閉 `shouldEnableCoreProfile()`，不改 renderer identity / 不啟用 EglOnEgl，避免 direct-VK 60fps 路徑回歸。
+- [x] 接入 `scripts/start-chimera.ps1 -Fast`，更新 README / CLAUDE.md / CONTEXT.md / patch script。
+- [x] 驗證：`start-chimera.ps1 -Fast -SelfTest` PASS；`verify-true-1080p60.ps1 -WarmupSeconds 15` PASS；0 residual process。
+
+### Review
+- **完成**：`-Fast` custom runtime 一般 UI 黑屏已修好。SelfTest：boot completed、1920×1080、Chimera Launcher screenshot ~75–76KB、Settings foreground/interactivity OK、0 residual。
+- **根因**：renderer HOST + underlying SwiftShader ES 時 `shouldEnableCoreProfile()` 發桌面 `#version 330 core` shader，SwiftShader ES compiler 拒絕；修法是 gate 下關閉 core-profile shader emission。
+- **ANGLE 結論**：ANGLE/D3D11 可 init，但 SurfaceFlinger 後續 draw 會在 ANGLE `libGLESv2.dll` AV；新版 ANGLE 也一樣，因此不作正式路徑。
+- **60fps 回歸**：direct-VK path 保持可用；`effective_fps_min=58.8 / avg=59.6 / dup=0`，`postFrameDirectGpu=134`、CPU readback fallback=0。
+
+---
+
+## 2026-06-24 Session 87 — host GLES → 硬體 (原生 GL / ANGLE) + 文件/README 更新
+
+### 目標
+1. 更新 + 精簡 CLAUDE.md / CONTEXT.md / AGENTS.md（對齊現況）
+2. 更新 README.md（移除過時的 native-embed 預設說明，反映 headless + stock/custom 路徑）
+3. 把 host GLES 從 SwiftShader 導到硬體（原生 GL / ANGLE），讓一般 UI 走硬體加速、不再黑屏
+
+### Plan
+- [x] 調查（workflow 並行）：emugl_config GPU-mode 對應、isCoreProfile/shader 版本發射、Compositor shader、runtime log 證據（4/5 reader 完成；workflow 因前次 usage limit 中止，已 salvage）
+- [x] 根因確認（log 實證）：headless SwiftShader host GLES + renderer=HOST → `#version 330 core` → ES 編譯器拒 → 黑屏
+- [x] 實作 + 實測硬體路由：CLI angle_indirect（被 prebuilt binary 拒，已還原）→ DLL 內 emugl_config fallback（重建實測 → init hang）
+- [x] 重建 gfxstream DLL（ANGLE patch）+ runtime 驗證（`verify-hardware-ui.ps1`，bridge 與 -GrpcDisplay 兩種模式皆 init hang）
+- [x] 還原 verified 60fps DLL（md5 相符），ANGLE patch staged 在 patch script（gate 預設關、標記 hang）
+- [x] 文件 + README 誠實更新（BLOCKED 結論）
+- [x] unit tests 20/20 + 無殘留 process
+
+### Review
+- **結果：hardware host GLES routing BLOCKED（未完成，但根因與 blocker 全部 log 實證）**。
+- 根因：headless `emugl_config.cpp:297-353` fallback 到 SwiftShader（軟體），renderer enum 仍 `SELECTED_RENDERER_HOST` → translator 發桌面 `#version 330 core` 合成器 shader → SwiftShader ES 編譯器拒 → SurfaceFlinger 合成空 → 一般 UI 黑屏。gl60 60fps 因 `postFrameDirectGpu` 繞過合成器。
+- 三條硬體路徑實測全擋：① native WGL 需視窗（headless 不行）；② CLI `-gpu angle_indirect` 被 prebuilt `emulator.exe` `gpuChoiceBasedOnGpuOptions` 判 invalid → auto → SwiftShader+lavapipe → exit 4；③ ANGLE 經 DLL 內 emugl_config fallback（重建 DLL）→ emulator **init hang**（停在 `Found systemPath`），bridge 與純 gRPC 皆然。
+- 動作：`VirtualMachine::emulatorGpuMode` angle 嘗試已還原（保留 `CHIMERA_GPU_MODE` override）；ANGLE patch staged 在 `apply-chimera-gfxstream-patch.ps1`（`CHIMERA_GFXSTREAM_HEADLESS_ANGLE=1` gate，預設關、標記會 hang）；新增 `scripts/verify-hardware-ui.ps1`；deployed gfxstream DLL 還原為 Session 85 verified（md5 相符），無回歸。
+- 驗證：`chimera-ui` build PASS；unit 20/20 PASS；deployed DLL md5 == verified；0 殘留 process。
+- 已驗證狀態維持：stock 路徑日常可用（`start-chimera.cmd`）、custom runtime 連續渲染 1080p/60。
+- 下一步（resume 點）：ANGLE headless init hang 的 verbose-log 調查；或重建 emulator.exe（超出現行範圍）。
+
+---
+
 ## 2026-06-19 Session 82 — shmem 吞吐量確認 + BELOW_NORMAL 移除 EcoQoS + reviewer follow-up
 
 ### Plan

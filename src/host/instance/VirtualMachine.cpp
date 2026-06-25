@@ -31,16 +31,25 @@ std::pair<int, int> guestDisplaySizeForConfig(const VirtualMachineConfig &config
 }
 
 std::string emulatorGpuMode(const std::string &renderer) {
-    // Experimental override: lets us select the emulator -gpu mode (e.g.
-    // angle_indirect for hardware host GLES via ANGLE) without editing config.
+    // Explicit override: lets us pin the emulator -gpu mode without editing config.
     if (const char *modeOverride = std::getenv("CHIMERA_GPU_MODE");
         modeOverride && *modeOverride) {
         return modeOverride;
     }
+    // NOTE (Session 87): passing "-gpu angle_indirect" here does NOT route host
+    // GLES to ANGLE — the prebuilt emulator.exe's gpuChoiceBasedOnGpuOptions
+    // rejects "angle_indirect" as an invalid CLI option and downgrades to "auto"
+    // -> SwiftShader GLES + lavapipe (software) Vulkan, which also kills the
+    // direct-VK 60fps path. The working hardware-GLES route is INSIDE the
+    // gfxstream DLL: emugl_config.cpp's headless fallback (currently
+    // SwiftShader) is patched to choose angle_indirect there, gated by
+    // CHIMERA_GFXSTREAM_HEADLESS_ANGLE=1 (default off). See
+    // apply-chimera-gfxstream-patch.ps1 + scripts/verify-hardware-ui.ps1.
     if (renderer == "swiftshader" || renderer == "swiftshader_indirect") {
         return "swiftshader_indirect";
     }
-    if (renderer == "host" || renderer == "d3d11" || renderer == "angle") {
+    if (renderer == "host" || renderer == "d3d11" || renderer == "angle" ||
+        renderer == "angle_indirect") {
         return "host";
     }
     return renderer.empty() ? "host" : renderer;

@@ -2129,6 +2129,38 @@ VG_EXPORT void gfxstream_backend_set_screen_background(int width, int height,
         "offsetof(stream_renderer_vulkan_info_struct,"
 }
 
+# Chimera: make the custom gfxstream runtime usable for normal Android UI in
+# headless mode. The prebuilt emulator reports GLES mode "host" for -gpu host;
+# in headless mode that resolves to bundled SwiftShader, but renderer HOST makes
+# the translator emit desktop core-profile shaders ("#version 330 core"), which
+# SwiftShader's ES compiler rejects and SurfaceFlinger composes black. This gate
+# disables core-profile shader emission while preserving the renderer identity
+# and the direct-VK shared-texture path used by continuously-rendering content.
+$glesVersionDetector = Join-Path $hostDir "gl\gles_version_detector.cpp"
+if (Test-Path -LiteralPath $glesVersionDetector) {
+    Replace-Once $glesVersionDetector `
+        @'
+bool shouldEnableCoreProfile() {
+    int dispatchMaj, dispatchMin;
+
+    get_gfxstream_gles_version(&dispatchMaj, &dispatchMin);
+    return get_gfxstream_renderer() == SELECTED_RENDERER_HOST &&
+           dispatchMaj > 2;
+}
+'@ `
+        @'
+bool shouldEnableCoreProfile() {
+    int dispatchMaj, dispatchMin;
+
+    get_gfxstream_gles_version(&dispatchMaj, &dispatchMin);
+    return get_gfxstream_renderer() == SELECTED_RENDERER_HOST &&
+           dispatchMaj > 2 &&
+           gfxstream::base::getEnvironmentVariable("CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES") != "1";
+}
+'@ `
+        "GLES version detector headless SwiftShader ES shader gate"
+}
+
 $renderApiHeader = @(
     (Join-Path $root "include\render-utils\render_api.h"),
     (Join-Path $hostDir "include\render-utils\render_api.h")
@@ -2784,6 +2816,52 @@ if (Test-Path -LiteralPath $checksumCalculatorHeader) {
 
 Get-ChildItem -LiteralPath $hostDir -Recurse -File -Include "*.cpp" | ForEach-Object {
     Replace-AllLiteral $_.FullName " __attribute__((unused))" ""
+}
+
+# --- Session 87/88: headless host-GLES ANGLE routing (R&D only; not production) ---
+# Root cause of the custom-runtime black normal UI (log-confirmed): in headless
+# mode emuglConfig_init() falls host GLES to SwiftShader (software); the renderer
+# enum stays SELECTED_RENDERER_HOST, so the translator emits desktop
+# "#version 330 core" compositor shaders that SwiftShader's ES compiler rejects
+# ("'core' : invalid version directive") -> SurfaceFlinger composition empty ->
+# black. gl60 60fps survives because postFrameDirectGpu bypasses that compositor.
+#
+# This patch redirects the headless fallback to ANGLE (gpu_mode="angle_indirect")
+# INSIDE the DLL, bypassing the prebuilt emulator's CLI-level angle_indirect
+# rejection. Keep it as an opt-in R&D probe only: later Session 88 evidence showed
+# ANGLE/D3D11 can initialize and remove the shader-version error, but
+# SurfaceFlinger draw then crashes inside ANGLE libGLESv2.dll (glDrawArrays,
+# program 28/31; newer ANGLE reproduced it too). DO NOT enable for production.
+# Production normal UI is fixed by CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES=1,
+# which disables HOST/core-profile shader emission while preserving the
+# direct-VK shared-texture path. See verify-hardware-ui.ps1 and CONTEXT.md.
+$emuglConfig = Join-Path $glDir "gl-host-common\opengl\emugl_config.cpp"
+if (Test-Path -LiteralPath $emuglConfig) {
+    Replace-Once $emuglConfig @'
+            if (stringVectorContains(sBackendList->names(), "swiftshader")) {
+                D("%s: Headless mode or blacklisted GPU driver, "
+                  "using Swiftshader backend\n",
+                  __FUNCTION__);
+                gpu_mode = "swiftshader_indirect";
+            } else if (!has_guest_renderer) {
+'@ @'
+            if (android::base::getEnvironmentVariable("CHIMERA_GFXSTREAM_HEADLESS_ANGLE") == "1" &&
+                stringVectorContains(sBackendList->names(), "angle")) {
+                // Chimera (Session 87): headless host GLES on ANGLE (GLES-on-D3D11,
+                // hardware on NVIDIA) instead of SwiftShader. Setting gpu_mode here
+                // bypasses the prebuilt emulator's CLI-level angle_indirect
+                // rejection; renderer becomes non-HOST so the translator emits
+                // "#version 300 es" shaders (compile) and host Vulkan stays on the
+                // real GPU (60fps direct-VK path preserved).
+                D("%s: Headless mode, Chimera ANGLE host GLES backend\n", __FUNCTION__);
+                gpu_mode = "angle_indirect";
+            } else if (stringVectorContains(sBackendList->names(), "swiftshader")) {
+                D("%s: Headless mode or blacklisted GPU driver, "
+                  "using Swiftshader backend\n",
+                  __FUNCTION__);
+                gpu_mode = "swiftshader_indirect";
+            } else if (!has_guest_renderer) {
+'@ "emugl_config headless ANGLE host GLES routing"
 }
 
 Write-Host "Applied Chimera gfxstream shared texture patch to $root"

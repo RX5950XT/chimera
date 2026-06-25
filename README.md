@@ -1,180 +1,122 @@
 # Project Chimera
 
-**Chimera** 是一款完全開源的 Windows Android 模擬器，專為手遊玩家設計。
+**Chimera** 是一款 Windows 上的開源 Android 模擬器，面向手遊玩家，參考 BlueStacks / LDPlayer 的功能與體驗。
 
-> 參考 BlueStacks / LDPlayer 的功能與體驗，但全部使用開源元件從頭實作，無強制雲端、無廣告、無數據收集。
+> 以 fork/patch Android Emulator + gfxstream + QEMU/WHPX 作為 headless 相容核心，外層只保留單一 Chimera 視窗；無強制雲端、無廣告、無數據收集。
 
 ---
 
-## 快速開始
+## 一鍵啟動
 
-### 系統需求
+```bat
+:: 倉庫根目錄，雙擊或執行：
+start-chimera.cmd
+```
 
-- **OS**: Windows 10/11 Pro/Enterprise (需啟用 Hyper-V + Windows Hypervisor Platform)
-- **CPU**: 支援 VT-x / AMD-V + SLAT (EPT/NPT)
-- **RAM**: 8 GB 以上（建議 16 GB）
-- **GPU**: 支援 DirectX 11 或 Vulkan 的獨立顯卡（建議）
-- **磁碟**: 20 GB 可用空間
-- **開發工具**: Visual Studio 2022 Community、Qt 6.8.3 MSVC2022_64
-
-### 完整安裝流程
+- **預設（stock）**：SDK emulator + gRPC 顯示路徑。一般 Android 首頁 / app 正常渲染、輸入完整，FPS 較低（push-based 內容約 4–17）。**日常可用。**
+- **`-Fast`（custom 60fps runtime）**：自訂 gfxstream shared-texture runtime，連續渲染內容（遊戲）走 `postFrameDirectGpu`（guest VK image → D3D11）達 **1920×1080 / 60 FPS**；一般 Android UI 走 SwiftShader ES compositor path，已驗證 boot 到 Chimera Launcher、截圖非黑、Settings 可互動。
 
 ```powershell
-# 1. 克隆倉庫
-git clone https://github.com/RX5950XT/chimera.git
-cd chimera
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-chimera.ps1 -Fast
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-chimera.ps1 -SelfTest   # 開機→驗 1080p→截圖→清理
+```
 
-# 2. 初始化子模組（QEMU）
-git submodule update --init --recursive
+---
 
-# 3. 安裝 Qt 6（如果尚未安裝）
-python -m pip install aqtinstall
-aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 -O C:\Qt
+## 系統需求
 
-# 4. 下載 Android SDK 與系統映像
-python scripts/setup-android-sdk.py
+- **OS**：Windows 10/11，啟用 Hyper-V + Windows Hypervisor Platform
+- **CPU**：VT-x / AMD-V + SLAT（EPT/NPT）
+- **GPU**：支援 D3D11 / Vulkan 的獨立顯卡（custom 60fps 路徑建議 NVIDIA / AMD）
+- **RAM**：16 GB 建議；**磁碟**：20 GB
+- **建置工具**：Visual Studio 2022 Community（MSVC）、Qt 6.8.3 msvc2022_64
 
-# 5. 載入 VS 開發環境並建置
+---
+
+## 建置
+
+```powershell
 & "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" amd64
 cmake -B build -S . -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH=C:/Qt/6.8.3/msvc2022_64
 cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure -LE integration   # 20/20
 
-# 6. 執行測試
-$env:PATH = "C:\Qt\6.8.3\msvc2022_64\bin;$env:PATH"
-ctest --test-dir build -C Release --output-on-failure
-
-# 7. 啟動模擬器
-# build 完成後會自動部署 Qt DLL 到 build\Release
-.\build\Release\chimera-ui.exe
-
-# 只看 UI / 驗證 QML，不啟動 Android
-.\build\Release\chimera-ui.exe --no-emulator
+# custom gfxstream 60fps runtime（選用）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-chimera-gfxstream-runtime.ps1
 ```
 
-### 現有 AVD 直接啟動（若已有 Android Emulator）
-
-```powershell
-# 確保 ADB 在 PATH 中
-$env:PATH = "$env:PATH;C:\Users\$env:USERNAME\AppData\Local\Android\Sdk\platform-tools"
-
-# 啟動（會自動尋找 AVD）
-.\build\Release\chimera-ui.exe
-```
+詳見 [docs/project/BUILD.md](docs/project/BUILD.md)。
 
 ---
 
-## 功能
+## 顯示架構
 
-| 功能 | 狀態 | 備註 |
-|------|------|------|
-| Android 14 (x86_64) | ✅ | QEMU + WHPX |
-| OpenGL ES → D3D11 | ✅ | ANGLE headers + Chrome libEGL/libGLESv2 |
-| 繁體中文介面 | ✅ | 主 UI、工具列、對話框已繁中化 |
-| 鍵盤/滑鼠輸入 | ✅ | QMP 優先，ADB fallback |
-| 手把支援 (XInput) | ✅ | 14 鍵映射，60 Hz 輪詢 |
-| 顯示路徑 | ✅ | 預設 native emulator window embedding，Android 端 60Hz；`--stream-capture` 才啟用 gRPC/ADB fallback |
-| 鍵盤映射編輯器 | ✅ | 右側面板內頁；串流模式可用 QML overlay |
-| 多開管理器 | ✅ | 右側面板內頁，JSON 持久化，clone 支援 |
-| 巨集錄製/播放 | ✅ | 右側面板內頁，背景執行緒，loop 支援 |
-| 螢幕錄影 | ✅ | Native child window 擷取 + FFmpeg H.264 / PNG fallback |
-| 效能監控 | ✅ | FPS 計數器、幀時間、掉幀 |
-| 裝置偽裝 | ✅ | 5 種旗艦機型 build.prop |
-| 記憶體修剪 | ✅ | 自動監控 /proc/meminfo |
-| 磁碟壓縮 | ✅ | 清理 cache/logs/tmp |
-| GPU-PV 硬體加速 | 🔄 | Hyper-V HCS 框架（實驗中） |
-| VirtIO 輸入 | ⏸️ | 需自訂 QEMU 編譯 |
-| 插件系統 | ⏸️ | Phase 6 規劃 |
+```
+Chimera (Host Windows, 單一 Qt6/QML 視窗)
+  Input    InputBridge → emulator gRPC sendTouch/sendKey（console/QMP/ADB fallback）
+  Display  ┌─ stock：headless emulator + gRPC getScreenshot（1920×1080，可用，低 FPS）
+           └─ custom gfxstream runtime：
+                continuous content → postFrameDirectGpu（guest VK image → GPU blit → D3D11）→ 60 FPS
+                normal UI（SurfaceFlinger GLES 合成）→ SwiftShader ES compositor（可見 / 可互動）
+  Audio    WASAPI shared-mode
+  Engine   Android Emulator / gfxstream / QEMU + WHPX（headless，-no-window）
+              └─ Android guest（x86_64 + libndk_translation ARM→x86）
+```
 
-**圖例**: ✅ 完成 | 🔄 進行中 | ⏸️ 待前置條件
+**重要**：正式路徑強制 headless（`-no-window`），不外露、不多開原生 Android Emulator 視窗。原生視窗嵌入 / window capture 僅作為本機 unsafe 診斷（需多重 opt-in flag）。顯示尺寸固定維持至少 1920×1080，不以降解析度換取假 FPS。
+
+### host GLES / 一般 UI 修正（Session 88）
+
+**根因（log 實證）**：custom runtime headless 下 prebuilt emulator 仍把 GLES mode 報為 `host`；但實際 underlying EGL/GLES 會落到 bundled **SwiftShader ES**。renderer enum 仍為 HOST 時，gfxstream translator 會發出桌面 `#version 330 core` compositor shader，被 SwiftShader ES compiler 拒絕（`'core' : invalid version directive`）→ SurfaceFlinger 合成空畫面 → 一般 UI 黑屏。
+
+**已修正**：`-Fast` 啟動時設定 `CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES=1`，custom gfxstream backend 在此 gate 下只關閉 headless HOST 的 core-profile shader emission，讓一般 UI 走 SwiftShader ES shader path，同時保留 renderer identity 與 direct-VK shared-texture path。驗證：`start-chimera.ps1 -Fast -SelfTest` PASS，1920×1080 Chimera Launcher 截圖約 76 KB、Settings 可互動、0 residual process。
+
+**ANGLE / D3D11 狀態**：ANGLE headless + D3D11 + NVIDIA 可初始化，也能消除 shader version error；但 SurfaceFlinger 後續 draw 會在 ANGLE `libGLESv2.dll` 內 AV（`glDrawArrays`，program 28/31），新版 ANGLE 亦同。故正式修法採 SwiftShader ES compositor path；direct-VK shared-texture 60fps path 仍保留給連續渲染內容。
 
 ---
 
-## 架構
+## 功能（BlueStacks parity，production 路徑）
 
-```
-Chimera (Host Windows)
-├── UI Layer          → Qt 6 + QML (ChimeraWindow.qml)
-├── Input System      → InputBridge (QMP 優先) / GamepadManager / InputMapper
-├── Display           → NativeEmulatorView / GuestDisplay fallback / PerformanceMonitor
-├── Graphics Capture  → GrpcFramebufferCapture / AdbFramebufferCapture (`--stream-capture`)
-├── Audio Bridge      → WASAPI shared-mode
-├── Instance Manager  → JSON persistence + VirtualMachine launcher
-├── QEMU + WHPX       → Android Emulator (prebuilt) / custom QEMU (future)
-│       └── Android Guest (AOSP x86_64)
-│               ├── VirtIO GPU/Net/Snd
-│               └── libndk_translation (ARM → x86)
-└── ANGLE             → libEGL.dll + libGLESv2.dll (Chrome)
-```
+| 類別 | 功能 |
+|------|------|
+| 核心 | Android boot (QEMU+WHPX)、headless 顯示內嵌、多開（批次啟停） |
+| 輸入 | 鍵盤 / 滑鼠 / 觸控 / 手把(XInput)、多點觸控(MT Type-B)、IME、鍵位映射匯入匯出、巨集錄製播放 |
+| 顯示 | FPS lock(30/60/90/120)、Screen resize/DPI/rotation、效能 HUD(FPS/Lat/Drop)、十字準心游標 |
+| App | APK/OBB 安裝、launch/stop/uninstall/clear、釘選常用應用、Chimera Launcher 首頁 |
+| 系統 | Root mode、裝置偽裝(5 旗艦)、剪貼簿同步、檔案分享(push/pull)、網路 Proxy / 網速模擬 |
+| 模擬 | GPS(geo fix+route)、感應器(acc/gyro/mag)、震動、電池、Shake、Rotate |
+| 媒體 | 螢幕錄影、截圖、Audio(WASAPI) |
+| 體驗 | Eco mode、Boss Key、Trim Memory、Mute、快捷鍵 |
+
+完整對照見 [CLAUDE.md](CLAUDE.md)。
+
+### 常用快捷鍵
+
+| 快捷鍵 | 功能 | 快捷鍵 | 功能 |
+|--------|------|--------|------|
+| `Ctrl+Shift+S` | 截圖 | `Ctrl+Shift+R` | 錄影 |
+| `Ctrl+Shift+A` | 鍵位配置 | `Ctrl+Shift+7` | 巨集 |
+| `Ctrl+Shift+8` | 多開管理 | `Ctrl+Shift+X` | Boss Key |
+| `Ctrl+Shift+T` | Trim Memory | `Ctrl+Shift+M` | Mute |
+| `F11` / `Esc` | 全螢幕 / 離開 | `Ctrl+1~9` | 切換實例 |
 
 ---
 
-## 使用方式
+## 現況與邊界（誠實版）
 
-### 目前效能現況
-
-- 預設顯示路徑已改為 `NativeEmulatorView`，直接嵌入 Android Emulator Win32 視窗，避開 screenshot/gRPC 每幀複製瓶頸。
-- Android Emulator 原生直式工具列會在嵌入後自動隱藏；Chimera 改用主視窗內建右側狀態/操作面板，包含返回、首頁、最近使用等 Android 導航鍵。
-- 介面只保留一個 FPS 狀態區，移除重複 FPS 顯示與會被裁切的 hover tooltip；鍵位、多開、巨集改成右側面板內頁，避免 Win32 native child window 蓋住 QML 彈窗。
-- 顯示框固定 16:9；guest/window/capture 入口都必須維持至少 `1920x1080`，避免用降解析度換取假 FPS。
-- Qt shell 啟動時強制使用 D3D11 RHI；emulator/qemu process tree 啟動期套用低優先級與 power throttling，避免干擾主機背景音樂。
-- Live smoke 需驗證 Android 實際 `1920x1080`、`320 dpi`、SurfaceFlinger `60.00 Hz`，並分開檢查 Guest/Stream/Render FPS。
-- `--stream-capture` 才會啟用 gRPC/ADB 畫面擷取；gRPC/ADB 現在是 fallback/除錯路徑，不是主要遊玩路徑。
-
-### 基本操作
-
-| 快捷鍵 | 功能 |
-|--------|------|
-| `Ctrl + Shift + S` | 截圖 |
-| `Ctrl + Shift + R` | 錄影 |
-| `Ctrl + Shift + A` | 鍵位配置 |
-| `Ctrl + Shift + 7` | 巨集 |
-| `Ctrl + Shift + 8` | 多開管理 |
-| `Shift + Tab` | 顯示/隱藏鍵位 |
-| `Alt + Left` | Android 返回 |
-| `Ctrl + Shift + H` | Android 首頁 |
-| `Ctrl + Shift + Tab` | Android 最近使用 |
-| `F11` | 全螢幕 |
-| `Esc` | 離開全螢幕 |
-| `Ctrl + 1~9` | 切換實例 |
-
-### 遊戲手把
-
-連接 XInput 相容手把後自動識別，預設映射：
-- A/B/X/Y → Android DPAD_CENTER / BACK 等
-- 左搖桿 → 觸控滑動
-- RT/LT → 音量調整
-
-### 鍵盤映射
-
-1. 開啟 Input Mapper Overlay（工具列按鈕）
-2. 拖曳按鍵到畫面對應位置
-3. 儲存為 JSON scheme
-4. 載入時自動套用
-
-### 多開
-
-1. 點選「+」按鈕新增實例
-2. 每個實例獨立 data 目錄
-3. 使用 Clone 複製現有實例設定
+- **日常可用**：stock 路徑 boot 到乾淨的 Chimera Launcher 首頁，真實 home/app/輸入/多開等全部可用；FPS 非 BlueStacks 等級。**這是目前最穩的日常用法（`start-chimera.cmd`）。**
+- **Fast custom runtime**：`-Fast` 現在可 boot 到可見的一般 UI（SwiftShader ES compositor），同時保留 custom gfxstream shared-texture runtime 給連續渲染內容。
+- **1080p/60**：custom runtime 對**連續渲染內容**已驗證 `min 59.8 / avg 60.0 / dup 0`（`scripts\verify-true-1080p60.ps1`）。push-based 的開機動畫 / idle Home 本來就是低 FPS，屬正常。
+- **一般 UI 合成**：custom runtime 的一般 UI 黑屏已修正為 SwiftShader ES compositor path；ANGLE/D3D11 硬體 compositor 已確認會在 SurfaceFlinger draw 觸發 ANGLE `libGLESv2.dll` AV，暫不作正式路徑。
+- 真實遊戲 flow 受益於 direct-VK 路徑，但尚未逐一重測。
 
 ---
 
 ## 授權
 
-本專案採用多重授權，以隔離 GPL 污染：
-
-- **核心程式碼** (`src/host/`, `src/common/`): **Apache 2.0**
-- **虛擬化層** (`src/virtualization/qemu/`): **GPL v2**（QEMU 子模組）
-- **Android 系統** (`src/guest/`): **Apache 2.0**（AOSP）
-- **第三方函式庫** (`third_party/`): 依各自授權
-
----
-
-## 貢獻
-
-本專案主要由 AI Agent 自動化開發，人類監督為輔。
-
-歡迎提交 Issue 與 PR！請參閱 [CONTRIBUTING.md](docs/process/CONTRIBUTING.md)。
+- 核心程式（`src/host/`, `src/common/`）：**Apache 2.0**
+- 虛擬化層（`src/virtualization/qemu/`）：**GPL v2**（QEMU 子模組）
+- 第三方（`third_party/`）：依各自授權
 
 ---
 
@@ -182,15 +124,11 @@ Chimera (Host Windows)
 
 | 文件 | 內容 |
 |------|------|
-| [docs/README.md](docs/README.md) | 文件總索引 |
-| [docs/project/BUILD.md](docs/project/BUILD.md) | MSVC + Qt 6 詳細建置說明 |
-| [AGENTS.md](AGENTS.md) | AI Agent 工作流程與編碼標準 |
-| [CLAUDE.md](CLAUDE.md) | 架構決策與技術細節 |
-| [docs/project/STATUS.md](docs/project/STATUS.md) | 當前階段狀態與驗證記錄 |
-| [docs/project/CODE_REVIEW.md](docs/project/CODE_REVIEW.md) | 最新程式碼審查、已修正問題與追蹤項目 |
-| [docs/project/PLAN.md](docs/project/PLAN.md) | 完整實作計畫 |
-| [docs/process/HANDOVER.md](docs/process/HANDOVER.md) | 給下一個開發者的交接文件 |
+| [CLAUDE.md](CLAUDE.md) | 架構決策、功能對照、feature flags、已知問題 |
+| [CONTEXT.md](CONTEXT.md) | 開發歷程與 session 紀錄 |
+| [AGENTS.md](AGENTS.md) | Build / 測試 / Git / Coding 標準 |
+| [tasks/todo.md](tasks/todo.md) | 當前任務規劃與回顧 |
 
 ---
 
-*Project Chimera — Open Source Windows Android Emulator*
+*Project Chimera — Open Source Windows Android Emulator（主要由 AI Agent 自動化開發）*

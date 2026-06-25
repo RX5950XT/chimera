@@ -12,9 +12,8 @@
     correctly; frame rate is lower than BlueStacks for push-based content.
 
     -Fast: custom gfxstream shared-texture runtime. Hits 1080p/60 for
-    continuously-rendering content, but currently BLACKS OUT the composited
-    home/UI (host GL compositor shader compile failures). Not a daily driver
-    until that is fixed. See CONTEXT.md Session 86.
+    continuously-rendering content and uses a SwiftShader ES compositor path for
+    normal Android UI so the home/apps remain visible.
 
 .PARAMETER Fast
     Opt into the experimental custom gfxstream 60fps runtime (see caveat above).
@@ -66,10 +65,9 @@ if (Test-Path -LiteralPath $QtBin -PathType Container) {
 
 # --- Display path selection ---------------------------------------------------
 # Default = stock SDK + gRPC, which renders the normal Android home / apps
-# correctly (verified). The custom gfxstream "60fps" runtime is opt-in via -Fast:
-# it only accelerates continuously-rendering content and currently BLACKS OUT
-# the composited home/UI (host GL compositor shader compile failures), so it is
-# NOT yet a daily driver. See CONTEXT.md Session 86.
+# correctly (verified). The custom gfxstream runtime is opt-in via -Fast: it
+# keeps normal UI visible via SwiftShader ES composition while preserving the
+# direct-VK shared-texture path for continuously-rendering content.
 $customRequested = $Fast -and (-not $Stock)
 $customAvailable =
     $customRequested -and
@@ -83,17 +81,24 @@ if ($customAvailable) {
     # the directory breaks both runtime detection and process launch.
     $env:CHIMERA_EMULATOR_PATH = Join-Path $Runtime "emulator.exe"
     $env:CHIMERA_ENABLE_GFXSTREAM_SHARED_TEXTURE = "1"
+    # Keep the custom runtime's normal SurfaceFlinger UI on an ES shader path.
+    # This avoids the headless HOST/core-profile shader mismatch while preserving
+    # the direct-VK shared-texture path used by continuously-rendering content.
+    $env:CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES = "1"
+    Remove-Item Env:\CHIMERA_GFXSTREAM_HEADLESS_ANGLE -ErrorAction SilentlyContinue
     if ($RequireSharedTexture) {
         $env:CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE = "1"
-        Write-Host "display=gfxstream-shared-texture (-Fast, fail-closed; normal UI may be black)"
+        Write-Host "display=gfxstream-shared-texture (-Fast, fail-closed; normal UI via SwiftShader ES)"
     } else {
         Remove-Item Env:\CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE -ErrorAction SilentlyContinue
-        Write-Host "display=gfxstream-shared-texture (-Fast experimental; normal UI may be black)"
+        Write-Host "display=gfxstream-shared-texture (-Fast; normal UI via SwiftShader ES)"
     }
 } else {
     Remove-Item Env:\CHIMERA_EMULATOR_PATH -ErrorAction SilentlyContinue
     Remove-Item Env:\CHIMERA_ENABLE_GFXSTREAM_SHARED_TEXTURE -ErrorAction SilentlyContinue
     Remove-Item Env:\CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE -ErrorAction SilentlyContinue
+    Remove-Item Env:\CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES -ErrorAction SilentlyContinue
+    Remove-Item Env:\CHIMERA_GFXSTREAM_HEADLESS_ANGLE -ErrorAction SilentlyContinue
     if ($customRequested) { Write-Host "display=stock-grpc (-Fast requested but custom runtime not found at $Runtime)" }
     else { Write-Host "display=stock-grpc (usable home/apps; use -Fast for the experimental 60fps runtime)" }
 }

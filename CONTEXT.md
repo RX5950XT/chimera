@@ -6,6 +6,28 @@
 
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 
+## 最新狀態（2026-06-26 Session 88）— custom runtime 一般 UI 黑屏修復
+
+- **完成**：`-Fast` custom gfxstream runtime 的一般 Android UI 已不再黑屏；`scripts\start-chimera.ps1 -Fast -SelfTest` PASS：boot completed、1920×1080、Chimera Launcher 截圖約 75–76KB、Settings 可互動、0 residual process。
+- **根因修正**：prebuilt emulator 在 headless `-gpu host` 下仍回報 GLES mode `host`，但 underlying EGL/GLES 會落到 bundled SwiftShader ES；renderer HOST 讓 `shouldEnableCoreProfile()` 發桌面 `#version 330 core` shader，SwiftShader ES compiler 拒絕而黑屏。正式修法改為 `CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES=1` 時只關閉 core-profile shader emission（`gles_version_detector.cpp::shouldEnableCoreProfile()`），保留 renderer identity 與 direct-VK path。
+- **ANGLE 調查結果**：ANGLE headless + D3D11 + NVIDIA 可初始化且能消除 shader version error，但 SurfaceFlinger 後續 `glDrawArrays`（program 28/31）在 ANGLE `libGLESv2.dll` 內 AV；換新版 ANGLE 亦同。ANGLE 不作正式路徑。
+- **60fps 回歸**：`scripts\verify-true-1080p60.ps1 -WarmupSeconds 15` PASS：`effective_fps_min=58.8 / avg=59.6 / dup=0`，log 計數 `postFrameDirectGpu=134`、CPU readback fallback=0。
+- **部署**：`build\chimera-gfxstream-runtime\lib64\libgfxstream_backend.dll` 已部署 final patched DLL（md5 `896010eb4467e6c052a1b26da5a44c50`）；`scripts\start-chimera.ps1 -Fast` 自動設定 `CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES=1`。
+
+## 歷史狀態（2026-06-25 Session 87）— host GLES 硬體路由 BLOCKED
+
+- **目標**：把 custom runtime 的 host GLES 從 SwiftShader 導到硬體（原生 GL / ANGLE），讓一般 UI 不再黑屏且硬體加速。
+- **根因 log 實證**：headless 下 `emugl_config.cpp:297-353` 把 host GLES fallback 到 SwiftShader（軟體），但 renderer enum 仍 `SELECTED_RENDERER_HOST` → `shouldEnableCoreProfile()` 真 → translator 發 `#version 330 core`（`GLEScontext.cpp:2613/2832`）→ SwiftShader ES 編譯器拒（`'core' : invalid version directive`）→ SurfaceFlinger 合成空 → 黑。gl60 60fps 因 `postFrameDirectGpu` 繞過合成器。
+- **三條硬體路徑全擋（實測）**：
+  1. native WGL（`-gpu host`）：headless 無視窗 → 退 SwiftShader。
+  2. `-gpu angle_indirect`（CLI）：prebuilt `emulator.exe` `gpuChoiceBasedOnGpuOptions` 判 invalid → auto → SwiftShader+lavapipe → exit 4。binary 不可重建。
+  3. **ANGLE 經 DLL 內 `emugl_config` fallback**：把 headless fallback 改選 `angle_indirect`（繞過 binary CLI 驗證），重建 gfxstream DLL 實測 → **emulator init 階段 hang**（log 停在 `Found systemPath`、never open console/adb），bridge 與純 gRPC（`verify-hardware-ui.ps1 -GrpcDisplay`）模式皆然。ANGLE host GLES 在此 headless build 不可用。
+- **精確 patch 點（供後續 R&D）**：`emugl_config.cpp` 的
+  `if (stringVectorContains(sBackendList->names(), "swiftshader")) { ... gpu_mode = "swiftshader_indirect"; }`
+  前面插入 `if (getEnvironmentVariable("CHIMERA_GFXSTREAM_HEADLESS_ANGLE")=="1" && stringVectorContains(names,"angle")) { gpu_mode = "angle_indirect"; }`。已寫進 `apply-chimera-gfxstream-patch.ps1`（gate 預設關、確認會 hang，僅供 resume）。
+- **動作/狀態**：`VirtualMachine::emulatorGpuMode` 的 angle_indirect 嘗試已還原（CLI 不通且會降 lavapipe 軟體 Vulkan）；deployed gfxstream DLL **已還原為 Session 85 verified 60fps DLL**（md5 相符，備份在 `build/chimera-gfxstream-runtime/lib64/*.session85-verified.bak`）。`chimera-ui` build PASS、unit 20/20 PASS、0 殘留 process。
+- **下一步（若續攻）**：開 ANGLE/emulator verbose log 查 init hang 點（`ANGLE_DEFAULT_PLATFORM` / `-verbose -debug-init` / EGL_ANGLE debug），或評估 fork/重建 emulator.exe（超出現行範圍）。**現行誠實結論：硬體 host GLES routing 未完成，卡在 emulator/gfxstream headless 限制。**
+
 ## 最新狀態（2026-06-21 Session 83-84）
 
 - **D3D11 shared texture DXGI fix CONFIRMED**：`CreateSharedHandle` 第二參數從 `GENERIC_ALL (0x10000000)` 改為 `DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE`；修正後 `OpenSharedResourceByName` 不再回傳 `hr=0x80070057`，D3D11 shared texture 成功建立。
