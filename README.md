@@ -14,7 +14,7 @@ start-chimera.cmd
 ```
 
 - **預設（stock）**：SDK emulator + gRPC 顯示路徑。一般 Android 首頁 / app 正常渲染、輸入完整，FPS 較低（push-based 內容約 4–17）。**日常可用。**
-- **`-Fast`（custom 60fps runtime）**：自訂 gfxstream shared-texture runtime，連續渲染內容（遊戲）走 `postFrameDirectGpu`（guest VK image → D3D11）達 **1920×1080 / 60 FPS**；一般 Android UI 走 SwiftShader ES compositor path，已驗證 boot 到 Chimera Launcher、截圖非黑、Settings 可互動。
+- **`-Fast`（custom 60fps runtime）**：自訂 gfxstream shared-texture runtime，連續渲染內容（遊戲）走 `postFrameDirectGpu`（guest VK image → GPU blit → D3D11 shared texture）已通過嚴格可見 **1920×1080 / 60 FPS / 120 秒**驗證；一般 Android UI 走 SwiftShader ES compositor path，已驗證 boot 到 Chimera Launcher、截圖非黑、Settings 可互動。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-chimera.ps1 -Fast
@@ -56,7 +56,7 @@ Chimera (Host Windows, 單一 Qt6/QML 視窗)
   Input    InputBridge → emulator gRPC sendTouch/sendKey（console/QMP/ADB fallback）
   Display  ┌─ stock：headless emulator + gRPC getScreenshot（1920×1080，可用，低 FPS）
            └─ custom gfxstream runtime：
-                continuous content → postFrameDirectGpu（guest VK image → GPU blit → D3D11）→ 60 FPS
+                continuous content → postFrameDirectGpu（guest VK image → GPU blit → D3D11 shared texture）→ 60 FPS
                 normal UI（SurfaceFlinger GLES 合成）→ SwiftShader ES compositor（可見 / 可互動）
   Audio    WASAPI shared-mode
   Engine   Android Emulator / gfxstream / QEMU + WHPX（headless，-no-window）

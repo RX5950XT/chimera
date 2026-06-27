@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QQuickItem>
+#include <QTimer>
 #include <QImage>
 #include <QSize>
 #include <QPointF>
@@ -77,6 +78,7 @@ private:
     struct NativeD3D11TextureState;
     std::unique_ptr<NativeD3D11TextureState> m_nativeD3D11State;
     std::unique_ptr<NativeD3D11TextureState> m_uploadD3D11State;
+    QTimer m_presentTimer;
     QSize  m_guestSize;
     chimera::input::CoordinateMapper m_mapper;
     bool   m_mouseLocked = false;

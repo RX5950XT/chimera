@@ -1,5 +1,20 @@
 # Chimera Lessons
 
+## 2026-06-28 — verifier 不能過濾 post-warmup 零 FPS，且 emulator port 要檢查 pair
+
+- Android Emulator 的 ADB port 是 console port + 1；本機服務可能只占用 odd ADB port（例如 `5561`），造成 emulator 內部 boot completed，但 ADB server 顯示 `no emulators found`。
+- **Rule**：verifier 不可硬寫 console port；必須挑選 console/ADB 兩個 port 都可用的 pair，或在失敗時明確提示 `console+1` 被占用。
+- 60 FPS verifier 若把 post-warmup `effective=0` 樣本過濾掉，會製造假 PASS；host render 被 Windows/Qt occlusion throttling 時尤其危險。
+- **Rule**：warmup boundary 之後任何 `effective<=0` 都必須 fail；需要可見 host GuestDisplay 的測試，要在量測期間保持 host window 可見/前景。
+- stale ColorBuffer miss 可以是 benign lifecycle noise，但高頻 per-frame stderr log 會破壞 FPS；保留首次/低頻 throttled diagnostic，不可在 hot path 每幀打 error。
+
+## 2026-06-27 — 60 FPS verifier 不能只相信前端 FPS
+
+- 前端 `CHIMERA_PERF` / effective FPS 只能證明 host pipeline 有 cadence，不能單獨證明「畫面真的可見」。黑屏、空畫面、或 workload 沒在前景時，仍可能量到看似穩定的 60 FPS。
+- 使用者指出「要等畫面跑出來再測試；全黑屏 60fps 很正常」是正確 gate 修正。
+- **Rule**：任何 1080p/60 完成證據都必須先通過可見畫面 gate：ADB 確認目標 workload 在前景、實際 `screencap` 拉回、解析度達 1920x1080、PNG 大小合理、像素抽樣非黑且有亮度分布；通過後才 reset/mark warmup boundary 並採樣 FPS。
+- 若 gate 只能證明 synthetic app，回報必須明說「連續渲染 workload 達標」，不可外推成 idle Home / push-based UI 也固定 60 FPS。
+
 ## 2026-06-19 — `BELOW_NORMAL` 與 EcoQoS / memory priority 必須分開建模
 
 - `BELOW_NORMAL_PRIORITY_CLASS` 的目的是把 emulator/qemu 的**排程優先級**降到低於前景 app，這通常已足夠保護 host audio。

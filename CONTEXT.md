@@ -6,7 +6,16 @@
 
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 
-## 最新狀態（2026-06-26 Session 88）— custom runtime 一般 UI 黑屏修復
+## 最新狀態（2026-06-28 Session 89）— 嚴格可見 1080p/60 穩定 PASS
+
+- **完成**：custom gfxstream `-Fast` 路徑已通過嚴格可見 120 秒 1080p/60 verifier：`effective_fps_min=59.9 / avg=60.0 / dup=0`、`result=pass`。量測前先用 ADB screencap 確認 `chimera-gl60-smoke` foreground 且 1920×1080 非黑可見（nonblack 83.3%、luma spread 305）。
+- **GPU-direct path**：`GPU-direct D3D11 import OK=1`、`path=GPU-direct=79`、`Shared D3D11 texture display capture started=1`、`chimera-raw=0`、`GL readback fallback=0`、`recordCopy unavailable=0`。D3D11 NT shared texture 由 Vulkan external-memory import，`recordCopy` 直接 GPU blit 到 shared texture；不走 staging `UpdateSubresource`。
+- **Verifier 修正**：自動挑 console/ADB 皆空的 emulator port pair（避免 `urbanvpnserv` 占用 `5561` 造成 emulator 已 boot 但 ADB `no emulators found`）；post-warmup `effective<=0` 直接 fail，不再過濾假 PASS；量測期間定期把 host window 帶前景，避免 Windows/Qt occlusion throttling。
+- **長測穩定性修正**：stale ColorBuffer miss 原本在 120 秒內刷 18,563 行 stderr 並導致 min 掉到 51.3；`invalidateColorBufferForVk/Gl` 與 bad color buffer handle 改成低頻 throttled diagnostic 後，長測只剩 33 行且 FPS 穩定。
+- **收尾驗證**：`ctest --test-dir build -C Release --output-on-failure -LE integration` → 20/20 PASS；`scripts\start-chimera.ps1 -Fast -SelfTest` PASS（boot completed、1920×1080、Launcher screenshot 75,650 bytes、Settings interactivity OK、0 residual process）。
+- **誠實邊界**：1080p/60 證據是連續渲染 workload（GL60 / 類遊戲）；push-based idle Home / boot animation 仍可能低 FPS，屬 Android producer cadence 正常行為。
+
+## 歷史狀態（2026-06-26 Session 88）— custom runtime 一般 UI 黑屏修復
 
 - **完成**：`-Fast` custom gfxstream runtime 的一般 Android UI 已不再黑屏；`scripts\start-chimera.ps1 -Fast -SelfTest` PASS：boot completed、1920×1080、Chimera Launcher 截圖約 75–76KB、Settings 可互動、0 residual process。
 - **根因修正**：prebuilt emulator 在 headless `-gpu host` 下仍回報 GLES mode `host`，但 underlying EGL/GLES 會落到 bundled SwiftShader ES；renderer HOST 讓 `shouldEnableCoreProfile()` 發桌面 `#version 330 core` shader，SwiftShader ES compiler 拒絕而黑屏。正式修法改為 `CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES=1` 時只關閉 core-profile shader emission（`gles_version_detector.cpp::shouldEnableCoreProfile()`），保留 renderer identity 與 direct-VK path。

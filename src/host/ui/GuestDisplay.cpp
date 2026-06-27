@@ -70,6 +70,15 @@ GuestDisplay::GuestDisplay(QQuickItem *parent)
     setFlag(QQuickItem::ItemHasContents, true);
     setActiveFocusOnTab(true);
     setFocus(true);
+    m_presentTimer.setInterval(16);
+    m_presentTimer.setTimerType(Qt::PreciseTimer);
+    connect(&m_presentTimer, &QTimer::timeout, this, [this]() {
+        if (m_sharedD3D11TextureName.isEmpty()) {
+            m_presentTimer.stop();
+            return;
+        }
+        update();
+    });
 }
 
 GuestDisplay::~GuestDisplay() = default;
@@ -87,6 +96,9 @@ void GuestDisplay::setFrame(const QImage &img) {
     m_nativeD3D11TextureHasAlpha = false;
     m_sharedD3D11TextureName.clear();
     m_nativeD3D11State.reset();
+    if (m_presentTimer.isActive()) {
+        m_presentTimer.stop();
+    }
     if (sizeChanged && !m_frame.isNull() && !m_guestSize.isValid()) {
         m_mapper.setGuestSize(m_frame.width(), m_frame.height());
     }
@@ -115,6 +127,9 @@ void GuestDisplay::setNativeD3D11Texture(void *texture,
     m_sharedD3D11TextureName.clear();
     m_uploadD3D11State.reset();
     m_frame = QImage();
+    if (m_presentTimer.isActive()) {
+        m_presentTimer.stop();
+    }
     if (sizeChanged && !m_guestSize.isValid()) {
         m_mapper.setGuestSize(size.width(), size.height());
     }
@@ -139,6 +154,9 @@ void GuestDisplay::setSharedD3D11Texture(const QString &textureName,
     m_nativeD3D11TextureHasAlpha = hasAlpha;
     m_uploadD3D11State.reset();
     m_frame = QImage();
+    if (!m_presentTimer.isActive()) {
+        m_presentTimer.start();
+    }
     if (sizeChanged && !m_guestSize.isValid()) {
         m_mapper.setGuestSize(size.width(), size.height());
     }
@@ -155,6 +173,9 @@ void GuestDisplay::clearNativeD3D11Texture() {
     m_sharedD3D11TextureName.clear();
     m_nativeD3D11State.reset();
     m_uploadD3D11State.reset();
+    if (m_presentTimer.isActive()) {
+        m_presentTimer.stop();
+    }
     update();
     emit frameChanged();
 }
@@ -319,11 +340,14 @@ QSGNode *GuestDisplay::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) 
                 node->nativeTextureSize = m_nativeD3D11TextureSize;
             }
         }
+        const bool frameAdvanced = textureChanged || node->sequence != m_nativeD3D11TextureSequence;
         node->sequence = m_nativeD3D11TextureSequence;
 
         const QRectF dr = m_mapper.displayRect();
         node->setRect(dr.isEmpty() ? boundingRect() : dr);
-        emit framePainted();
+        if (frameAdvanced) {
+            emit framePainted();
+        }
         return node;
     }
 
@@ -393,10 +417,13 @@ QSGNode *GuestDisplay::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) 
                         node->nativeTextureSize = imageSize;
                     }
                 }
+                const bool frameAdvanced = textureChanged || node->sequence != m_frameSequence;
                 node->sequence = m_frameSequence;
                 const QRectF dr = m_mapper.displayRect();
                 node->setRect(dr.isEmpty() ? boundingRect() : dr);
-                emit framePainted();
+                if (frameAdvanced) {
+                    emit framePainted();
+                }
                 return node;
             }
         }
@@ -411,7 +438,8 @@ QSGNode *GuestDisplay::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) 
     }
     texture->setFiltering(QSGTexture::Nearest);
     node->replaceTexture(texture);
-    node->sequence++;
+    const bool frameAdvanced = node->sequence != m_frameSequence;
+    node->sequence = m_frameSequence;
     node->nativeD3D11 = false;
     node->nativeTexture = nullptr;
     node->nativeTextureName.clear();
@@ -419,7 +447,9 @@ QSGNode *GuestDisplay::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) 
 
     const QRectF dr = m_mapper.displayRect();
     node->setRect(dr.isEmpty() ? boundingRect() : dr);
-    emit framePainted();
+    if (frameAdvanced) {
+        emit framePainted();
+    }
     return node;
 }
 

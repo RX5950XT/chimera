@@ -935,6 +935,88 @@ bool FrameBuffer::Impl::postImplSync(HandleType p_colorbuffer, bool needLockAndB
         $frameBufferHeadlessVkReplacement `
         "FrameBuffer headless Vulkan shared texture post"
 
+
+    # Throttle stale ColorBuffer miss logs. In long GPU-direct runs gfxstream can repeatedly
+    # invalidate an already-destroyed transient ColorBuffer; logging every miss can produce
+    # tens of thousands of stderr lines and disturb the 60 FPS producer. Keep first/low-rate
+    # diagnostics, but avoid per-frame log I/O.
+    Replace-Text $frameBuffer @'
+bool FrameBuffer::Impl::invalidateColorBufferForVk(HandleType colorBufferHandle) {
+    // It reads contents from GL, which requires a context lock.
+    // Also we should not do this in PostWorkerGl, otherwise it will deadlock.
+    //
+    // b/283524158
+    // b/273986739
+    AutoLock mutex(m_lock);
+    auto colorBuffer = findColorBuffer(colorBufferHandle);
+    if (!colorBuffer) {
+        GFXSTREAM_ERROR("Failed to find ColorBuffer: %d", colorBufferHandle);
+        return false;
+    }
+    return colorBuffer->invalidateForVk();
+}
+'@ @'
+bool FrameBuffer::Impl::invalidateColorBufferForVk(HandleType colorBufferHandle) {
+    // It reads contents from GL, which requires a context lock.
+    // Also we should not do this in PostWorkerGl, otherwise it will deadlock.
+    //
+    // b/283524158
+    // b/273986739
+    AutoLock mutex(m_lock);
+    auto colorBuffer = findColorBuffer(colorBufferHandle);
+    if (!colorBuffer) {
+        static std::atomic<uint64_t> sMissingInvalidateVkLogs{0};
+        const uint64_t logCount = ++sMissingInvalidateVkLogs;
+        if (logCount == 1 || logCount == 60 || (logCount % 600) == 0) {
+            GFXSTREAM_ERROR("Failed to find ColorBuffer: %d (invalidateVk throttled count=%llu)",
+                            colorBufferHandle, (unsigned long long)logCount);
+        }
+        return false;
+    }
+    return colorBuffer->invalidateForVk();
+}
+'@ "FrameBuffer throttle invalidateColorBufferForVk stale ColorBuffer logs"
+
+    Replace-Text $frameBuffer @'
+bool FrameBuffer::Impl::invalidateColorBufferForGl(HandleType colorBufferHandle) {
+    auto colorBuffer = findColorBuffer(colorBufferHandle);
+    if (!colorBuffer) {
+        GFXSTREAM_ERROR("Failed to find ColorBuffer: %d", colorBufferHandle);
+        return false;
+    }
+    return colorBuffer->invalidateForGl();
+}
+'@ @'
+bool FrameBuffer::Impl::invalidateColorBufferForGl(HandleType colorBufferHandle) {
+    auto colorBuffer = findColorBuffer(colorBufferHandle);
+    if (!colorBuffer) {
+        static std::atomic<uint64_t> sMissingInvalidateGlLogs{0};
+        const uint64_t logCount = ++sMissingInvalidateGlLogs;
+        if (logCount == 1 || logCount == 60 || (logCount % 600) == 0) {
+            GFXSTREAM_ERROR("Failed to find ColorBuffer: %d (invalidateGl throttled count=%llu)",
+                            colorBufferHandle, (unsigned long long)logCount);
+        }
+        return false;
+    }
+    return colorBuffer->invalidateForGl();
+}
+'@ "FrameBuffer throttle invalidateColorBufferForGl stale ColorBuffer logs"
+
+    Replace-Text $frameBuffer @'
+            GFXSTREAM_ERROR("bad color buffer handle %d", p_colorbuffer);
+            // bad colorbuffer handle
+            return false;
+'@ @'
+            static std::atomic<uint64_t> sBadColorBufferHandleLogs{0};
+            const uint64_t logCount = ++sBadColorBufferHandleLogs;
+            if (logCount == 1 || logCount == 60 || (logCount % 600) == 0) {
+                GFXSTREAM_ERROR("bad color buffer handle %d (throttled count=%llu)",
+                                p_colorbuffer, (unsigned long long)logCount);
+            }
+            // bad colorbuffer handle
+            return false;
+'@ "FrameBuffer throttle bad color buffer handle logs"
+
     # Fix refcount guard: remove chimeraHeadlessVkPost variable from condition if it was removed above.
     Replace-FirstAvailable $frameBuffer `
         @(
