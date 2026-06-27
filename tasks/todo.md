@@ -2,6 +2,24 @@
 
 ---
 
+## 2026-06-28 Session 89 — 嚴格可見 1080p/60 穩定 PASS
+
+### Plan
+- [x] 修正 verifier port 選擇：自動挑選 console/ADB 皆空的 port pair，避免 `urbanvpnserv` 占用 `5561` 造成 emulator 已 boot 但 ADB 看不到 device。
+- [x] 修正 GPU-direct runtime regression：恢復 D3D11 NT shared texture 由 Vulkan external-memory import，`postFrameDirectGpu` 不走 staging `UpdateSubresource`。
+- [x] 修正 stale ColorBuffer log storm：`invalidateColorBufferForVk/Gl` 與 bad color buffer handle 改低頻節流，避免 18k+ stderr lines 拉低 producer。
+- [x] 修正 verifier 假 PASS：post-warmup `effective<=0` 不再被過濾，直接 fail；量測期間保持 host window 前景避免 occlusion throttling。
+- [x] 驗證：嚴格 120 秒可見 verifier PASS、non-integration unit tests 20/20 PASS、`start-chimera.ps1 -Fast -SelfTest` PASS。
+
+### Review
+- **嚴格 120 秒 PASS**：`visible_frame_bytes=56133`、`nonblack=83.3%`、`luma_spread=305`、`perf_samples=25`、`effective_fps_min=59.9 / avg=60.0`、`dup=0`、`result=pass`。
+- **GPU-direct 證據**：`GPU-direct D3D11 import OK=1`、`path=GPU-direct=79`、`Shared D3D11 texture display capture started=1`、`chimera-raw=0`、`GL readback fallback=0`、`recordCopy unavailable=0`。
+- **穩定性修正**：ColorBuffer stale miss 由 18,563 行降到 33 行 throttled diagnostic；不再讓 stderr I/O 破壞長測 FPS。
+- **一鍵 Fast 可用**：`start-chimera.ps1 -Fast -SelfTest` PASS：boot completed、1920×1080、Chimera Launcher foreground、screenshot 75,650 bytes、Settings interactivity OK、0 residual process。
+- **測試**：`ctest --test-dir build -C Release --output-on-failure -LE integration` → 20/20 PASS。
+
+---
+
 ## 2026-06-26 Session 88 — custom runtime 一般 UI 黑屏修復
 
 ### Plan

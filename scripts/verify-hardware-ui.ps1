@@ -61,9 +61,28 @@ function Kill-All {
         Stop-Process -Force -ErrorAction SilentlyContinue
 }
 
+$savedEnv = @{
+    CHIMERA_GFXSTREAM_HEADLESS_ANGLE = $env:CHIMERA_GFXSTREAM_HEADLESS_ANGLE
+    CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES = $env:CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES
+    CHIMERA_EMULATOR_PATH = $env:CHIMERA_EMULATOR_PATH
+    CHIMERA_LOG_PATH = $env:CHIMERA_LOG_PATH
+    CHIMERA_QUICK_BOOT = $env:CHIMERA_QUICK_BOOT
+    CHIMERA_ENABLE_GFXSTREAM_SHARED_TEXTURE = $env:CHIMERA_ENABLE_GFXSTREAM_SHARED_TEXTURE
+    CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE = $env:CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE
+    CHIMERA_GPU_MODE = $env:CHIMERA_GPU_MODE
+    CHIMERA_EMULATOR_CONSOLE_PORT = $env:CHIMERA_EMULATOR_CONSOLE_PORT
+}
+function Restore-Env {
+    foreach ($key in $script:savedEnv.Keys) {
+        if ($script:savedEnv[$key] -eq $null) { Remove-Item "Env:\$key" -ErrorAction SilentlyContinue }
+        else { Set-Item "Env:\$key" $script:savedEnv[$key] }
+    }
+}
+
 # --- env: custom gfxstream runtime + ANGLE host-GLES fallback (gated patch in
 # emugl_config.cpp). The emulator child inherits this.
 $env:CHIMERA_GFXSTREAM_HEADLESS_ANGLE = "1"
+Remove-Item Env:\CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES -ErrorAction SilentlyContinue
 $env:CHIMERA_EMULATOR_PATH = (Resolve-Path -LiteralPath $Runtime).Path
 $env:CHIMERA_LOG_PATH = $msgLog
 $env:CHIMERA_QUICK_BOOT = "0"
@@ -146,10 +165,11 @@ finally {
     Write-Host "shader_version_errors=$shaderErrs"
     Write-Host "borrowForDisplay_kvk_ok=$borrowOk"
     Write-Host "postFrameDirectGpu=$postDirect"
+    Restore-Env
 }
 
 if (-not $booted) { throw "FAIL: Android did not reach boot_completed" }
-if ($adapter -eq "SwiftShader-translator") { throw "FAIL: host GLES still on SwiftShader translator (software), not ANGLE" }
+if ($adapter -ne "ANGLE") { throw "FAIL: host GLES adapter did not report ANGLE (actual: $adapter)" }
 if ($shaderErrs -gt 0) { throw "FAIL: $shaderErrs compositor shader version errors (normal UI would be black)" }
 if ($homeBytes -lt $MinHomeBytes) { throw "FAIL: home screenshot $homeBytes B < $MinHomeBytes B (likely black)" }
 Write-Host "result=pass"

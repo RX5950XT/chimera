@@ -2,6 +2,8 @@
 #include "ChimeraGfxstreamVulkanSharedTextureBridge.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -348,80 +350,61 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::ensureInitialized(
         }
     }
 
-    // D3D11 is the primary owner of the shared texture; Vulkan imports from it.
-    // This lets the host call OpenSharedResourceByName on the same name.
+    // D3D11 is the primary owner of the named shared texture; Vulkan imports the
+    // same NT handle and blits directly into it. This is the 60 FPS path: no
+    // HOST_COHERENT staging buffer and no D3D11 UpdateSubresource copy.
     ID3D11Device* d3dDevice = nullptr;
-    {
-        HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
-                                       nullptr, 0, D3D11_SDK_VERSION, &d3dDevice, nullptr, nullptr);
-        if (FAILED(hr) || !d3dDevice) {
-            std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: D3D11CreateDevice failed hr=0x%lx\n",
-                         static_cast<unsigned long>(hr));
-            reset(&vk, device);
-            mHardUnavailable = true;
-            return false;
-        }
+    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
+                                   nullptr, 0, D3D11_SDK_VERSION, &d3dDevice, nullptr, nullptr);
+    if (FAILED(hr) || !d3dDevice) {
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: D3D11CreateDevice failed hr=0x%lx\n",
+                     static_cast<unsigned long>(hr));
+        reset(&vk, device);
+        mHardUnavailable = true;
+        return false;
     }
 
     ID3D11Texture2D* d3dTex = nullptr;
-    {
-        D3D11_TEXTURE2D_DESC desc = {};
-        desc.Width = extent.width;
-        desc.Height = extent.height;
-        desc.MipLevels = 1;
-        desc.ArraySize = 1;
-        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        desc.SampleDesc.Count = 1;
-        desc.Usage = D3D11_USAGE_DEFAULT;
-        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
-        HRESULT hr = d3dDevice->CreateTexture2D(&desc, nullptr, &d3dTex);
-        if (FAILED(hr) || !d3dTex) {
-            std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: CreateTexture2D failed hr=0x%lx\n",
-                         static_cast<unsigned long>(hr));
-            d3dDevice->Release();
-            reset(&vk, device);
-            mHardUnavailable = true;
-            return false;
-        }
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = extent.width;
+    desc.Height = extent.height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE |
+                     D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+    hr = d3dDevice->CreateTexture2D(&desc, nullptr, &d3dTex);
+    if (FAILED(hr) || !d3dTex) {
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: CreateTexture2D failed hr=0x%lx\n",
+                     static_cast<unsigned long>(hr));
+        d3dDevice->Release();
+        reset(&vk, device);
+        mHardUnavailable = true;
+        return false;
     }
 
     HANDLE sharedHandle = nullptr;
-    {
-        IDXGIResource1* dxgiRes = nullptr;
-        HRESULT hr = d3dTex->QueryInterface(__uuidof(IDXGIResource1),
-                                            reinterpret_cast<void**>(&dxgiRes));
-        if (FAILED(hr) || !dxgiRes) {
-            std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: IDXGIResource1 unavailable hr=0x%lx\n",
-                         static_cast<unsigned long>(hr));
-            d3dTex->Release();
-            d3dDevice->Release();
-            reset(&vk, device);
-            mHardUnavailable = true;
-            return false;
-        }
-        hr = dxgiRes->CreateSharedHandle(nullptr,
-                                         DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
-                                         mTextureName.c_str(), &sharedHandle);
-        dxgiRes->Release();
-        if (FAILED(hr) || !sharedHandle) {
-            std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: CreateSharedHandle failed hr=0x%lx\n",
-                         static_cast<unsigned long>(hr));
-            d3dTex->Release();
-            d3dDevice->Release();
-            reset(&vk, device);
-            mHardUnavailable = true;
-            return false;
-        }
-        // sharedHandle kept open so the NT kernel name remains valid.
+    IDXGIResource1* dxgiRes = nullptr;
+    hr = d3dTex->QueryInterface(__uuidof(IDXGIResource1), reinterpret_cast<void**>(&dxgiRes));
+    if (FAILED(hr) || !dxgiRes) {
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: IDXGIResource1 unavailable hr=0x%lx\n",
+                     static_cast<unsigned long>(hr));
+        d3dTex->Release();
+        d3dDevice->Release();
+        reset(&vk, device);
+        mHardUnavailable = true;
+        return false;
     }
-
-    // Get the immediate D3D11 context for UpdateSubresource calls on the render thread.
-    ID3D11DeviceContext* d3dCtx = nullptr;
-    d3dDevice->GetImmediateContext(&d3dCtx);
-    if (!d3dCtx) {
-        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: GetImmediateContext failed\n");
-        CloseHandle(sharedHandle);
+    hr = dxgiRes->CreateSharedHandle(nullptr,
+                                     DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+                                     mTextureName.c_str(), &sharedHandle);
+    dxgiRes->Release();
+    if (FAILED(hr) || !sharedHandle) {
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: CreateSharedHandle failed hr=0x%lx\n",
+                     static_cast<unsigned long>(hr));
         d3dTex->Release();
         d3dDevice->Release();
         reset(&vk, device);
@@ -429,10 +412,14 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::ensureInitialized(
         return false;
     }
 
-    // Vulkan device-local image: blit destination (D3D11 is sole owner, no import needed).
+    VkExternalMemoryImageCreateInfo externalImageCi = {
+        .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+        .pNext = nullptr,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+    };
     VkImageCreateInfo imageCi = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .pNext = nullptr,
+        .pNext = &externalImageCi,
         .flags = 0,
         .imageType = VK_IMAGE_TYPE_2D,
         .format = VK_FORMAT_R8G8B8A8_UNORM,
@@ -449,9 +436,8 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::ensureInitialized(
     };
     VkResult res = vk.vkCreateImage(device, &imageCi, nullptr, &mImage);
     if (res != VK_SUCCESS) {
-        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkCreateImage failed %d\n", res);
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkCreateImage(GPU-direct) failed %d\n", res);
         CloseHandle(sharedHandle);
-        d3dCtx->Release();
         d3dTex->Release();
         d3dDevice->Release();
         reset(&vk, device);
@@ -461,12 +447,15 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::ensureInitialized(
 
     VkMemoryRequirements reqs = {};
     vk.vkGetImageMemoryRequirements(device, mImage, &reqs);
+    // Some Windows Vulkan drivers reject vkGetMemoryWin32HandlePropertiesKHR for
+    // D3D11-created NT handles even though import succeeds. Use the image memory
+    // requirements directly; this matched the previously verified GPU-direct path
+    // (memType=1 on the target NVIDIA system).
     const uint32_t memoryType = findMemoryType(
         vk, physicalDevice, reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (memoryType == UINT32_MAX) {
-        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: no compatible memory type\n");
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: no GPU-direct memory type\n");
         CloseHandle(sharedHandle);
-        d3dCtx->Release();
         d3dTex->Release();
         d3dDevice->Release();
         reset(&vk, device);
@@ -474,17 +463,23 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::ensureInitialized(
         return false;
     }
 
+    VkImportMemoryWin32HandleInfoKHR importInfo = {
+        .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR,
+        .pNext = nullptr,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+        .handle = sharedHandle,
+        .name = nullptr,
+    };
     VkMemoryAllocateInfo allocInfo = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .pNext = nullptr,
+        .pNext = &importInfo,
         .allocationSize = reqs.size,
         .memoryTypeIndex = memoryType,
     };
     res = vk.vkAllocateMemory(device, &allocInfo, nullptr, &mMemory);
     if (res != VK_SUCCESS) {
-        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkAllocateMemory failed %d\n", res);
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkAllocateMemory(import D3D11) failed %d\n", res);
         CloseHandle(sharedHandle);
-        d3dCtx->Release();
         d3dTex->Release();
         d3dDevice->Release();
         reset(&vk, device);
@@ -493,88 +488,7 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::ensureInitialized(
     }
     res = vk.vkBindImageMemory(device, mImage, mMemory, 0);
     if (res != VK_SUCCESS) {
-        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkBindImageMemory failed %d\n", res);
-        CloseHandle(sharedHandle);
-        d3dCtx->Release();
-        d3dTex->Release();
-        d3dDevice->Release();
-        reset(&vk, device);
-        mHardUnavailable = true;
-        return false;
-    }
-
-    // Staging buffer: host-coherent, for readback from mImage → UpdateSubresource → D3D11 texture.
-    const VkDeviceSize stagingSize = static_cast<VkDeviceSize>(extent.width) * extent.height * 4;
-    VkBufferCreateInfo bufCI = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = stagingSize,
-        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-    };
-    res = vk.vkCreateBuffer(device, &bufCI, nullptr, &mStagingBuffer);
-    if (res != VK_SUCCESS) {
-        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkCreateBuffer (staging) failed %d\n", res);
-        CloseHandle(sharedHandle);
-        d3dCtx->Release();
-        d3dTex->Release();
-        d3dDevice->Release();
-        reset(&vk, device);
-        mHardUnavailable = true;
-        return false;
-    }
-
-    VkMemoryRequirements bufReqs = {};
-    vk.vkGetBufferMemoryRequirements(device, mStagingBuffer, &bufReqs);
-    const uint32_t stagingMemType = findMemoryType(
-        vk, physicalDevice, bufReqs.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (stagingMemType == UINT32_MAX) {
-        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: no host-coherent memory type\n");
-        CloseHandle(sharedHandle);
-        d3dCtx->Release();
-        d3dTex->Release();
-        d3dDevice->Release();
-        reset(&vk, device);
-        mHardUnavailable = true;
-        return false;
-    }
-
-    VkMemoryAllocateInfo stagingAlloc = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .pNext = nullptr,
-        .allocationSize = bufReqs.size,
-        .memoryTypeIndex = stagingMemType,
-    };
-    res = vk.vkAllocateMemory(device, &stagingAlloc, nullptr, &mStagingMemory);
-    if (res != VK_SUCCESS) {
-        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkAllocateMemory (staging) failed %d\n", res);
-        CloseHandle(sharedHandle);
-        d3dCtx->Release();
-        d3dTex->Release();
-        d3dDevice->Release();
-        reset(&vk, device);
-        mHardUnavailable = true;
-        return false;
-    }
-
-    res = vk.vkBindBufferMemory(device, mStagingBuffer, mStagingMemory, 0);
-    if (res != VK_SUCCESS) {
-        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkBindBufferMemory failed %d\n", res);
-        CloseHandle(sharedHandle);
-        d3dCtx->Release();
-        d3dTex->Release();
-        d3dDevice->Release();
-        reset(&vk, device);
-        mHardUnavailable = true;
-        return false;
-    }
-
-    void* stagingData = nullptr;
-    res = vk.vkMapMemory(device, mStagingMemory, 0, bufReqs.size, 0, &stagingData);
-    if (res != VK_SUCCESS || !stagingData) {
-        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkMapMemory (staging) failed %d\n", res);
-        CloseHandle(sharedHandle);
-        d3dCtx->Release();
+        std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkBindImageMemory(GPU-direct) failed %d\n", res);
         d3dTex->Release();
         d3dDevice->Release();
         reset(&vk, device);
@@ -585,13 +499,13 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::ensureInitialized(
     mD3D11Device = d3dDevice;
     mD3D11Texture = d3dTex;
     mD3D11SharedHandle = sharedHandle;
-    mD3D11Context = d3dCtx;
-    mStagingData = stagingData;
-    mLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
+    mD3D11Context = nullptr;
     *static_cast<SharedD3D11TextureHeader*>(mView) = {};
     std::fprintf(stderr,
-                 "Chimera gfxstream Vulkan bridge: initialized %ux%u shared texture (D3D11 owner)\n",
+                 "[chimera-gfxstream] GPU-direct D3D11 import OK %ux%u memType=%u\n",
+                 extent.width, extent.height, memoryType);
+    std::fprintf(stderr,
+                 "Chimera gfxstream Vulkan bridge: initialized %ux%u shared texture (GPU-direct)\n",
                  extent.width, extent.height);
     return true;
 #endif
@@ -959,10 +873,15 @@ void ChimeraGfxstreamVulkanSharedTextureBridge::postFrameDirectGpu(
     (void)src; (void)extent;
 #else
     if (!mDirectVkReady || !mDirectVk) return;
+    static std::atomic<int> sDirectFrameCount{0};
+    const int frameIndex = sDirectFrameCount.fetch_add(1) + 1;
+    const bool logTiming = (frameIndex == 1 || frameIndex % 120 == 0);
+    const auto tStart = std::chrono::steady_clock::now();
     const VulkanDispatch& vk = *mDirectVk;
 
     // Wait for previous submission, then reset fence.
     vk.vkWaitForFences(mDirectDevice, 1, &mDirectFence, VK_TRUE, UINT64_MAX);
+    const auto tPrevFence = std::chrono::steady_clock::now();
     vk.vkResetFences(mDirectDevice, 1, &mDirectFence);
     vk.vkResetCommandBuffer(mDirectCommandBuffer, 0);
 
@@ -996,6 +915,7 @@ void ChimeraGfxstreamVulkanSharedTextureBridge::postFrameDirectGpu(
 
     const bool copied = recordCopy(vk, mDirectPhysDev, mDirectDevice, cmdBuf,
                                    src, extent, VK_FILTER_LINEAR);
+    const auto tRecordCopy = std::chrono::steady_clock::now();
 
     if (!postRelLayout.empty()) {
         vk.vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1018,17 +938,23 @@ void ChimeraGfxstreamVulkanSharedTextureBridge::postFrameDirectGpu(
         android::base::AutoLock lock(*mDirectQueueLock);
         vk.vkQueueSubmit(mDirectQueue, 1, &submitInfo, mDirectFence);
     }
+    const auto tSubmit = std::chrono::steady_clock::now();
 
     if (copied) {
         vk.vkWaitForFences(mDirectDevice, 1, &mDirectFence, VK_TRUE, UINT64_MAX);
-        // Staging buffer is now HOST_COHERENT and the fence has signalled: push to D3D11 texture.
-        if (mStagingData && mD3D11Texture && mD3D11Context) {
-            auto* ctx = static_cast<ID3D11DeviceContext*>(mD3D11Context);
-            auto* tex = static_cast<ID3D11Texture2D*>(mD3D11Texture);
-            ctx->UpdateSubresource(tex, 0, nullptr, mStagingData,
-                                   mExtent.width * 4, 0);
-        }
+        const auto tFence = std::chrono::steady_clock::now();
         publishFrame(extent);
+        const auto tPublish = std::chrono::steady_clock::now();
+        if (logTiming) {
+            const auto ms = [](auto a, auto b) {
+                return std::chrono::duration<double, std::milli>(b - a).count();
+            };
+            std::fprintf(stderr,
+                "[chimera-timing] postFrameDirectGpu: prevFence=%.1fms submit=%.1fms fence=%.1fms pub=%.1fms total=%.1fms path=GPU-direct\n",
+                ms(tStart, tPrevFence), ms(tRecordCopy, tSubmit), ms(tSubmit, tFence),
+                ms(tFence, tPublish), ms(tStart, tPublish));
+            std::fflush(stderr);
+        }
     }
 #endif
 }
