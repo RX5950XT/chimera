@@ -8,8 +8,10 @@
     Double-click usage: run via start-chimera.cmd at the repo root, or
         powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-chimera.ps1
 
-    Default (no flags): stock SDK emulator + gRPC. Renders the home/apps
-    correctly; frame rate is lower than BlueStacks for push-based content.
+    Default (via root start-chimera.cmd): custom gfxstream + GuestVulkan +
+    interactive priority when available. Direct script usage without flags still
+    defaults to stock SDK + gRPC for conservative diagnostics; pass -Fast for the
+    production fast path.
 
     -Fast: custom gfxstream shared-texture runtime. Hits 1080p/60 for
     continuously-rendering content and uses a SwiftShader ES compositor path for
@@ -102,13 +104,17 @@ if ($customAvailable) {
     # This avoids the headless HOST/core-profile shader mismatch while preserving
     # the direct-VK shared-texture path used by continuously-rendering content.
     $env:CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES = "1"
+    # Route guest app HWUI through hardware Vulkan (skiavk on NVIDIA). chimera-ui
+    # applies the skiavk runtime props + re-enables smooth animations after boot.
+    # This is what makes general-UI scrolling/flinging feel ~60 instead of ~20.
+    $env:CHIMERA_GUEST_VULKAN = "1"
     Remove-Item Env:\CHIMERA_GFXSTREAM_HEADLESS_ANGLE -ErrorAction SilentlyContinue
     if ($RequireSharedTexture) {
         $env:CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE = "1"
-        Write-Host "display=gfxstream-shared-texture (-Fast, fail-closed; normal UI via SwiftShader ES)"
+        Write-Host "display=gfxstream-shared-texture (-Fast, fail-closed; normal UI via GuestVulkan/skiavk)"
     } else {
         Remove-Item Env:\CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE -ErrorAction SilentlyContinue
-        Write-Host "display=gfxstream-shared-texture (-Fast; normal UI via SwiftShader ES)"
+        Write-Host "display=gfxstream-shared-texture (-Fast; normal UI via GuestVulkan/skiavk)"
     }
 } else {
     Remove-Item Env:\CHIMERA_EMULATOR_PATH -ErrorAction SilentlyContinue
@@ -116,6 +122,7 @@ if ($customAvailable) {
     Remove-Item Env:\CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE -ErrorAction SilentlyContinue
     Remove-Item Env:\CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES -ErrorAction SilentlyContinue
     Remove-Item Env:\CHIMERA_GFXSTREAM_HEADLESS_ANGLE -ErrorAction SilentlyContinue
+    Remove-Item Env:\CHIMERA_GUEST_VULKAN -ErrorAction SilentlyContinue
     if ($customRequested) { Write-Host "display=stock-grpc (-Fast requested but custom runtime not found at $Runtime)" }
     else { Write-Host "display=stock-grpc (usable home/apps; use -Fast for the experimental 60fps runtime)" }
 }
@@ -214,12 +221,19 @@ try {
         if (Test-Path $shotPath) { Write-Host "screenshot_bytes=$((Get-Item $shotPath).Length)" }
 
         # Interactivity proof: launch Settings, confirm it reaches the foreground.
-        Invoke-AdbQuiet -Args @("-s", $Serial, "shell", "am", "start", "-n", "com.android.settings/.Settings") | Out-Null
-        Start-Sleep -Seconds 4
-        $afterFocus = (Invoke-AdbQuiet -Args @("-s", $Serial, "shell", "dumpsys window | grep -m1 mCurrentFocus")).Out
+        for ($i = 0; $i -lt 5; $i++) {
+            Invoke-AdbQuiet -Args @("-s", $Serial, "shell", "am", "start", "-n", "com.android.settings/.Settings") | Out-Null
+            Start-Sleep -Seconds 2
+            $afterFocus = (Invoke-AdbQuiet -Args @("-s", $Serial, "shell", "dumpsys window | grep -m1 mCurrentFocus")).Out
+            if ($afterFocus -match "settings") { break }
+            Invoke-AdbQuiet -Args @("-s", $Serial, "shell", "monkey", "-p", "com.android.settings", "1") | Out-Null
+            Start-Sleep -Seconds 2
+            $afterFocus = (Invoke-AdbQuiet -Args @("-s", $Serial, "shell", "dumpsys window | grep -m1 mCurrentFocus")).Out
+            if ($afterFocus -match "settings") { break }
+        }
         Write-Host "after_launch_focus=$afterFocus"
         if ($afterFocus -match "settings") { Write-Host "interactivity=ok" }
-        else { Write-Host "interactivity=unconfirmed" }
+        else { throw "self-test FAILED: Settings did not reach foreground ('$afterFocus')" }
     }
 }
 finally {

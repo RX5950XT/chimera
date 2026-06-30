@@ -264,12 +264,21 @@ namespace ChimeraVerifier {
     $isTopmost = (([long]$exStyle -band [long]$WS_EX_TOPMOST) -ne 0)
     $isMinimized = [ChimeraVerifier.NativeMethods]::IsIconic([IntPtr]$hwnd)
     if ($isTopmost -and -not $isMinimized) { return }
+    # Window origin is configurable (env CHIMERA_VERIFY_WINDOW_ORIGIN="x,y") so the
+    # host window can be parked on a secondary monitor during measurement without
+    # covering the user's primary screen. Default keeps the primary (40,40) spot.
+    # Negative coords (a left/secondary monitor) are valid.
+    $winX = 40; $winY = 40
+    $origin = [Environment]::GetEnvironmentVariable('CHIMERA_VERIFY_WINDOW_ORIGIN', 'Process')
+    if ($origin -and $origin -match '^\s*(-?\d+)\s*,\s*(-?\d+)\s*$') {
+        $winX = [int]$Matches[1]; $winY = [int]$Matches[2]
+    }
     # Pin HWND_TOPMOST (-1) so the Qt Quick render thread is never occlusion-throttled
     # to 0 FPS when another window holds focus during measurement. SetForegroundWindow
     # from a background process is unreliable (Windows foreground lock), but TOPMOST
     # z-order keeps the window exposed regardless of who owns the foreground.
     [ChimeraVerifier.NativeMethods]::ShowWindow($hwnd, 1) | Out-Null # SW_SHOWNORMAL
-    [ChimeraVerifier.NativeMethods]::SetWindowPos([IntPtr]$hwnd, [IntPtr](-1), 40, 40, 1280, 760, 0x0040) | Out-Null # HWND_TOPMOST | SWP_SHOWWINDOW
+    [ChimeraVerifier.NativeMethods]::SetWindowPos([IntPtr]$hwnd, [IntPtr](-1), $winX, $winY, 1280, 760, 0x0040) | Out-Null # HWND_TOPMOST | SWP_SHOWWINDOW
     [ChimeraVerifier.NativeMethods]::SetForegroundWindow($hwnd) | Out-Null
 }
 

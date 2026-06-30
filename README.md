@@ -13,8 +13,9 @@
 start-chimera.cmd
 ```
 
-- **預設（stock）**：SDK emulator + gRPC 顯示路徑。一般 Android 首頁 / app 正常渲染、輸入完整，FPS 較低（push-based 內容約 4–17）。**日常可用。**
-- **`-Fast`（custom 60fps runtime）**：自訂 gfxstream shared-texture runtime，連續渲染內容（遊戲）走 `postFrameDirectGpu`（guest VK image → GPU blit → D3D11 shared texture）已通過嚴格可見 **1920×1080 / 60 FPS / 120 秒**驗證；一般 Android UI 走 SwiftShader ES compositor path，已驗證 boot 到 Chimera Launcher、截圖非黑、Settings 可互動。
+- **預設（雙擊 `start-chimera.cmd`）**：最快可用路徑，等同 `start-chimera.ps1 -Fast -InteractiveFirst`。使用自訂 gfxstream shared-texture runtime + GuestVulkan/skiavk + normal priority；一般 Android UI 可見可互動，真實 host input path 已量到接近 60 的 headroom。
+- **`-Stock`（fallback）**：SDK emulator + gRPC 顯示路徑。一般 Android 首頁 / app 正常渲染、輸入完整，但 FPS 較低（push-based 內容約 4–17），只作保守 fallback / 診斷。
+- **`-Fast`（custom 60fps runtime）**：自訂 gfxstream shared-texture runtime，連續渲染內容（遊戲）走 `postFrameDirectGpu`（guest VK image → GPU blit → D3D11 shared texture）已通過嚴格可見 **1920×1080 / 60 FPS / 120 秒**驗證；一般 Android UI 會自動啟用 GuestVulkan/skiavk 並重開動畫。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-chimera.ps1 -Fast
@@ -104,12 +105,12 @@ Chimera (Host Windows, 單一 Qt6/QML 視窗)
 
 ## 現況與邊界（誠實版）
 
-- **日常可用**：stock 路徑 boot 到乾淨的 Chimera Launcher 首頁，真實 home/app/輸入/多開等全部可用；FPS 非 BlueStacks 等級。**這是目前最穩的日常用法（`start-chimera.cmd`）。**
-- **Fast custom runtime**：`-Fast` 現在可 boot 到可見的一般 UI（SwiftShader ES compositor），同時保留 custom gfxstream shared-texture runtime 給連續渲染內容。
+- **日常可用**：`start-chimera.cmd` 現在預設最快可用路徑（custom gfxstream + GuestVulkan/skiavk + normal priority），不是舊 stock gRPC 慢路徑。`-Stock` 只作保守 fallback / 診斷。
+- **Fast custom runtime**：`-Fast` 會 boot 到可見一般 UI，host 會套 `debug.renderengine.backend=skiavk` / `debug.hwui.renderer=skiavk` 並 framework restart，讓 HWUI + SurfaceFlinger 走硬體 Vulkan；GuestVulkan 時會重開 Android animations。
 - **1080p/60（synthetic）**：custom runtime 對**連續渲染內容**已驗證 `min 59.8 / avg 60.0 / dup 0`（`scripts\verify-true-1080p60.ps1`）。push-based 的開機動畫 / idle Home 本來就是低 FPS，屬正常。
-- **日常互動（真實量測）**：`scripts\verify-interactive-ui.ps1` 是日常可用性的權威證據（非 GL60 synthetic）。Fast 一般 UI（Settings 連續滾動）實測 `effFps≈20、dup=0`，走 **gpu-direct**（`postFrameDirectGpu`、無 CPU readback）；`guest≈stream≈render` 代表 host pipeline 1:1 跟上，瓶頸是 **guest SurfaceFlinger render cadence**（push-based ~20 unique fps）+ app cold-launch hitch（早期 `maxMs` 可達數秒）。一般 UI 60 仍需 gfxstream compositor R&D。
-- **背景音樂干擾**：emulator priority 現在可由 `CHIMERA_INTERACTIVE_PRIORITY`（或 `start-chimera.ps1 -AudioFirst`/`-InteractiveFirst`）調整；實測 steady-state helper churn ≈ 0，主要競爭來自 1080p readback 與 emulator 本體 CPU。`-AudioFirst`（idle/EcoQoS）最大化保護 host 音樂。
-- **一般 UI 合成**：custom runtime 的一般 UI 黑屏已修正為 SwiftShader ES compositor path；ANGLE/D3D11 硬體 compositor 已確認會在 SurfaceFlinger draw 觸發 ANGLE `libGLESv2.dll` AV，暫不作正式路徑。
+- **日常互動（真實量測）**：`scripts\verify-interactive-ui.ps1` 的 adb swipe 只代表測試注入路徑，不能外推成實際滑鼠手感。一次性 host mouse-drag probe 量到 production input path `guestMax=116.7 / render=57.4 / dup=0`，證明 GPU-direct + host input 有接近 60 headroom；但該測法會搶實體滑鼠，已禁止再用。後續若要量 host input，需新增不移動實體游標的 internal synthetic touch hook。
+- **背景音樂干擾**：雙擊 `start-chimera.cmd` 會用 `-InteractiveFirst`（normal priority，最順但可能較影響 host audio）。需要保護背景音樂時改用 `start-chimera.ps1 -Fast -AudioFirst`。
+- **一般 UI 合成**：只設 app HWUI skiavk 不夠；SurfaceFlinger 也必須 skiavk 並 framework restart，否則會只剩背景/空 UI。ANGLE/D3D11 硬體 compositor 已確認會在 SurfaceFlinger draw 觸發 ANGLE `libGLESv2.dll` AV，暫不作正式路徑。
 - 真實遊戲 flow 受益於 direct-VK 路徑，但尚未逐一重測。
 
 ---

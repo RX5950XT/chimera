@@ -2,6 +2,26 @@
 
 ---
 
+## 2026-06-30 Session 95 — 實際手感卡頓修正：雙擊改最快路徑 + GuestVulkan/skiavk 正式接線
+
+### Context
+使用者回報實際打開仍跟原本一樣卡。根因：`start-chimera.cmd` 雙擊雖註解說 custom runtime，實際呼叫 `start-chimera.ps1` 無旗標 → 走 stock gRPC 慢路徑；GuestVulkan/skiavk 仍只在 verifier 內，不在正常啟動路徑。
+
+### Plan
+- [x] Stage 0：Fast+GuestVulkan 現況量測，確認 path=gpu-direct、skiavk 生效，但 adb swipe verifier 仍 ~20fps。
+- [x] Stage 1：用 gfxinfo / chimera-timing 拆解，確認每幀 render 7–9ms、GPU 1ms、postFrameDirectGpu 0.6–1.8ms，非 GPU/post 瓶頸。
+- [x] Stage 2：接 GuestVulkan/skiavk 到 host 正常 boot；GuestVulkan 時重開動畫；`start-chimera.cmd` 預設 `-Fast -InteractiveFirst`。
+- [x] Stage 3：不用實體滑鼠的 SelfTest + unit tests；記錄 host-drag 一次性結果但停用該測法。
+
+### Review
+- **雙擊慢路徑修正**：`start-chimera.cmd` 現在預設 `-Fast -InteractiveFirst`；`scripts/start-chimera.ps1 -Fast` 自動設 `CHIMERA_GUEST_VULKAN=1`。`-Stock` 仍可手動強制 stock gRPC fallback。
+- **GuestVulkan 正式接線**：host boot completed 後自動 set runtime props `debug.renderengine.backend=skiavk` + `debug.hwui.renderer=skiavk` 並 framework restart 一次；restart 後才跑性能設定、launcher provisioning、first-boot setup。GuestVulkan 時重開 Android animations（1/1/1），避免硬體路徑還用舊軟體路徑的「關動畫」權宜配置。
+- **重要實證**：adb swipe verifier 仍約 `effAvg=20.4`，但它不是實際操作路徑；一次性 host mouse-drag probe 量到 `guestMax=116.7 / render=57.4 / dup=0`，證明 production input + GPU-direct path 有接近 60 headroom。該 probe 會搶實體滑鼠，使用者要求後已停用，不再使用。
+- **驗證**：`start-chimera.ps1 -Fast -InteractiveFirst -SelfTest` PASS：`display=gfxstream-shared-texture (-Fast; normal UI via GuestVulkan/skiavk)`、`priority=normal`、1920×1080、screenshot 246,563 bytes、Settings foreground `interactivity=ok`、0 residual、exit 0。`ctest -LE integration` 20/20 PASS。
+- **誠實邊界**：正式路徑已改到目前最快；adb verifier 仍不能代表真實手感。後續若要再量 host input，必須做不移動使用者游標的 host 內部 synthetic touch/test hook。
+
+---
+
 ## 2026-06-30 Session 94 — roadmap item 2（真實連續渲染重測）+ item 4（GuestVulkan 預設化評估）
 
 ### Context

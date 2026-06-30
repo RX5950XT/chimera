@@ -658,6 +658,20 @@ static void applyGuestPerformanceSettings() {
         "settings", "put", "global", "policy_control", "immersive.navigation=*",
     }, 5000);
     qDebug() << "Guest performance settings applied";
+
+    // On the hardware-Vulkan HWUI path (skiavk) per-frame render is ~9ms with
+    // headroom to 60 (measured), so smooth fling/transition animations are
+    // affordable — and they are what makes general-UI scrolling feel 60fps instead
+    // of jumping. The animation-disable above is a crutch only for the slow
+    // software (SwiftShader) path; lift it when guest Vulkan UI is in play.
+    if (isTruthyEnv("CHIMERA_GUEST_VULKAN")) {
+        runAdbShell({
+            "settings", "put", "global", "window_animation_scale", "1", ";",
+            "settings", "put", "global", "transition_animation_scale", "1", ";",
+            "settings", "put", "global", "animator_duration_scale", "1",
+        }, 4000);
+        qDebug() << "Guest animations re-enabled (GuestVulkan smooth UI)";
+    }
 }
 
 // Skip Android setup wizard and suppress first-boot prompts.
@@ -682,6 +696,28 @@ static void applyGuestFirstBootSetup() {
         "input", "keyevent", "3",         // KEYCODE_HOME
     }, 8000);
     qDebug() << "Guest first-boot setup applied";
+}
+
+// Route guest app HWUI AND SurfaceFlinger RenderEngine through hardware Vulkan
+// (skiavk) on the host NVIDIA GPU, then restart the framework so both come up on
+// Vulkan together. The restart is required: app HWUI renders its surfaces with
+// Vulkan, and SurfaceFlinger must also be on Vulkan (skiavk) to composite them —
+// otherwise only SF's own GL-drawn background shows and app content is dropped
+// (empty UI). sys.boot_completed is cleared so the boot poller waits for the
+// genuine post-restart boot rather than re-reading the stale pre-restart "1". The
+// Session 91 MSVCP140 future-crash fixes make app HWUI Vulkan stable. Only
+// meaningful on the custom gfxstream runtime launched with -feature Vulkan
+// (CHIMERA_GUEST_VULKAN=1). These are runtime debug.* sysprops; emulator -prop only
+// sets androidboot.* (a HWUI no-op), so they must be set here at runtime.
+static void applyGuestVulkanHardwareUi() {
+    runAdbShell({
+        "setprop", "debug.renderengine.backend", "skiavk", ";",
+        "setprop", "debug.hwui.renderer", "skiavk", ";",
+        "stop", ";",
+        "setprop", "sys.boot_completed", "0", ";",
+        "start",
+    }, 10000);
+    qDebug() << "Guest Vulkan hardware UI (skiavk) applied; framework restarting";
 }
 
 int main(int argc, char *argv[]) {
@@ -1659,6 +1695,30 @@ int main(int argc, char *argv[]) {
                 const QString booted = QString::fromLocal8Bit(proc->readAllStandardOutput()).trimmed();
                 proc->deleteLater();
                 if (booted == QStringLiteral("1")) {
+                    // GuestVulkan: on the first boot, switch HWUI + SF to hardware
+                    // Vulkan (skiavk) and restart the framework once so both come up
+                    // on Vulkan; boot_completed re-fires and this poller then runs the
+                    // normal setup below on the Vulkan framework. The interactive
+                    // verifier owns the restart itself (it re-gates the home frame to
+                    // avoid measuring mid-restart) and disables this via
+                    // CHIMERA_GUEST_VULKAN_HOST_SETUP=0; production keeps it on.
+                    const QByteArray hostSetup = envValue("CHIMERA_GUEST_VULKAN_HOST_SETUP");
+                    const bool hostDoesSkiavk = isTruthyEnv("CHIMERA_GUEST_VULKAN") &&
+                        hostSetup != "0" && hostSetup.toLower() != "false" && hostSetup.toLower() != "off";
+                    if (hostDoesSkiavk && !guestPerfTimer->property("skiavkApplied").toBool()) {
+                        guestPerfTimer->setProperty("skiavkApplied", true);
+                        guestPerfTimer->setProperty("attempts", 0);
+                        applyGuestVulkanHardwareUi();
+                        return;
+                    }
+                    // Grace after the skiavk restart: the shell may be unable to clear
+                    // sys.boot_completed, so wait ~12s (6 polls) before accepting "1"
+                    // to be sure the genuine post-restart boot is observed, not the
+                    // stale pre-restart value.
+                    if (guestPerfTimer->property("skiavkApplied").toBool() &&
+                        guestPerfTimer->property("attempts").toInt() < 6) {
+                        return;
+                    }
                     *androidBootReady = true;
                     guestPerfTimer->stop();
                     applyGuestPerformanceSettings();

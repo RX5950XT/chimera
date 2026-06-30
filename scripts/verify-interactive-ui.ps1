@@ -181,7 +181,8 @@ $TouchedEnv = @(
     'CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE', 'CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES',
     'CHIMERA_GFXSTREAM_HEADLESS_ANGLE', 'CHIMERA_LOG_PATH', 'CHIMERA_QUICK_BOOT',
     'CHIMERA_EMULATOR_CONSOLE_PORT', 'CHIMERA_INTERACTIVE_PRIORITY',
-    'CHIMERA_GRPC_TRANSPORT', 'CHIMERA_VIDEO_TRANSPORT'
+    'CHIMERA_GRPC_TRANSPORT', 'CHIMERA_VIDEO_TRANSPORT',
+    'CHIMERA_GUEST_VULKAN_HOST_SETUP'
 )
 $SavedEnv = @{}
 foreach ($name in $TouchedEnv) { $SavedEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
@@ -322,6 +323,11 @@ try {
     $env:CHIMERA_QUICK_BOOT = "0"
     $env:CHIMERA_LOG_PATH = $script:messageLog
     $env:CHIMERA_EMULATOR_CONSOLE_PORT = "$ConsolePort"
+    # This verifier owns the skiavk framework restart (it re-gates the home frame
+    # after, so it never measures mid-restart). Tell chimera-ui to skip its own
+    # host-side skiavk restart so the two don't race during boot.
+    if ($GuestVulkan) { $env:CHIMERA_GUEST_VULKAN_HOST_SETUP = "0" }
+    else { Remove-Item Env:\CHIMERA_GUEST_VULKAN_HOST_SETUP -ErrorAction SilentlyContinue }
     if ([string]::IsNullOrEmpty($Priority)) {
         Remove-Item Env:\CHIMERA_INTERACTIVE_PRIORITY -ErrorAction SilentlyContinue
     } else {
@@ -414,10 +420,15 @@ try {
     $lastTelemetry = Get-Date
     $up = $true
     while ((Get-Date) -lt $deadline) {
+        # Fast hard flings (40ms over the full height = high velocity) so fling
+        # momentum animates between injections — that is the guest-driven, vsync-paced
+        # 60Hz frame source on the hardware-HWUI path, and matches how a user actually
+        # flings rather than slow-dragging. (On the software path it is just a faster
+        # gesture; harmless.)
         if ($up) {
-            Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "input", "swipe", "960", "900", "960", "200", "120") -IgnoreExit | Out-Null
+            Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "input", "swipe", "960", "950", "960", "150", "40") -IgnoreExit | Out-Null
         } else {
-            Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "input", "swipe", "960", "200", "960", "900", "120") -IgnoreExit | Out-Null
+            Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "input", "swipe", "960", "150", "960", "950", "40") -IgnoreExit | Out-Null
         }
         $up = -not $up
         $now = Get-Date

@@ -1,5 +1,11 @@
 # Chimera Lessons
 
+## 2026-06-30 — 真實滑鼠路徑 ≠ adb swipe；不可用 SendInput 搶使用者滑鼠
+
+- **`adb input swipe` 不能代表實際操作流暢度**：Stage 3 量到 `adb` verifier 只有 `effAvg≈20`，但真實 host mouse-drag → Chimera → gRPC `sendTouch` 路徑瞬間量到 `guestMax=116.7 / render=57.4`、dup=0。**Rule**：日常互動性能結論必須區分「adb 測試路徑」與「host input production 路徑」；不能用 adb swipe 的 20fps 直接判定使用者手感。
+- **不可用會搶使用者滑鼠的測試**：Win32 `SendInput` / `SetCursorPos` 會移動實體游標，使用者明確要求「不要影響到我的滑鼠」。**Rule**：之後禁止用會搶實體滑鼠的自動化；若要測 host input，必須做不移動使用者游標的工具化路徑（例如 host 內部 synthetic touch/test hook）或先取得明確同意。
+- **GuestVulkan/skiavk 需要 HWUI + SurfaceFlinger 一起切 Vulkan 並 framework restart**：只 set `debug.hwui.renderer=skiavk`、不重啟 SF，會出現只剩背景/空畫面；完整路徑要 `debug.renderengine.backend=skiavk` + `debug.hwui.renderer=skiavk` + `stop/start`，再重新 gate 可見畫面。
+
 ## 2026-06-30 — 量測「真實負載 60」前先分清 guest backend；md5 非 gate；PS verifier success path 要顯式 exit
 
 - **重 GLES fill 量到的是 SwiftShader 軟體填色牆，不是 host 顯示/post path**（Session 94 item 2）：custom runtime headless 下 guest GLES → host **SwiftShader（軟體）**。gl60 加重 fragment（`-HeavyIterations 96` 全螢幕 plasma）→ 同一 gpu-direct path 60→6.6 fps、dup=0。瓶頸是 guest 軟體填色，非 post path。**Rule**：設計「真實遊戲負載」探針前先確定 guest 繪製跑在哪（GLES=SwiftShader 軟體 / Vulkan=NVIDIA 硬體），否則會把軟體填色慢誤判成顯示路徑慢。GLES heavy 數字只能標成「GLES/SwiftShader fill 天花板」，HW 遊戲負載要走 guest Vulkan 才有意義。

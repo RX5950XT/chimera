@@ -2,6 +2,14 @@
 
 > 開發歷程記錄。供下一個 Agent 快速接手用，不需要從 git log 重建脈絡。
 
+## 2026-06-30 — Session 95 — 實際手感卡頓修正：雙擊改最快路徑 + GuestVulkan/skiavk 正式接線
+
+- **使用者回報**：實際雙擊打開仍跟原本一樣卡。根因是 `start-chimera.cmd` 實際呼叫 `start-chimera.ps1` 無旗標 → 走 stock gRPC 慢路徑；GuestVulkan/skiavk 只活在 verifier，未接進正常啟動。
+- **修正**：`start-chimera.cmd` 預設 `-Fast -InteractiveFirst`；`start-chimera.ps1 -Fast` 自動設 `CHIMERA_GUEST_VULKAN=1`；`main.cpp` boot completed 後（custom runtime + `-feature Vulkan`）自動 runtime `setprop debug.renderengine.backend=skiavk` + `debug.hwui.renderer=skiavk`，framework restart 一次後再跑 launcher/setup；GuestVulkan 時 Android animations 改回 1/1/1，移除舊軟體路徑「關動畫」造成的跳動感。
+- **重要校正**：只設 `debug.hwui.renderer=skiavk` 不重啟 SF 會空畫面；HWUI + SurfaceFlinger 必須一起 skiavk 並 restart。verifier `-GuestVulkan` 會設 `CHIMERA_GUEST_VULKAN_HOST_SETUP=0`，由 verifier 自己管理 restart/re-gate，避免與 host setup 雙 restart race。
+- **性能實證**：adb swipe verifier 仍約 `effAvg=20.4`，但 adb swipe 不是實際操作路徑。一次性 host mouse-drag probe（之後禁止再用，因會搶使用者滑鼠）量到 `guestMax=116.7 / render=57.4 / dup=0`，證明 production input + GPU-direct path 有接近 60 headroom。
+- **驗證**：`start-chimera.ps1 -Fast -InteractiveFirst -SelfTest` PASS：1920×1080、screenshot 246,563 bytes、Settings foreground `interactivity=ok`、0 residual、exit 0；`ctest -LE integration` 20/20 PASS。後續若要再量 host input，必須新增不移動實體游標的 host-internal synthetic touch/test hook。
+
 ## 2026-06-30 — Session 94 — roadmap item 2（真實連續渲染重測）+ item 4（GuestVulkan 預設化評估）收尾
 
 - **背景**：roadmap 剩 item 2 / item 4。/goal「完成未完成事項自排序」。item 2 先（便宜、為 item 4 前置證據）。
