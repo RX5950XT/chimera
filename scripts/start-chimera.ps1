@@ -33,6 +33,21 @@
 .PARAMETER SelfTest
     Boot headless, verify Android reaches an interactive 1920x1080 home,
     capture a screenshot, then shut down cleanly. Does not leave a UI open.
+
+.PARAMETER AudioFirst
+    Run the emulator at idle priority (EcoQoS) to protect host audio playback at
+    the cost of interactive FPS. Sets CHIMERA_INTERACTIVE_PRIORITY=idle.
+
+.PARAMETER InteractiveFirst
+    Run the emulator at normal priority for the smoothest UI, accepting more host
+    audio contention. Sets CHIMERA_INTERACTIVE_PRIORITY=normal.
+
+.NOTES
+    The default launch mode stays Stock (known-usable). Whether the daily default
+    should flip to -Fast must be backed by scripts\verify-interactive-ui.ps1 data
+    (Fast general UI is visible but composited via SwiftShader ES — not 60 FPS);
+    that verifier is the authoritative daily-usability evidence, not the synthetic
+    GL60 60fps proof in verify-true-1080p60.ps1.
 #>
 [CmdletBinding()]
 param(
@@ -41,6 +56,8 @@ param(
     [switch]$Fast,
     [switch]$Stock,
     [switch]$RequireSharedTexture,
+    [switch]$AudioFirst,
+    [switch]$InteractiveFirst,
     [switch]$SelfTest,
     [ValidateRange(30, 600)]
     [int]$SelfTestBootSec = 200,
@@ -105,6 +122,22 @@ if ($customAvailable) {
 
 $env:CHIMERA_EMULATOR_CONSOLE_PORT = "$ConsolePort"
 Remove-Item Env:\CHIMERA_QUICK_BOOT -ErrorAction SilentlyContinue  # default full boot
+
+# --- Process-priority sugar (host audio <-> interactive FPS trade-off) --------
+# These just export CHIMERA_INTERACTIVE_PRIORITY, which chimera-ui resolves.
+# Default leaves it unset -> the built-in below_normal balance.
+if ($AudioFirst -and $InteractiveFirst) {
+    throw "-AudioFirst and -InteractiveFirst are mutually exclusive"
+}
+if ($AudioFirst) {
+    $env:CHIMERA_INTERACTIVE_PRIORITY = "idle"
+    Write-Host "priority=idle (-AudioFirst: protects host audio, lower interactive FPS)"
+} elseif ($InteractiveFirst) {
+    $env:CHIMERA_INTERACTIVE_PRIORITY = "normal"
+    Write-Host "priority=normal (-InteractiveFirst: smoother UI, more host audio contention)"
+} else {
+    Remove-Item Env:\CHIMERA_INTERACTIVE_PRIORITY -ErrorAction SilentlyContinue
+}
 
 # --- Normal launch ------------------------------------------------------------
 if (-not $SelfTest) {

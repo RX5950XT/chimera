@@ -39,6 +39,13 @@ param(
     [string]$ParseOnlyLog = "",
     [switch]$NoCleanStart,
     [switch]$GrpcOnly,
+    # item-2 probe: when >0, launch the gl60 workload in heavy mode (full-screen
+    # plasma quad, N-iteration per-pixel sin/cos loop) instead of the trivial
+    # rotating triangle. Characterises the GLES/SwiftShader continuous-render fill
+    # ceiling; pair with relaxed -MinEffectiveFps/-MinAvgEffectiveFps to *measure*
+    # rather than gate. Does not affect HW-accelerated (guest Vulkan) games.
+    [ValidateRange(0, 256)]
+    [int]$HeavyIterations = 0,
     # Hide the Chimera host window. Off by default because the verifier's render FPS
     # is the central GuestDisplay/Qt scene graph cadence, and a hidden/minimized
     # window can be OS/Qt-throttled independently of the Android producer.
@@ -59,169 +66,19 @@ $DefaultRuntime = Join-Path $RepoRoot "build\$DefaultRuntimeDir\emulator.exe"
 $ResolvedRuntime = if ([string]::IsNullOrWhiteSpace($RuntimePath)) { $DefaultRuntime } else { $RuntimePath }
 $QtBin = "C:\Qt\6.8.3\msvc2022_64\bin"
 
+# Shared verifier harness (port picking, adb, screenshot gate, perf parsing,
+# process cleanup, host-window foreground). Functions resolve $script:-scope
+# variables ($script:Adb/$script:Serial/$script:RepoRoot/$script:AvdName/
+# $script:AvdDir/$MinWidth/$MinHeight) defined above at call time.
+. (Join-Path $PSScriptRoot "ChimeraVerifyCommon.ps1")
+
 # Number of perf samples emitted before the measured (post-warmup) window begins.
 # Set by Exercise-DynamicGuest after the workload reaches steady cadence; the steady
 # gate evaluates only samples after this boundary. Stays 0 for ParseOnly/GrpcOnly.
 $script:MeasureStartSamples = 0
 
-function Require-File {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Name
-    )
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "$Name not found: $Path"
-    }
-}
-
-function Test-TcpPortAvailable {
-    param([Parameter(Mandatory = $true)][int]$Port)
-    $listeners = @(Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue |
-        Where-Object { $_.State -in @('Listen', 'Bound', 'Established', 'SynSent', 'SynReceived') })
-    return $listeners.Count -eq 0
-}
-
-function Get-FreeEmulatorConsolePort {
-    # Android Emulator reserves an even console port and the following odd ADB port.
-    # Some local services (for example VPN clients) bind 5555/5561, so pick a free pair.
-    foreach ($port in 5560, 5570, 5580, 5590, 5600, 5610, 5620, 5630, 5640, 5650, 5660, 5670) {
-        if ((Test-TcpPortAvailable -Port $port) -and (Test-TcpPortAvailable -Port ($port + 1))) {
-            return $port
-        }
-    }
-    throw "no free Android emulator console/ADB port pair found"
-}
-
-function Invoke-Adb {
-    param(
-        [Parameter(Mandatory = $true)][string[]]$Arguments,
-        [switch]$IgnoreExit
-    )
-    $oldErrorActionPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        $output = & $script:Adb @Arguments 2>&1
-        $exitCode = $LASTEXITCODE
-    }
-    finally {
-        $ErrorActionPreference = $oldErrorActionPreference
-    }
-    $text = ($output | Out-String).Trim()
-    if ($exitCode -ne 0 -and -not $IgnoreExit) {
-        throw "adb $($Arguments -join ' ') failed ($exitCode): $text"
-    }
-    [pscustomobject]@{ ExitCode = $exitCode; Output = $text }
-}
-
-function Get-AdbScreenshotStats {
-    param(
-        [Parameter(Mandatory = $true)][string]$Name,
-        [int]$GridX = 32,
-        [int]$GridY = 18
-    )
-
-    $safeName = $Name -replace '[^A-Za-z0-9_-]', '_'
-    $remote = "/sdcard/chimera_${safeName}.png"
-    $local = Join-Path $script:RepoRoot "tmp\chimera-${safeName}.png"
-    Remove-Item -LiteralPath $local -Force -ErrorAction SilentlyContinue
-    Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "screencap", "-p", $remote) | Out-Null
-    Invoke-Adb -Arguments @("-s", $script:Serial, "pull", $remote, $local) | Out-Null
-    Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "rm", "-f", $remote) -IgnoreExit | Out-Null
-    if (-not (Test-Path -LiteralPath $local -PathType Leaf)) {
-        throw "screenshot pull failed: $local"
-    }
-
-    try { Add-Type -AssemblyName System.Drawing -ErrorAction Stop } catch { throw "System.Drawing unavailable for screenshot verification: $($_.Exception.Message)" }
-    $bitmap = [System.Drawing.Bitmap]::new($local)
-    try {
-        $nonBlack = 0
-        $sampleCount = 0
-        $minLum = 765
-        $maxLum = 0
-        for ($iy = 0; $iy -lt $GridY; $iy++) {
-            $y = [Math]::Min($bitmap.Height - 1, [Math]::Floor(($iy + 0.5) * $bitmap.Height / $GridY))
-            for ($ix = 0; $ix -lt $GridX; $ix++) {
-                $x = [Math]::Min($bitmap.Width - 1, [Math]::Floor(($ix + 0.5) * $bitmap.Width / $GridX))
-                $pixel = $bitmap.GetPixel($x, $y)
-                $lum = [int]$pixel.R + [int]$pixel.G + [int]$pixel.B
-                if ($lum -gt 30) { $nonBlack++ }
-                if ($lum -lt $minLum) { $minLum = $lum }
-                if ($lum -gt $maxLum) { $maxLum = $lum }
-                $sampleCount++
-            }
-        }
-        $bytes = (Get-Item -LiteralPath $local).Length
-        [pscustomobject]@{
-            Path = $local
-            Bytes = $bytes
-            Width = $bitmap.Width
-            Height = $bitmap.Height
-            Samples = $sampleCount
-            NonBlackPercent = if ($sampleCount -gt 0) { 100.0 * $nonBlack / $sampleCount } else { 0.0 }
-            LumaSpread = $maxLum - $minLum
-        }
-    }
-    finally { $bitmap.Dispose() }
-}
-
-function Test-ForegroundPackage {
-    param([Parameter(Mandatory = $true)][string]$PackageRegex)
-
-    $window = Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "dumpsys", "window") -IgnoreExit
-    if ($window.Output -match "mCurrentFocus=.*$PackageRegex") { return $true }
-
-    $activities = Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "dumpsys", "activity", "activities") -IgnoreExit
-    if ($activities.Output -match "topResumedActivity=.*$PackageRegex") { return $true }
-    return $false
-}
-
 function Test-Gl60Foreground {
     return Test-ForegroundPackage -PackageRegex "com\.chimera\.gl60/(?:\.MainActivity|com\.chimera\.gl60\.MainActivity)"
-}
-
-function Wait-VisiblePackageFrame {
-    param(
-        [Parameter(Mandatory = $true)][string]$Name,
-        [Parameter(Mandatory = $true)][string]$PackageRegex,
-        [int]$TimeoutSec = 30,
-        [scriptblock]$Relaunch
-    )
-
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    $lastError = "no screenshot attempted"
-    $attempt = 0
-    while ((Get-Date) -lt $deadline) {
-        $attempt++
-        if (-not (Test-ForegroundPackage -PackageRegex $PackageRegex)) {
-            $lastError = "$Name is not foreground"
-            Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "input", "keyevent", "224") -IgnoreExit | Out-Null
-            Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "wm", "dismiss-keyguard") -IgnoreExit | Out-Null
-            if ($null -ne $Relaunch -and ($attempt % 3) -eq 1) { & $Relaunch }
-            Start-Sleep -Seconds 1
-            continue
-        }
-        try {
-            $stats = Get-AdbScreenshotStats -Name $Name
-            Write-Host ("visible_frame_bytes={0}" -f $stats.Bytes)
-            Write-Host ("visible_frame_nonblack_pct={0:N1}" -f $stats.NonBlackPercent)
-            Write-Host ("visible_frame_luma_spread={0}" -f $stats.LumaSpread)
-            if ($stats.Width -lt $MinWidth -or $stats.Height -lt $MinHeight) {
-                throw "visible frame below floor: $($stats.Width)x$($stats.Height)"
-            }
-            if ($stats.Bytes -lt 20000) {
-                throw "visible frame PNG too small; likely black/empty: $($stats.Bytes) bytes"
-            }
-            if ($stats.NonBlackPercent -lt 10.0 -or $stats.LumaSpread -lt 40) {
-                throw "visible frame lacks content: nonBlack=$([math]::Round($stats.NonBlackPercent,1))% spread=$($stats.LumaSpread)"
-            }
-            return
-        }
-        catch {
-            $lastError = $_.Exception.Message
-            Start-Sleep -Seconds 1
-        }
-    }
-    throw "$Name visible-frame gate failed before FPS measurement: $lastError"
 }
 
 function Wait-VisibleGl60Frame {
@@ -232,121 +89,6 @@ function Wait-VisibleGl60Frame {
         -PackageRegex "com\.chimera\.gl60/(?:\.MainActivity|com\.chimera\.gl60\.MainActivity)" `
         -TimeoutSec $TimeoutSec `
         -Relaunch { Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "am", "start", "-n", "com.chimera.gl60/.MainActivity") -IgnoreExit | Out-Null }
-}
-
-function Get-ChimeraProcesses {
-    $candidates = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.Name -eq "chimera-ui.exe" -or
-            $_.Name -eq "emulator.exe" -or
-            $_.Name -like "qemu-system*.exe"
-        })
-    foreach ($candidate in $candidates) {
-        $commandLine = [string]$candidate.CommandLine
-        $isChimera =
-            $candidate.Name -eq "chimera-ui.exe" -or
-            $commandLine.Contains($script:RepoRoot) -or
-            $commandLine.Contains($script:AvdName) -or
-            $commandLine.Contains("chimera")
-        if (-not $isChimera) { continue }
-        Get-Process -Id $candidate.ProcessId -ErrorAction SilentlyContinue
-    }
-}
-
-function Stop-ChimeraProcesses {
-    @(Get-ChimeraProcesses) | Stop-Process -Force -ErrorAction SilentlyContinue
-}
-
-function Wait-NoChimeraProcesses {
-    param([int]$TimeoutSec = 30)
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    while ((Get-Date) -lt $deadline) {
-        if (@(Get-ChimeraProcesses).Count -eq 0) { return }
-        Start-Sleep -Milliseconds 500
-    }
-    $remaining = @(Get-ChimeraProcesses | ForEach-Object { "$($_.ProcessName):$($_.Id)" })
-    throw "Timed out waiting for Chimera processes to exit: $($remaining -join ', ')"
-}
-
-function Remove-StaleAvdLocks {
-    if (-not (Test-Path -LiteralPath $script:AvdDir -PathType Container)) { return }
-    $locks = @(Get-ChildItem -LiteralPath $script:AvdDir -Filter "*.lock" -ErrorAction SilentlyContinue)
-    foreach ($lock in $locks) {
-        if ($null -eq $lock) { continue }
-        try {
-            $lock.Delete()
-        }
-        catch {
-            Write-Verbose "Could not remove stale AVD lock: $($lock.FullName)"
-        }
-    }
-}
-
-function Read-LogText {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return "" }
-    return (Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue)
-}
-
-function Quote-CmdArgument {
-    param([Parameter(Mandatory = $true)][string]$Value)
-    return '"' + ($Value -replace '"', '\"') + '"'
-}
-
-function Ensure-HostWindowVisible {
-    param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process)
-    $Process.Refresh()
-    if ($Process.MainWindowHandle -eq [IntPtr]::Zero) { return }
-    if (-not ([System.Management.Automation.PSTypeName]'ChimeraVerifier.NativeMethods').Type) {
-        Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-namespace ChimeraVerifier {
-  public static class NativeMethods {
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-  }
-}
-"@
-    }
-    [ChimeraVerifier.NativeMethods]::ShowWindow($Process.MainWindowHandle, 1) | Out-Null # SW_SHOWNORMAL
-    [ChimeraVerifier.NativeMethods]::SetWindowPos($Process.MainWindowHandle, [IntPtr]::Zero, 40, 40, 1280, 760, 0x0040) | Out-Null # SWP_SHOWWINDOW
-    [ChimeraVerifier.NativeMethods]::SetForegroundWindow($Process.MainWindowHandle) | Out-Null
-}
-
-function Get-PerfSamples {
-    param([Parameter(Mandatory = $true)][string]$LogText)
-    $machinePattern = 'CHIMERA_PERF guest=(?<guest>[0-9]+(?:\.[0-9]+)?) stream=(?<stream>[0-9]+(?:\.[0-9]+)?) render=(?<render>[0-9]+(?:\.[0-9]+)?) effective=(?<effective>[0-9]+(?:\.[0-9]+)?) dupPct=(?<dupPct>[0-9]+(?:\.[0-9]+)?).* total=(?<total>\d+)'
-    $machineMatches = [regex]::Matches($LogText, $machinePattern)
-    if ($machineMatches.Count -gt 0) {
-        foreach ($match in $machineMatches) {
-            [pscustomobject]@{
-                Guest = [double]$match.Groups["guest"].Value
-                Stream = [double]$match.Groups["stream"].Value
-                Render = [double]$match.Groups["render"].Value
-                Effective = [double]$match.Groups["effective"].Value
-                DuplicatePercent = [double]$match.Groups["dupPct"].Value
-                Total = [int]$match.Groups["total"].Value
-            }
-        }
-        return
-    }
-
-    $pattern = '\[Perf\] Guest: (?<guest>[0-9]+(?:\.[0-9]+)?) FPS \| Stream: (?<stream>[0-9]+(?:\.[0-9]+)?) FPS \| Render: (?<render>[0-9]+(?:\.[0-9]+)?) FPS .* Dup: (?<dup>\d+) \((?<dupPct>[0-9]+(?:\.[0-9]+)?)%\)'
-    $matches = [regex]::Matches($LogText, $pattern)
-    foreach ($match in $matches) {
-        $guest = [double]$match.Groups["guest"].Value
-        $stream = [double]$match.Groups["stream"].Value
-        $render = [double]$match.Groups["render"].Value
-        [pscustomobject]@{
-            Guest = $guest
-            Stream = $stream
-            Render = $render
-            Effective = [Math]::Min($guest, [Math]::Min($stream, $render))
-            DuplicatePercent = [double]$match.Groups["dupPct"].Value
-        }
-    }
 }
 
 function Assert-True1080p60Log {
@@ -467,50 +209,6 @@ function Assert-True1080p60GrpcLog {
     Write-Host ("unique_content_fps_max={0:N1}" -f $maxGuest)
 }
 
-function Wait-AndroidBoot {
-    param(
-        [Parameter(Mandatory = $true)][int]$TimeoutSec,
-        $AppProcess = $null
-    )
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    while ((Get-Date) -lt $deadline) {
-        if ($null -ne $AppProcess -and $AppProcess.HasExited) {
-            throw "chimera-ui exited before Android boot_completed=1, exitCode=$($AppProcess.ExitCode)"
-        }
-        $state = Invoke-Adb -Arguments @("-s", $script:Serial, "get-state") -IgnoreExit
-        if ($state.ExitCode -eq 0) {
-            $boot = Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "getprop", "sys.boot_completed") -IgnoreExit
-            if ($boot.Output.Trim() -eq "1") { return }
-        }
-        Start-Sleep -Seconds 1
-    }
-    throw "Android did not reach sys.boot_completed=1 within ${TimeoutSec}s"
-}
-
-function Assert-AndroidDisplayFloor {
-    $wm = Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "wm", "size")
-    if ($wm.Output -notmatch "(\d+)x(\d+)") {
-        throw "could not parse wm size: $($wm.Output)"
-    }
-    $width = [int]$Matches[1]
-    $height = [int]$Matches[2]
-    if ($width -lt $MinWidth -or $height -lt $MinHeight) {
-        throw "Android wm size below floor: ${width}x${height}, floor=${MinWidth}x${MinHeight}"
-    }
-
-    $density = Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "wm", "density")
-    Write-Host "wm_size=${width}x${height}"
-    Write-Host "wm_density=$($density.Output)"
-}
-
-function Invoke-CheckedTool {
-    param([Parameter(Mandatory = $true)][scriptblock]$Command)
-    & $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "Command failed with exit code $LASTEXITCODE"
-    }
-}
-
 function Build-Gl60SmokeApk {
     $sdk = Join-Path $RepoRoot "third_party\android-sdk"
     $buildTools = Join-Path $sdk "build-tools\34.0.0"
@@ -582,7 +280,12 @@ function Start-Gl60SmokeWorkload {
     # otherwise abort the run before any FPS is measured.
     Invoke-Adb -Arguments @("-s", $script:Serial, "uninstall", "com.chimera.gl60") -IgnoreExit | Out-Null
     Invoke-Adb -Arguments @("-s", $script:Serial, "install", "-r", $ApkPath) | Out-Null
-    Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "am", "start", "-W", "-n", "com.chimera.gl60/.MainActivity") | Out-Null
+    $amArgs = @("-s", $script:Serial, "shell", "am", "start", "-W", "-n", "com.chimera.gl60/.MainActivity")
+    if ($HeavyIterations -gt 0) {
+        $amArgs += @("--ei", "heavyIters", "$HeavyIterations")
+        Write-Host "gl60_heavy_iters=$HeavyIterations"
+    }
+    Invoke-Adb -Arguments $amArgs | Out-Null
     Start-Sleep -Seconds 3
     Wait-VisibleGl60Frame -TimeoutSec 30
     Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "dumpsys", "gfxinfo", "com.chimera.gl60", "reset") -IgnoreExit | Out-Null
@@ -609,7 +312,7 @@ function Exercise-DynamicGuest {
         $deadline = (Get-Date).AddSeconds($Seconds)
         while ((Get-Date) -lt $deadline) {
             Ensure-HostWindowVisible -Process $AppProcess
-            Start-Sleep -Seconds 5
+            Start-Sleep -Seconds 2
         }
         return
     }
