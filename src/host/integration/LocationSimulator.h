@@ -45,7 +45,9 @@ public:
 private:
     LocationSimulator() = default;
 
-    void emitGeoFix(const GeoPoint &pt);
+    // force=true bypasses the route-simulation throttle for deliberate setLocation()
+    // calls, which must always reach the guest.
+    void emitGeoFix(const GeoPoint &pt, bool force = false);
 
     GeoPoint m_current{0.0, 0.0, 0.0};
     GeoPoint m_lastEmitted{0.0, 0.0, 0.0};

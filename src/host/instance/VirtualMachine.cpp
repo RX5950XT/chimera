@@ -649,8 +649,10 @@ bool VirtualMachine::start() {
 
 bool VirtualMachine::stop() {
     setState(VMState::Stopping);
-    if (m_processHandle) {
-        const HANDLE hProc = static_cast<HANDLE>(m_processHandle);
+    // Claim the handle atomically: if the exit monitor already disposed it, we get
+    // nullptr and skip; otherwise we own the close (via waitForExit below).
+    if (void *claimed = InterlockedExchangePointer(&m_processHandle, nullptr)) {
+        const HANDLE hProc = static_cast<HANDLE>(claimed);
         bool exited = false;
         if (m_config.quickBoot && truthyEnv("CHIMERA_SAVE_QUICK_BOOT")) {
             const bool saved = runAdbEmuCommand(
@@ -666,7 +668,6 @@ bool VirtualMachine::stop() {
             ProcessLauncher::terminate(hProc);
             ProcessLauncher::waitForExit(hProc, 10000);
         }
-        m_processHandle = nullptr;
     }
     setState(VMState::Stopped);
     joinExitMonitor();
@@ -730,7 +731,13 @@ void VirtualMachine::startExitMonitor(uint32_t rootPid) {
                 ++missingSamples;
                 if (missingSamples >= 4) {
                     qCritical() << "Emulator process tree exited unexpectedly; rootPid=" << rootPid;
-                    m_processHandle = nullptr;
+                    // Atomically claim the handle so we close it exactly once even
+                    // if stop() races us; whoever exchanges the non-null pointer owns
+                    // the close. A bare null here both leaked the handle and could
+                    // double-close against stop().
+                    if (void *claimed = InterlockedExchangePointer(&m_processHandle, nullptr)) {
+                        CloseHandle(static_cast<HANDLE>(claimed));
+                    }
                     setState(VMState::Error);
                     return;
                 }

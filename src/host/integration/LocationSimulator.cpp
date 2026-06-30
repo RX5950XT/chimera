@@ -14,7 +14,7 @@ void LocationSimulator::setGeoSink(GeoSink sink) {
 
 void LocationSimulator::setLocation(double lat, double lon, double altitude) {
     m_current = {lat, lon, altitude};
-    emitGeoFix(m_current);
+    emitGeoFix(m_current, /*force=*/true);
 }
 
 GeoPoint LocationSimulator::currentLocation() const {
@@ -63,16 +63,17 @@ void LocationSimulator::update(double deltaSeconds) {
     emitGeoFix(m_current);
 }
 
-void LocationSimulator::emitGeoFix(const GeoPoint &pt) {
+void LocationSimulator::emitGeoFix(const GeoPoint &pt, bool force) {
     if (!m_geoSink) return;
 
-    // Throttle: only emit if enough time has passed OR location moved enough
+    // Throttle: only emit if enough time has passed OR location moved enough.
+    // Explicit setLocation() passes force=true so a deliberate fix is never dropped.
     const auto now = std::chrono::steady_clock::now();
     const double elapsedSec = std::chrono::duration<double>(now - m_lastEmitTime).count();
     const double dLat = std::abs(pt.latitude  - m_lastEmitted.latitude);
     const double dLon = std::abs(pt.longitude - m_lastEmitted.longitude);
 
-    if (elapsedSec < kMinIntervalSec && dLat < kMinMovementDeg && dLon < kMinMovementDeg)
+    if (!force && elapsedSec < kMinIntervalSec && dLat < kMinMovementDeg && dLon < kMinMovementDeg)
         return;
 
     m_lastEmitted = pt;

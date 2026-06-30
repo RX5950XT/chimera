@@ -20,7 +20,7 @@ bool FileUtils::writeFile(const std::filesystem::path &path, const std::string &
 }
 
 bool FileUtils::ensureDir(const std::filesystem::path &path) {
-    return std::filesystem::create_directories(path);
+    return std::filesystem::create_directories(path) || std::filesystem::is_directory(path);
 }
 
 std::vector<std::filesystem::path> FileUtils::listFiles(const std::filesystem::path &dir, const std::string &ext) {

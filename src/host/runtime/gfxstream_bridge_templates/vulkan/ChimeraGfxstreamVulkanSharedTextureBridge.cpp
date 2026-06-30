@@ -489,6 +489,7 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::ensureInitialized(
     res = vk.vkBindImageMemory(device, mImage, mMemory, 0);
     if (res != VK_SUCCESS) {
         std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkBindImageMemory(GPU-direct) failed %d\n", res);
+        CloseHandle(sharedHandle);
         d3dTex->Release();
         d3dDevice->Release();
         reset(&vk, device);

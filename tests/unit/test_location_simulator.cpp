@@ -55,6 +55,24 @@ private slots:
         LocationSimulator::instance().setLocation(1.0, 2.0, 3.0);
         QVERIFY(true);
     }
+
+    void explicitSetLocationIsNotDroppedByRouteThrottle() {
+        auto &sim = LocationSimulator::instance();
+        int count = 0;
+        sim.setGeoSink([&](double, double, double) { count++; });
+
+        // Prime: a far jump always emits and resets the throttle clock to now.
+        sim.setLocation(-40.0, -70.0, 0.0);
+        count = 0;
+
+        // An immediate, deliberate re-set to the same spot must still reach the
+        // guest — the 1 Hz/movement throttle is for route simulation, not for
+        // explicit user "teleport" calls.
+        sim.setLocation(-40.0, -70.0, 0.0);
+        QCOMPARE(count, 1);
+
+        sim.setGeoSink(nullptr);
+    }
 };
 
 QTEST_MAIN(TestLocationSimulator)

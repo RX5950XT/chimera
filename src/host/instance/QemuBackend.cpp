@@ -108,9 +108,12 @@ void QemuBackend::stop() {
     if (m_processHandle != INVALID_HANDLE_VALUE && m_processHandle != nullptr) {
         if (ProcessLauncher::isRunning(m_processHandle)) {
             ProcessLauncher::terminate(m_processHandle);
-            ProcessLauncher::waitForExit(m_processHandle, 5000);
+            if (ProcessLauncher::waitForExit(m_processHandle, 5000) < 0) {
+                CloseHandle(m_processHandle);
+            }
+        } else {
+            CloseHandle(m_processHandle);
         }
-        CloseHandle(m_processHandle);
         m_processHandle = INVALID_HANDLE_VALUE;
     }
 
@@ -246,7 +249,9 @@ void QemuBackend::onHealthCheck() {
     if (m_processHandle == INVALID_HANDLE_VALUE) return;
     if (!ProcessLauncher::isRunning(m_processHandle)) {
         const int exitCode = ProcessLauncher::waitForExit(m_processHandle, 0);
-        CloseHandle(m_processHandle);
+        if (exitCode < 0) {
+            CloseHandle(m_processHandle);
+        }
         m_processHandle = INVALID_HANDLE_VALUE;
         m_startupTimeoutTimer->stop();
 

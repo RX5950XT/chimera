@@ -205,7 +205,12 @@ static bool do_init(ID3D11Device* device, DXGI_FORMAT rtFormat)
     }
     wchar_t wTexName[256] = {};
     MultiByteToWideChar(CP_ACP, 0, texEnv, -1, wTexName, 256);
-    hr = dxgiRes->CreateSharedHandle(nullptr, GENERIC_ALL, wTexName, &g_sh_handle);
+    // GENERIC_ALL makes the consumer's OpenSharedResourceByName fail with
+    // E_INVALIDARG; the DXGI keyed-mutex/shared-resource access flags are the
+    // only valid ones for D3D11 NT shared handles (matches the production bridge).
+    hr = dxgiRes->CreateSharedHandle(nullptr,
+                                     DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+                                     wTexName, &g_sh_handle);
     dxgiRes->Release();
     if (FAILED(hr)) {
         char line[128];

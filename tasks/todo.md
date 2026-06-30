@@ -2,6 +2,90 @@
 
 ---
 
+## 2026-07-01 Session 98 — audit-driven concrete bug 修復（8 維 find → 對抗式 verify）
+
+### Context
+使用者：「有很多問題修復它們」。ultracode 開，跑全 repo 8 維審查 workflow（ui/instance/graphics/input/gfxstream/utils-audio/scripts/consistency → 對抗式 verify）。verify 階段中途吃 session limit，僅 1 個 finding 跑完 CONFIRMED；其餘 find 階段的 finding 由主 loop 逐一手動對抗式驗證 + TDD 修。不碰 general-UI 60 R&D、不用搶實體滑鼠的測試。
+
+### Plan
+- [x] 跑審查 workflow，抽出各 find agent 完整 findings（11 個）。
+- [x] 逐一手動 verify + 每個高信心可小修者先寫 RED 測試再修。
+- [x] 全量 build + ctest 非回歸。
+- [x] 文件同步：lessons / todo / CONTEXT。
+
+### Review — 8 個確認並修復（皆 TDD：先 RED 再 GREEN，除 gfxstream template 無法 runtime 驗證者）
+1. **`main.cpp:1597` ADB fallback 硬寫 port 5555**（P2，與 Session 93 gRPC port 同類漏網）→ 改 `g_runtimeCfg.adbPort`。新測 `test_ui_main_port_contract.cpp`。
+2. **`FileUtils::ensureDir` 目錄已存在回 false**（P2，`create_directories` 只在新建時回 true）→ `|| is_directory(path)`。新測 `test_file_utils.cpp`。
+3. **`MacroEngine` Tap playback 只送 press 不送 release**（P1，guest 觸控永久按住）→ 補 `onMouseButton(false,…)`。`test_macro_engine.cpp` 加 callback 觀測測試。
+4. **`QemuBackend` double `CloseHandle`**（P2，`waitForExit` WAIT_OBJECT_0 已關 handle，stop()/onHealthCheck() 又關一次）→ 只在 `waitForExit<0` / 非 running 時關。`test_qemu_backend.cpp` 加 source-contract 測試。
+5. **`gfxstream_proxy_d3d11.cpp:208` `CreateSharedHandle` 用 `GENERIC_ALL`**（P2，consumer `OpenSharedResourceByName` 回 E_INVALIDARG，Session 83-84 已對 production bridge 修過、proxy 漏）→ 改 `DXGI_SHARED_RESOURCE_READ|WRITE`。新測 `test_runtime_source_contract.cpp`。
+6. **`VirtualMachine.cpp:733` exit-monitor null 掉 handle 不 close**（P2 leak + 與 stop() 的 close 競態；只加 CloseHandle 反成 double-close）→ exit-monitor 與 stop() 都用 `InterlockedExchangePointer` 原子 claim，誰拿到非 null 誰關。source-contract 測試。
+7. **`ChimeraGfxstreamVulkanSharedTextureBridge.cpp:491` vkBindImageMemory 失敗路徑漏 `CloseHandle(sharedHandle)`**（P3 leak，上面兩個 sibling 失敗路徑都有）→ 補上。gfxstream template（patch script verbatim copy），純加 error-path cleanup、零風險，下次 runtime rebuild 帶入；本輪不重建 DLL。
+8. **`LocationSimulator::setLocation` 走 route throttle 被丟**（P2，explicit teleport 短時間內第二次被 1Hz/移動門檻擋掉）→ `emitGeoFix(pt, force=true)`，throttle 只留給 `update()` route 推進。`test_location_simulator.cpp` 加測試。
+
+### 刻意跳過（記錄不修）
+- **`AudioBridge.cpp:93` WASAPI forced format 無 `AUTOCONVERTPCM`**（P2 medium）：`AudioBridge::instance()` 產線從未被呼叫（main.cpp:1217 註解：guest audio 由 emulator 把 Goldfish audio 直接路由 host WASAPI，不經此 bridge）；改 WASAPI init 無法 runtime 驗證又涉敏感音訊路徑 + cbSize/EXTENSIBLE 一致性風險 → dead code 的潛在 bug，留記錄。
+- **`ChimeraGfxstreamVulkanSharedTextureBridge.cpp:587` staging-copy dead branch**（P3 dead-code）：`mStagingBuffer` 從未賦非 null；移除需動 member + 無法 runtime 驗證 DLL，無害 → 跳過。
+
+### 驗證
+- 完整 Release build PASS（chimera-ui.exe 連結成功）；**`ctest -LE integration` 23/23 PASS**（原 20 + 新 `test-file-utils`/`test-ui-main-port-contract`/`test-runtime-source-contract`；改過的 macro/qemu/location 仍綠）。
+- 每個修復先確認 RED（新測試在修前失敗），再 GREEN。
+- 誠實邊界：本批是 correctness/leak/race/contract 修復，非 FPS 提升；gfxstream template 兩處（491 修、587 跳）未經 DLL runtime 重驗。審查 workflow 的 verify 階段因 session limit 中斷，剩餘 finding 由主 loop 補做對抗式驗證。
+
+---
+
+## 2026-06-30 Session 97 — PowerShell harness port / cleanup 小修
+
+### Context
+使用者：「有些問題修復它們」。延續 Session 96 audit 後，再掃目前 harness 殘留同類問題：部分 self-test / R&D verifier 仍硬寫 port 或用全域 process kill，會重犯「非 Chimera emulator 被殺」與「5554/5555 被占用就 false timeout」問題。本輪只修 harness hygiene，不碰 gfxstream/perf R&D，不使用會搶實體滑鼠的測試。
+
+### Plan
+- [x] 在 `ChimeraVerifyCommon.ps1` 新增最小 `Resolve-EmulatorConsolePort`：`0` 自挑 free pair，非 0 必須是 5554–5680 even console port。
+- [x] `verify-interactive-ui.ps1` 改用共用 resolver，`-ConsolePort 5555` fail fast。
+- [x] `start-chimera.ps1 -SelfTest` 未明確指定 port 時自挑 free pair；pre/post cleanup 改用 cmdline-filtered `Stop-ChimeraProcesses` / `Wait-NoChimeraProcesses` / `Get-ChimeraProcesses`。
+- [x] `verify-hardware-ui.ps1` 新增 `-ConsolePort 0`、設定 `CHIMERA_EMULATOR_CONSOLE_PORT`，移除 hardcoded `emulator-5554` 與全域 `Kill-All`。
+- [x] 驗證：PowerShell parse、odd-port fail-fast、Fast SelfTest、R&D verifier smoke、ctest 20/20。
+- [x] 文件同步：lessons / CONTEXT / CLAUDE / AGENTS / todo。
+
+### Review
+- **修掉的 3 個同類問題**：
+  1. `verify-interactive-ui.ps1 -ConsolePort 5555` 會進入錯誤 pairing → 改走 `Resolve-EmulatorConsolePort`，odd port 啟動前 fail fast。
+  2. `start-chimera.ps1 -SelfTest` 預設固定 5554 且 `Kill-All` 全域殺 emulator/qemu → 未明確指定 port 時改自挑 free pair（實測 5560），cleanup 改 shared cmdline-filtered helper。
+  3. `verify-hardware-ui.ps1` 硬寫 `emulator-5554`、清掉 `CHIMERA_EMULATOR_CONSOLE_PORT`、全域 kill → 新增 `-ConsolePort 0`、設定 env/serial、cleanup 改 shared helper。
+- **驗證**：四支 .ps1 parse OK；`verify-interactive-ui.ps1 -Mode Stock -ConsolePort 5555` fail fast（even port error，未啟動 UI）；`start-chimera.ps1 -Fast -InteractiveFirst -SelfTest` PASS（serial auto `emulator-5560`、1920×1080、Settings `interactivity=ok`、`residual_processes=0`）；`verify-hardware-ui.ps1 -GrpcDisplay -BootTimeoutSec 60` 進既有 R&D failure（adapter 仍 SwiftShader / shader errors）但輸出 `selected_console_port=5560`、`serial=emulator-5560`、`residual_processes=0`；`ctest -LE integration` 20/20 PASS。
+- **誠實邊界**：本輪是 harness robustness / 防誤殺 / port contract 修復，非 FPS 或 renderer 改動；未使用任何會搶實體滑鼠的測試。
+
+---
+
+## 2026-06-30 Session 96 — audit-driven bug 修復（先 bug/回歸，後性能 R&D）
+
+### Context
+使用者：「還有很多問題修復它們」。ultracode 開，用 14-agent 審查 workflow（4 維 find → 對抗式 verify）掃整個 repo 的具體 bug/回歸/矛盾，再逐一修高信心、可小修者。general-UI 60 維持 R&D，不當本輪承諾。不使用任何會搶實體滑鼠的測試。
+
+### Plan
+- [x] 現況矩陣：ctest 20/20、Fast `-InteractiveFirst -SelfTest` PASS（interactivity=ok、0 residual）。
+- [x] 審查 workflow：7 個確認、可小修 finding（對抗式 verify 砍掉 3 個假陽性）。
+- [x] 修 7 個 finding（見 Review）。
+- [x] parse-validate 三支改過的 .ps1 + 重跑 Fast SelfTest 非回歸。
+- [x] 文件同步：lessons / todo / CONTEXT / CLAUDE / README / AGENTS。
+
+### Review
+- **修掉的 7 個（皆 P2，對抗式 verify 後）**：
+  1. `start-chimera.ps1` `-RequireSharedTexture` runtime 缺失時靜默退 stock gRPC → 加 fail-closed `throw`。
+  2. `start-chimera.ps1` `ConsolePort` `ValidateRange` 收 odd port（Android 要 even，否則 grpc/adb 推導錯）→ 改 `ValidateScript` 限 even。
+  3. `README.md:16` 「host input path 已量到接近 60 headroom」過度表述（引用已禁用的 mouse-drag probe）→ 改誠實「一般 UI 約 20fps、general-UI 60 仍 R&D」。
+  4. `verify-quick-boot.ps1` 硬寫 `emulator-5554`、不挑 free port → dot-source `ChimeraVerifyCommon.ps1`、`Get-FreeEmulatorConsolePort` + 設 `CHIMERA_EMULATOR_CONSOLE_PORT` + derive serial。
+  5. `verify-interactive-ui.ps1 -GuestVulkan` 從不設 `CHIMERA_GUEST_VULKAN=1` → emulator 沒帶 `-feature Vulkan`，skiavk 靜默退 GLES（假對照）→ 補設 env + 加 TouchedEnv 還原。
+  6. `verify-quick-boot.ps1` `Get-ChimeraProcesses` 無 cmdline filter，cleanup 會殺機器上任何 emulator/qemu → 刪 local、改用 shared cmdline-filtered 版。
+  7. `AGENTS.md:66` 一個 0x0B（VT）控制字元把 `\verify-true-1080p60.ps1` 變 `\v`+`erify…`，文件指令路徑壞掉 → 還原 `\v`。
+- **對抗式 verify 否證的 3 個（沒亂修）**：main.cpp boot_completed gate（刻意 robustness）、`$LASTEXITCODE` 洩漏成 exit 255（實機重現 exit 0）、CLAUDE.md:331「預設 stock」（dated changelog 非現況）。
+- **本輪也修了的口徑矛盾**（audit 前先手修）：`start-chimera.ps1` header 仍說「default stock」、`start-chimera.ps1`/`main.cpp` 註解「general-UI feel ~60」、README SelfTest 範例未帶 `-Fast -InteractiveFirst`。
+- **驗證**：三支改過 .ps1 parse OK；ctest 20/20（C++ 僅改註解、無行為變更，不需重建）；Fast `-InteractiveFirst -SelfTest` PASS（1920×1080、Settings `interactivity=ok`、`residual_processes=0`、exit 0）。
+- **實機確認 fix #5**：detached（獨立 console，避 `STATUS_CONTROL_C_EXIT`）跑 `-Mode Fast -GuestVulkan -AllowBaseline` → log `Feature 'Vulkan' (21) is overridden to 'enabled'` + NVIDIA Vulkan + `path=gfxstream-shared-texture fallback=none`；sustained-scroll `guestFps=48.6/effFps=40.3/dup=0/bottleneck=render`、0 residual。**先前「GuestVulkan ~20fps」是 bug #5 污染（沒真開 Vulkan、退 SwiftShader）**；真開後 ~40 effFps（約 2×），瓶頸移到 host Qt render。
+- **誠實邊界**：本批改動是 robustness / 驗證正確性 / 文件誠實修復，非 FPS 演算法提升；但 fix #5 讓量測首次反映真實 Vulkan 路徑。general-UI 60 仍 R&D。未使用任何會碰實體滑鼠的測試。
+
+---
+
 ## 2026-06-30 Session 95 — 實際手感卡頓修正：雙擊改最快路徑 + GuestVulkan/skiavk 正式接線
 
 ### Context

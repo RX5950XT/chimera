@@ -659,11 +659,10 @@ static void applyGuestPerformanceSettings() {
     }, 5000);
     qDebug() << "Guest performance settings applied";
 
-    // On the hardware-Vulkan HWUI path (skiavk) per-frame render is ~9ms with
-    // headroom to 60 (measured), so smooth fling/transition animations are
-    // affordable — and they are what makes general-UI scrolling feel 60fps instead
-    // of jumping. The animation-disable above is a crutch only for the slow
-    // software (SwiftShader) path; lift it when guest Vulkan UI is in play.
+    // On the hardware-Vulkan HWUI path (skiavk), animations are affordable enough
+    // for normal usability and avoid the jumpy feel caused by the old software-path
+    // crutch. This is not a general-UI 60 claim; verify-interactive-ui.ps1 remains
+    // the daily-usability gate.
     if (isTruthyEnv("CHIMERA_GUEST_VULKAN")) {
         runAdbShell({
             "settings", "put", "global", "window_animation_scale", "1", ";",
@@ -1595,7 +1594,7 @@ int main(int argc, char *argv[]) {
 
         if (!g_adbPath.empty() && app.arguments().contains(QStringLiteral("--adb-display-fallback"))) {
             adbCapture = new chimera::graphics::AdbFramebufferCapture(
-                QString::fromStdString(g_adbPath.string()), 5555, false, &app);
+                QString::fromStdString(g_adbPath.string()), g_runtimeCfg.adbPort, false, &app);
             adbCapture->setIntervalMs(1000);
             wireCapture(adbCapture);
         }
