@@ -66,6 +66,21 @@ function Replace-Once([string]$Path, [string]$Needle, [string]$Replacement, [str
     Write-TextFile $Path $text
 }
 
+function Replace-Text([string]$Path, [string]$Needle, [string]$Replacement, [string]$Description) {
+    $text = [System.IO.File]::ReadAllText($Path).Replace("`r`n", "`n")
+    $needleLf = $Needle.Replace("`r`n", "`n")
+    $replacementLf = $Replacement.Replace("`r`n", "`n")
+    if ($text.Contains($replacementLf)) {
+        return
+    }
+    if (!$text.Contains($needleLf)) {
+        Write-Host "$Description=skipped"
+        return
+    }
+    $text = $text.Replace($needleLf, $replacementLf)
+    Write-TextFile $Path $text
+}
+
 function Replace-FirstAvailable([string]$Path, [string[]]$Needles, [string]$Replacement, [string]$Description) {
     $text = [System.IO.File]::ReadAllText($Path).Replace("`r`n", "`n")
     $replacementLf = $Replacement.Replace("`r`n", "`n")
@@ -780,7 +795,16 @@ static void chimeraPublishFrameToD3D11Texture(ColorBuffer* cb, int fbW, int fbH)
 bool FrameBuffer::Impl::postImplSync(HandleType p_colorbuffer, bool needLockAndBind, bool repaint) {
 '@
     if ([System.IO.File]::ReadAllText($frameBuffer).Replace("`r`n", "`n") -notmatch 'chimeraPublishFrameToD3D11Texture') {
-        Replace-Once $frameBuffer $frameBufferD3D11CpuProducerNeedle $frameBufferD3D11CpuProducerReplacement "FrameBuffer D3D11 CPU producer helper"
+        $frameBufferText = [System.IO.File]::ReadAllText($frameBuffer).Replace("`r`n", "`n")
+        if ($frameBufferText.Contains($frameBufferD3D11CpuProducerNeedle)) {
+            Replace-Once $frameBuffer $frameBufferD3D11CpuProducerNeedle $frameBufferD3D11CpuProducerReplacement "FrameBuffer D3D11 CPU producer helper"
+        } else {
+            $frameBufferD3D11CpuProducerLegacyNeedle = 'bool FrameBuffer::postImplSync(HandleType p_colorbuffer, bool needLockAndBind, bool repaint) {'
+            $frameBufferD3D11CpuProducerLegacyReplacement = $frameBufferD3D11CpuProducerReplacement.Replace(
+                'bool FrameBuffer::Impl::postImplSync(HandleType p_colorbuffer, bool needLockAndBind, bool repaint) {',
+                $frameBufferD3D11CpuProducerLegacyNeedle)
+            Replace-Once $frameBuffer $frameBufferD3D11CpuProducerLegacyNeedle $frameBufferD3D11CpuProducerLegacyReplacement "FrameBuffer D3D11 CPU producer helper"
+        }
     }
 
     # Needle variants: (1) original unpatched source, (2) Session 77-82 intermediate (shmem-only)
@@ -2944,6 +2968,730 @@ if (Test-Path -LiteralPath $emuglConfig) {
                 gpu_mode = "swiftshader_indirect";
             } else if (!has_guest_renderer) {
 '@ "emugl_config headless ANGLE host GLES routing"
+}
+
+# Session 91: std::promise/std::future/std::packaged_task crash on this host (two
+# incompatible MSVCP140.dll versions disagree on _Associated_state layout — same root
+# cause Session 76 fixed in frame_buffer.cpp). HWUI Vulkan's heavy per-submit fence
+# traffic drove these paths and crashed. Replace with header-only atomics / Lock+CV.
+$deviceOpTrackerH = Join-Path $vulkanDir "device_op_tracker.h"
+if (Test-Path -LiteralPath $deviceOpTrackerH) {
+    Replace-FirstAvailable $deviceOpTrackerH @(@'
+#include <chrono>
+#include <deque>
+#include <functional>
+#include <future>
+#include <optional>
+#include <variant>
+'@) @'
+#include <atomic>
+#include <chrono>
+#include <deque>
+#include <functional>
+#include <future>
+#include <memory>
+#include <optional>
+#include <variant>
+'@ "device_op_tracker.h atomic/memory includes"
+
+    Replace-FirstAvailable $deviceOpTrackerH @(@'
+using DeviceOpWaitable = std::shared_future<void>;
+
+inline bool IsDone(const DeviceOpWaitable& waitable) {
+    return waitable.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready;
+}
+'@) @'
+// Chimera fix: std::promise<void>/std::shared_future<void> crash on this host because
+// two incompatible MSVCP140.dll versions disagree on _Associated_state layout (same
+// root cause fixed in frame_buffer.cpp, Session 76). Under HWUI Vulkan the per-submit
+// fence traffic drives this path hard and crashes in promise->set_value() /
+// wait_for(). Use a header-only atomic done-flag so no _Associated_state is touched.
+// A null waitable counts as done (nothing to wait on).
+using DeviceOpWaitable = std::shared_ptr<std::atomic<bool>>;
+
+inline bool IsDone(const DeviceOpWaitable& waitable) {
+    return !waitable || waitable->load(std::memory_order_acquire);
+}
+'@ "device_op_tracker.h DeviceOpWaitable atomic flag"
+}
+
+$deviceOpTrackerCpp = Join-Path $vulkanDir "device_op_tracker.cpp"
+if (Test-Path -LiteralPath $deviceOpTrackerCpp) {
+    Replace-FirstAvailable $deviceOpTrackerCpp @(@'
+    std::shared_ptr<std::promise<void>> promise = std::make_shared<std::promise<void>>();
+    DeviceOpWaitable future = promise->get_future().share();
+
+    mTracker.AddPendingDeviceOp([device = mTracker.mDevice,
+                                 deviceDispatch = mTracker.mDeviceDispatch, fence,
+                                 promise = std::move(promise), destroyFenceOnCompletion] {
+        if (fence == VK_NULL_HANDLE) {
+            return DeviceOpStatus::kDone;
+        }
+
+        VkResult result = deviceDispatch->vkGetFenceStatus(device, fence);
+        if (result == VK_NOT_READY) {
+            return DeviceOpStatus::kPending;
+        }
+
+        if (destroyFenceOnCompletion) {
+            deviceDispatch->vkDestroyFence(device, fence, nullptr);
+        }
+        promise->set_value();
+
+        return result == VK_SUCCESS ? DeviceOpStatus::kDone : DeviceOpStatus::kFailure;
+    });
+
+    return future;
+'@) @'
+    // Chimera fix: replace std::promise<void>/std::shared_future<void> with a header-only
+    // atomic done-flag. The promise machinery crashes here under HWUI Vulkan's heavy
+    // per-submit fence traffic (incompatible MSVCP140.dll _Associated_state). The flag is
+    // stored when the op completes; IsDone() reads it. See device_op_tracker.h.
+    std::shared_ptr<std::atomic<bool>> done = std::make_shared<std::atomic<bool>>(false);
+    DeviceOpWaitable future = done;
+
+    mTracker.AddPendingDeviceOp([device = mTracker.mDevice,
+                                 deviceDispatch = mTracker.mDeviceDispatch, fence,
+                                 done, destroyFenceOnCompletion] {
+        if (fence == VK_NULL_HANDLE) {
+            done->store(true, std::memory_order_release);
+            return DeviceOpStatus::kDone;
+        }
+
+        VkResult result = deviceDispatch->vkGetFenceStatus(device, fence);
+        if (result == VK_NOT_READY) {
+            return DeviceOpStatus::kPending;
+        }
+
+        if (destroyFenceOnCompletion) {
+            deviceDispatch->vkDestroyFence(device, fence, nullptr);
+        }
+        done->store(true, std::memory_order_release);
+
+        return result == VK_SUCCESS ? DeviceOpStatus::kDone : DeviceOpStatus::kFailure;
+    });
+
+    return future;
+'@ "device_op_tracker.cpp promise->atomic"
+}
+
+$syncThreadH = Join-Path $hostDir "sync_thread.h"
+if (Test-Path -LiteralPath $syncThreadH) {
+    Replace-FirstAvailable $syncThreadH @(@'
+    struct Command {
+        std::packaged_task<int(WorkerId)> mTask;
+        std::string mDescription;
+    };
+'@) @'
+    struct Command {
+        // Chimera: was std::packaged_task<int(WorkerId)>. packaged_task/std::future use
+        // MSVCP140 _Associated_state, which crashes on this host (two incompatible
+        // MSVCP140.dll versions). HWUI Vulkan drives sync commands hard and crashed in
+        // doSyncThreadCmd's task invocation. Use a plain callable; sendAndWaitForResult
+        // carries the result back via Lock+ConditionVariable. Same root cause as Session 76.
+        std::function<int(WorkerId)> mTask;
+        std::string mDescription;
+    };
+'@ "sync_thread.h Command callable"
+}
+
+$syncThreadCpp = Join-Path $hostDir "sync_thread.cpp"
+if (Test-Path -LiteralPath $syncThreadCpp) {
+    Replace-FirstAvailable $syncThreadCpp @(@'
+#include "gfxstream/threads/Thread.h"
+'@) @'
+#include "gfxstream/threads/Thread.h"
+#include "gfxstream/synchronization/ConditionVariable.h"  // Chimera: Lock+CV replaces std::future
+'@ "sync_thread.cpp ConditionVariable include"
+
+    $syncText = [System.IO.File]::ReadAllText($syncThreadCpp).Replace("`r`n", "`n")
+    if ($syncText -notmatch 'pResult = &result') {
+        Replace-FirstAvailable $syncThreadCpp @(@'
+    std::packaged_task<int(WorkerId)> task(std::move(job));
+    std::future<int> resFuture = task.get_future();
+    Command command = {
+        .mTask = std::move(task),
+        .mDescription = std::move(description),
+    };
+
+    mWorkerThreadPool.enqueue(std::move(command));
+    auto res = resFuture.get();
+    DPRINT("exit");
+    return res;
+'@) @'
+    // Chimera: replace std::packaged_task<int>/std::future<int> (crashes in MSVCP140
+    // _Associated_state on this host) with Lock+ConditionVariable to carry the result.
+    // The caller blocks until the worker signals, so Result lives on the stack and is
+    // captured by pointer — no heap allocation (lighter than the original future, which
+    // heap-allocates its shared state).
+    struct Result {
+        gfxstream::base::Lock lock;
+        gfxstream::base::ConditionVariable cv;
+        bool done = false;
+        int value = 0;
+    } result;
+    Command command = {
+        .mTask = [job = std::move(job), pResult = &result](WorkerId workerId) -> int {
+            int v = job(workerId);
+            {
+                gfxstream::base::AutoLock lock(pResult->lock);
+                pResult->value = v;
+                pResult->done = true;
+            }
+            pResult->cv.signal();
+            return v;
+        },
+        .mDescription = std::move(description),
+    };
+
+    mWorkerThreadPool.enqueue(std::move(command));
+    int res;
+    {
+        gfxstream::base::AutoLock lock(result.lock);
+        result.cv.wait(&lock, [&] { return result.done; });
+        res = result.value;
+    }
+    DPRINT("exit");
+    return res;
+'@ "sync_thread.cpp sendAndWaitForResult Lock+CV"
+    }
+
+    $syncText = [System.IO.File]::ReadAllText($syncThreadCpp).Replace("`r`n", "`n")
+    if ($syncText -notmatch 'plain callable instead of std::packaged_task') {
+        Replace-FirstAvailable $syncThreadCpp @(@'
+        .mTask =
+            std::packaged_task<int(WorkerId)>([job = std::move(job)](WorkerId workerId) mutable {
+                job(workerId);
+                return 0;
+            }),
+'@) @'
+        // Chimera: plain callable instead of std::packaged_task (MSVCP140 crash).
+        .mTask = [job = std::move(job)](WorkerId workerId) mutable -> int {
+            job(workerId);
+            return 0;
+        },
+'@ "sync_thread.cpp sendAsync callable"
+    }
+}
+
+$workerThreadH = Join-Path $root "common\base\include\gfxstream\threads\WorkerThread.h"
+if (Test-Path -LiteralPath $workerThreadH) {
+    Replace-FirstAvailable $workerThreadH @(@'
+#include <functional>
+#include <future>
+#include <optional>
+#include <thread>
+#include <utility>
+#include <vector>
+'@, @'
+#include <condition_variable>
+#include <functional>
+#include <future>
+#include <mutex>
+#include <optional>
+#include <thread>
+#include <utility>
+#include <vector>
+'@) @'
+#include <algorithm>
+#include <chrono>
+#include <functional>
+#include <future>
+#include <memory>
+#include <optional>
+#include <thread>
+#include <utility>
+#include <vector>
+'@ "WorkerThread standard includes"
+
+    Replace-FirstAvailable $workerThreadH @(@'
+#include "gfxstream/ThreadAnnotations.h"
+#include "gfxstream/synchronization/ConditionVariable.h"
+#include "gfxstream/synchronization/Lock.h"
+'@, @'
+#include "gfxstream/ThreadAnnotations.h"
+'@) @'
+#include "gfxstream/ThreadAnnotations.h"
+#include "gfxstream/synchronization/ConditionVariable.h"
+#include "gfxstream/synchronization/Lock.h"
+#include "gfxstream/system/System.h"
+'@ "WorkerThread gfxstream synchronization includes"
+
+    $workerText = [System.IO.File]::ReadAllText($workerThreadH).Replace("`r`n", "`n")
+    if ($workerText -notmatch 'class WorkerWaitable') {
+        Replace-FirstAvailable $workerThreadH @(@'
+// Return values for a worker thread's processing function.
+enum class WorkerProcessingResult { Continue, Stop };
+'@) @'
+// Return values for a worker thread's processing function.
+enum class WorkerProcessingResult { Continue, Stop };
+
+// Chimera: per-item completion signal replacing std::promise<void>/std::future<void>.
+// std::promise::set_value() crashes on this host (two incompatible MSVCP140.dll versions
+// disagree on _Associated_state layout — same root cause Session 76 fixed in
+// frame_buffer.cpp). HWUI Vulkan's heavy enqueue traffic drove ThreadLoop's per-item
+// set_value() into the crash. This Lock+ConditionVariable signal touches no MSVCP140
+// shared state. enqueue() returns WorkerWaitable; callers can use the old future-style
+// .wait() / .wait_for(...) API while ThreadLoop signals via ->signal().
+class WorkerCompletion {
+  public:
+    void signal() {
+        gfxstream::base::AutoLock lock(mLock);
+        mDone = true;
+        mCv.signal();
+    }
+    void wait() {
+        gfxstream::base::AutoLock lock(mLock);
+        mCv.wait(&lock, [this] { return mDone; });
+    }
+    template <class Rep, class Period>
+    std::future_status wait_for(const std::chrono::duration<Rep, Period>& timeout) {
+        gfxstream::base::AutoLock lock(mLock);
+        if (mDone) {
+            return std::future_status::ready;
+        }
+        const auto timeoutUs = std::chrono::duration_cast<std::chrono::microseconds>(timeout).count();
+        const auto waitUntilUs = gfxstream::base::getUnixTimeUs() +
+                                 static_cast<uint64_t>(std::max<int64_t>(0, timeoutUs));
+        while (!mDone) {
+            if (!mCv.timedWait(&mLock, waitUntilUs)) {
+                return mDone ? std::future_status::ready : std::future_status::timeout;
+            }
+        }
+        return std::future_status::ready;
+    }
+
+  private:
+    gfxstream::base::Lock mLock;
+    gfxstream::base::ConditionVariable mCv;
+    bool mDone = false;
+};
+class WorkerWaitable {
+  public:
+    WorkerWaitable() : mCompletion(std::make_shared<WorkerCompletion>()) {}
+    void wait() const { mCompletion->wait(); }
+    template <class Rep, class Period>
+    std::future_status wait_for(const std::chrono::duration<Rep, Period>& timeout) const {
+        return mCompletion->wait_for(timeout);
+    }
+    WorkerCompletion* operator->() const { return mCompletion.get(); }
+
+  private:
+    std::shared_ptr<WorkerCompletion> mCompletion;
+};
+'@ "WorkerThread WorkerCompletion"
+    }
+
+    Replace-FirstAvailable $workerThreadH @(@'
+    // Waits for all enqueue()'d items to finish or the worker stops.
+    void waitQueuedItems() {
+        // Enqueue an empty sync command.
+        std::future<void> completeFuture = enqueueImpl(Command());
+        completeFuture.wait();
+    }
+
+    // Moves the |item| into internal queue for processing. If the command is enqueued after the
+    // stop command is enqueued or before start() returns, the returned future will also be ready
+    // without processing the command.
+    std::future<void> enqueue(Item&& item) {
+        return enqueueImpl(Command(std::move(item)));
+    }
+'@) @'
+    // Waits for all enqueue()'d items to finish or the worker stops.
+    void waitQueuedItems() {
+        // Enqueue an empty sync command.
+        WorkerWaitable completeWaitable = enqueueImpl(Command());
+        completeWaitable->wait();
+    }
+
+    // Moves the |item| into internal queue for processing. If the command is enqueued after the
+    // stop command is enqueued or before start() returns, the returned waitable will also be ready
+    // without processing the command. Chimera: returns shared_ptr<WorkerCompletion> instead of
+    // std::future<void> (MSVCP140 crash); callers that block call ->wait(), others discard.
+    WorkerWaitable enqueue(Item&& item) {
+        return enqueueImpl(Command(std::move(item)));
+    }
+'@ "WorkerThread enqueue waitable"
+
+    Replace-FirstAvailable $workerThreadH @(@'
+    struct Command {
+        Command() : mWorkItem(std::nullopt) {}
+        Command(Item&& it) : mWorkItem(std::move(it)) {}
+        Command(Command&& other)
+            : mCompletedPromise(std::move(other.mCompletedPromise)),
+              mWorkItem(std::move(other.mWorkItem)) {}
+
+        std::promise<void> mCompletedPromise;
+        std::optional<Item> mWorkItem;
+    };
+
+    std::future<void> enqueueImpl(Command command) {
+        gfxstream::base::AutoLock lock(mMutex);
+
+        // Do not enqueue any new items if exiting.
+        if (mExiting) {
+            command.mCompletedPromise.set_value();
+            return command.mCompletedPromise.get_future();
+        }
+
+        std::future<void> res = command.mCompletedPromise.get_future();
+        mQueue.emplace_back(std::move(command));
+        // signal() does not require holding the lock but is safe while holding it.
+        mCv.signal();
+        return res;
+    }
+'@) @'
+    struct Command {
+        Command() : mCompleted(), mWorkItem(std::nullopt) {}
+        Command(Item&& it) : mCompleted(), mWorkItem(std::move(it)) {}
+        Command(Command&& other)
+            : mCompleted(std::move(other.mCompleted)),
+              mWorkItem(std::move(other.mWorkItem)) {}
+
+        // Chimera: shared completion signal instead of std::promise<void> (MSVCP140 crash).
+        WorkerWaitable mCompleted;
+        std::optional<Item> mWorkItem;
+    };
+
+    WorkerWaitable enqueueImpl(Command command) {
+        gfxstream::base::AutoLock lock(mMutex);
+
+        // Do not enqueue any new items if exiting.
+        if (mExiting) {
+            command.mCompleted->signal();
+            return command.mCompleted;
+        }
+
+        WorkerWaitable res = command.mCompleted;
+        mQueue.emplace_back(std::move(command));
+        // signal() does not require holding the lock but is safe while holding it.
+        mCv.signal();
+        return res;
+    }
+'@ "WorkerThread Command completion"
+
+    Replace-FirstAvailable $workerThreadH @(@'
+            bool shouldStop = false;
+            for (Command& item : todo) {
+                if (!shouldStop && item.mWorkItem) {
+                    shouldStop = mProcessor(std::move(item.mWorkItem.value())) == Result::Stop;
+                }
+                item.mCompletedPromise.set_value();
+            }
+
+            if (shouldStop) {
+                gfxstream::base::AutoLock lock(mMutex);
+
+                mExiting = true;
+
+                // Signal pending tasks as if they are completed.
+                for (Command& item : mQueue) {
+                    item.mCompletedPromise.set_value();
+                }
+
+                return;
+            }
+'@) @'
+            bool shouldStop = false;
+            for (Command& item : todo) {
+                if (!shouldStop && item.mWorkItem) {
+                    shouldStop = mProcessor(std::move(item.mWorkItem.value())) == Result::Stop;
+                }
+                item.mCompleted->signal();
+            }
+
+            if (shouldStop) {
+                gfxstream::base::AutoLock lock(mMutex);
+
+                mExiting = true;
+
+                // Signal pending tasks as if they are completed.
+                for (Command& item : mQueue) {
+                    item.mCompleted->signal();
+                }
+
+                return;
+            }
+'@ "WorkerThread ThreadLoop completion"
+}
+
+$frameBufferFiles = @(
+    (Join-Path $hostDir "frame_buffer.cpp"),
+    (Join-Path $hostDir "FrameBuffer.cpp")
+) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
+foreach ($frameBufferPath in $frameBufferFiles) {
+    $frameBufferPostModernNeedle = @'
+        std::future<void> completeFuture =
+            m_postThread.enqueue(Post(std::move(post)));
+        if (!shouldPostOnlyOnMainThread ||
+            (PostCmd::Screenshot == post.cmd &&
+             !get_gfxstream_window_operations().is_current_thread_ui_thread())) {
+            res = std::move(completeFuture);
+        }
+'@
+    $frameBufferPostModernReplacement = @'
+        // Chimera: enqueue() now returns WorkerWaitable (MSVCP140 promise crash). Bridge
+        // back to the std::future<void> return via deferred async; resolved inline on
+        // .wait(), so std::promise::set_value() is never invoked.
+        auto completeWaitable = m_postThread.enqueue(Post(std::move(post)));
+        if (!shouldPostOnlyOnMainThread ||
+            (PostCmd::Screenshot == post.cmd &&
+             !get_gfxstream_window_operations().is_current_thread_ui_thread())) {
+            res = std::async(std::launch::deferred, [completeWaitable] {
+                completeWaitable.wait();
+            });
+        }
+'@
+    $frameBufferPostLegacyNeedle = @'
+        std::future<void> completeFuture =
+            m_postThread.enqueue(Post(std::move(post)));
+        if (!shouldPostOnlyOnMainThread ||
+            (PostCmd::Screenshot == post.cmd &&
+             !emugl::get_emugl_window_operations().isRunningInUiThread())) {
+            res = std::move(completeFuture);
+        }
+'@
+    $frameBufferPostLegacyReplacement = @'
+        // Chimera: enqueue() now returns WorkerWaitable (MSVCP140 promise crash). Bridge
+        // back to the std::future<void> return via deferred async; resolved inline on
+        // .wait(), so std::promise::set_value() is never invoked.
+        auto completeWaitable = m_postThread.enqueue(Post(std::move(post)));
+        if (!shouldPostOnlyOnMainThread ||
+            (PostCmd::Screenshot == post.cmd &&
+             !emugl::get_emugl_window_operations().isRunningInUiThread())) {
+            res = std::async(std::launch::deferred, [completeWaitable] {
+                completeWaitable.wait();
+            });
+        }
+'@
+    $frameBufferPostText = [System.IO.File]::ReadAllText($frameBufferPath).Replace("`r`n", "`n")
+    if ($frameBufferPostText.Contains($frameBufferPostModernReplacement.Replace("`r`n", "`n")) -or
+        $frameBufferPostText.Contains($frameBufferPostLegacyReplacement.Replace("`r`n", "`n"))) {
+        # already patched
+    } elseif ($frameBufferPostText.Contains($frameBufferPostModernNeedle.Replace("`r`n", "`n"))) {
+        Replace-Once $frameBufferPath $frameBufferPostModernNeedle $frameBufferPostModernReplacement "frame_buffer sendPostWorkerCmd waitable bridge"
+    } else {
+        Replace-Once $frameBufferPath $frameBufferPostLegacyNeedle $frameBufferPostLegacyReplacement "frame_buffer sendPostWorkerCmd waitable bridge"
+    }
+
+    Replace-FirstAvailable $frameBufferPath @(@'
+        std::future<void> completeFuture = m_readbackThread.enqueue(
+            {ReadbackCmd::AddRecordDisplay, displayId, nullptr, 0, w, h});
+        completeFuture.wait();
+    } else {
+        std::future<void> completeFuture = m_readbackThread.enqueue(
+            {ReadbackCmd::DelRecordDisplay, displayId});
+        completeFuture.wait();
+        m_onPost.erase(displayId);
+    }
+'@) @'
+        auto completeWaitable = m_readbackThread.enqueue(
+            {ReadbackCmd::AddRecordDisplay, displayId, nullptr, 0, w, h});
+        completeWaitable->wait();
+    } else {
+        auto completeWaitable = m_readbackThread.enqueue(
+            {ReadbackCmd::DelRecordDisplay, displayId});
+        completeWaitable->wait();
+        m_onPost.erase(displayId);
+    }
+'@ "frame_buffer record-display waitable"
+
+    Replace-FirstAvailable $frameBufferPath @(@'
+    std::future<void> completeFuture =
+        m_readbackThread.enqueue({ReadbackCmd::GetPixels, displayId, pixels, bytes});
+    completeFuture.wait();
+'@) @'
+    auto completeWaitable =
+        m_readbackThread.enqueue({ReadbackCmd::GetPixels, displayId, pixels, bytes});
+    completeWaitable->wait();
+'@ "frame_buffer getDisplayPixels waitable"
+}
+
+$frameBufferBlockFiles = @(
+    (Join-Path $hostDir "frame_buffer.cpp"),
+    (Join-Path $hostDir "FrameBuffer.cpp")
+) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
+foreach ($frameBufferPath in $frameBufferBlockFiles) {
+    Replace-FirstAvailable $frameBufferPath @(@'
+    std::future<void> blockPostWorker(std::future<void> continueSignal);
+'@) @'
+    gfxstream::base::WorkerWaitable blockPostWorker(gfxstream::base::WorkerWaitable continueSignal);
+'@ "frame_buffer blockPostWorker WorkerWaitable declaration"
+
+    Replace-FirstAvailable $frameBufferPath @(@'
+    class ScopedPromise {
+       public:
+        ~ScopedPromise() { mPromise.set_value(); }
+        std::future<void> getFuture() { return mPromise.get_future(); }
+        DISALLOW_COPY_ASSIGN_AND_MOVE(ScopedPromise);
+        static std::tuple<std::unique_ptr<ScopedPromise>, std::future<void>> create() {
+            auto scopedPromise = std::unique_ptr<ScopedPromise>(new ScopedPromise());
+            auto future = scopedPromise->mPromise.get_future();
+            return std::make_tuple(std::move(scopedPromise), std::move(future));
+        }
+
+       private:
+        ScopedPromise() = default;
+        std::promise<void> mPromise;
+    };
+    std::unique_ptr<ScopedPromise> postWorkerContinueSignal;
+    std::future<void> postWorkerContinueSignalFuture;
+    std::tie(postWorkerContinueSignal, postWorkerContinueSignalFuture) = ScopedPromise::create();
+    {
+        blockPostWorker(std::move(postWorkerContinueSignalFuture)).wait();
+    }
+'@) @'
+    class ScopedWorkerSignal {
+       public:
+        ScopedWorkerSignal() = default;
+        ~ScopedWorkerSignal() { reset(); }
+        gfxstream::base::WorkerWaitable waitable() const { return mSignal; }
+        void reset() {
+            if (!mSignaled) {
+                mSignal->signal();
+                mSignaled = true;
+            }
+        }
+        DISALLOW_COPY_ASSIGN_AND_MOVE(ScopedWorkerSignal);
+
+       private:
+        gfxstream::base::WorkerWaitable mSignal;
+        bool mSignaled = false;
+    };
+    ScopedWorkerSignal postWorkerContinueSignal;
+    gfxstream::base::WorkerWaitable postWorkerContinueSignalScheduled =
+        blockPostWorker(postWorkerContinueSignal.waitable());
+    postWorkerContinueSignalScheduled.wait();
+'@ "frame_buffer setupSubWindow WorkerWaitable block signal"
+
+    Replace-FirstAvailable $frameBufferPath @(@'
+std::future<void> FrameBuffer::Impl::blockPostWorker(std::future<void> continueSignal) {
+    std::promise<void> scheduled;
+    std::future<void> scheduledFuture = scheduled.get_future();
+    Post postCmd = {
+        .cmd = PostCmd::Block,
+        .block = std::make_unique<Post::Block>(Post::Block{
+            .scheduledSignal = std::move(scheduled),
+            .continueSignal = std::move(continueSignal),
+        }),
+    };
+    sendPostWorkerCmd(std::move(postCmd));
+    return scheduledFuture;
+}
+'@) @'
+gfxstream::base::WorkerWaitable FrameBuffer::Impl::blockPostWorker(
+    gfxstream::base::WorkerWaitable continueSignal) {
+    gfxstream::base::WorkerWaitable scheduledSignal;
+    Post postCmd = {
+        .cmd = PostCmd::Block,
+        .block = std::make_unique<Post::Block>(Post::Block{
+            .scheduledSignal = scheduledSignal,
+            .continueSignal = std::move(continueSignal),
+        }),
+    };
+    sendPostWorkerCmd(std::move(postCmd));
+    return scheduledSignal;
+}
+'@ "frame_buffer blockPostWorker WorkerWaitable implementation"
+}
+
+$postCommandsH = Join-Path $hostDir "post_commands.h"
+if (Test-Path -LiteralPath $postCommandsH) {
+    $postCommandsText = [System.IO.File]::ReadAllText($postCommandsH).Replace("`r`n", "`n")
+    if ($postCommandsText -notmatch 'WorkerThread.h') {
+        Replace-FirstAvailable $postCommandsH @(@'
+#include "gfxstream/host/display_operations.h"
+#include "gfxstream/host/gfxstream_format.h"
+#include "handle.h"
+#include "render-utils/Renderer.h"
+'@) @'
+#include "gfxstream/host/display_operations.h"
+#include "gfxstream/host/gfxstream_format.h"
+#include "handle.h"
+#include "render-utils/Renderer.h"
+#include "gfxstream/threads/WorkerThread.h"
+'@ "post_commands WorkerWaitable include"
+    }
+
+    $postCommandsText = [System.IO.File]::ReadAllText($postCommandsH).Replace("`r`n", "`n")
+    if ($postCommandsText -notmatch 'WorkerWaitable scheduledSignal') {
+        Replace-FirstAvailable $postCommandsH @(@'
+    struct Block {
+        // schduledSignal will be set when the block task is scheduled.
+        std::promise<void> scheduledSignal;
+        // The block task won't stop until continueSignal is ready.
+        std::future<void> continueSignal;
+    };
+'@) @'
+    struct Block {
+        // scheduledSignal is signaled when the block task is scheduled.
+        gfxstream::base::WorkerWaitable scheduledSignal;
+        // The block task won't stop until continueSignal is ready.
+        gfxstream::base::WorkerWaitable continueSignal;
+    };
+'@ "post_commands Block WorkerWaitable"
+    }
+}
+
+$postWorkerH = Join-Path $hostDir "post_worker.h"
+if (Test-Path -LiteralPath $postWorkerH) {
+    $postWorkerHText = [System.IO.File]::ReadAllText($postWorkerH).Replace("`r`n", "`n")
+    if ($postWorkerHText -notmatch 'WorkerWaitable scheduledSignal') {
+        Replace-FirstAvailable $postWorkerH @(@'
+    // The block task will set the scheduledSignal promise when the task is scheduled, and wait
+    // until continueSignal is ready before completes.
+    void block(std::promise<void> scheduledSignal, std::future<void> continueSignal);
+'@) @'
+    // The block task signals scheduledSignal when scheduled, then waits until continueSignal is ready.
+    void block(gfxstream::base::WorkerWaitable scheduledSignal,
+               gfxstream::base::WorkerWaitable continueSignal);
+'@ "post_worker block WorkerWaitable signature"
+    }
+}
+
+$postWorkerCpp = Join-Path $hostDir "post_worker.cpp"
+if (Test-Path -LiteralPath $postWorkerCpp) {
+    $postWorkerCppText = [System.IO.File]::ReadAllText($postWorkerCpp).Replace("`r`n", "`n")
+    if ($postWorkerCppText -notmatch 'PostWorker::block\(gfxstream::base::WorkerWaitable') {
+        Replace-FirstAvailable $postWorkerCpp @(@'
+void PostWorker::block(std::promise<void> scheduledSignal, std::future<void> continueSignal) {
+    // Do not block mainthread.
+    if (m_mainThreadPostingOnly) {
+        return;
+    }
+    // MSVC STL doesn't support not copyable std::packaged_task. As a workaround, we use the
+    // copyable std::shared_ptr here.
+    auto block = std::make_shared<Post::Block>(Post::Block{
+        .scheduledSignal = std::move(scheduledSignal),
+        .continueSignal = std::move(continueSignal),
+    });
+    runTask(std::packaged_task<void()>([block] {
+        block->scheduledSignal.set_value();
+        block->continueSignal.wait();
+    }));
+}
+'@) @'
+void PostWorker::block(gfxstream::base::WorkerWaitable scheduledSignal,
+                       gfxstream::base::WorkerWaitable continueSignal) {
+    // Do not block mainthread.
+    if (m_mainThreadPostingOnly) {
+        // Chimera: the original std::promise was destroyed on this early return, which woke the
+        // waiter via broken_promise. WorkerWaitable has no auto-complete, so signal explicitly or
+        // blockPostWorker()'s scheduledSignal.wait() hangs forever (main-thread-posting/macOS path).
+        scheduledSignal->signal();
+        return;
+    }
+    auto block = std::make_shared<Post::Block>(Post::Block{
+        .scheduledSignal = std::move(scheduledSignal),
+        .continueSignal = std::move(continueSignal),
+    });
+    runTask(std::packaged_task<void()>([block] {
+        block->scheduledSignal->signal();
+        block->continueSignal.wait();
+    }));
+}
+'@ "post_worker block WorkerWaitable implementation"
+    }
 }
 
 Write-Host "Applied Chimera gfxstream shared texture patch to $root"

@@ -1,10 +1,10 @@
 param(
-    [string]$SourceDir = "tmp\aosp\hardware\google\gfxstream",
-    [string]$BuildDir = "tmp\aosp-build\gfxstream",
+    [string]$SourceDir = "tmp\aosp-github\hardware\google\gfxstream",
+    [string]$BuildDir = "tmp\aosp-github-build\gfxstream",
     [string]$InstallDir = "build\chimera-gfxstream-runtime",
     [string]$BaseEmulatorDir = "third_party\android-sdk\emulator",
     [string]$Branch = "main",
-    [string]$SourceBuildId = "",
+    [string]$SourceBuildId = "15261927",
     [switch]$PrepareDeps,
     [switch]$SkipConfigure,
     [switch]$AllowMismatchedBuildId
@@ -66,6 +66,13 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+$modernFrameBuffer = Join-Path $sourcePath "host\frame_buffer.cpp"
+if (Test-Path -LiteralPath $modernFrameBuffer -PathType Leaf) {
+    $modernFrameBufferText = [System.IO.File]::ReadAllText($modernFrameBuffer)
+    if (!$modernFrameBufferText.Contains("ChimeraGfxstreamVulkanSharedTextureBridge")) {
+        throw "modern gfxstream source is missing Chimera Vulkan frame-buffer bridge after patch; refusing incomplete runtime build"
+    }
+}
 if ($SkipConfigure) {
     Write-Host "Patched Chimera gfxstream source: $sourcePath"
     exit 0

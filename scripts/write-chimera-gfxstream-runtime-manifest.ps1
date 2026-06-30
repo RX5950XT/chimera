@@ -137,11 +137,22 @@ if (![string]::IsNullOrWhiteSpace($SourceDir)) {
     }
 }
 if ([string]::IsNullOrWhiteSpace($gfxstreamSourceSnapBuildId) -and ![string]::IsNullOrWhiteSpace($SourceBuildId)) {
-    if (-not $AllowMismatchedBuildId) {
-        throw "-SourceBuildId requires -AllowMismatchedBuildId (R&D only)"
+    $verifiedManualBuildIds = @{
+        # Session 91 verified local aosp-github checkout: app HWUI Vulkan + gl60 60fps + Fast SelfTest.
+        "d60d3457ac1f1188b5782ccc23bde2c124a7c77b" = "15261927"
+    }
+    $isVerifiedManualBuildId = (![string]::IsNullOrWhiteSpace($gfxstreamSourceCommit) -and
+        $verifiedManualBuildIds.ContainsKey($gfxstreamSourceCommit) -and
+        $verifiedManualBuildIds[$gfxstreamSourceCommit] -eq $SourceBuildId)
+    if (-not $AllowMismatchedBuildId -and -not $isVerifiedManualBuildId) {
+        throw "manual -SourceBuildId is only allowed for verified source commits, or with -AllowMismatchedBuildId for R&D"
     }
     $gfxstreamSourceSnapBuildId = $SourceBuildId
-    Write-Warning "R&D: using manually-specified source build ID: $gfxstreamSourceSnapBuildId"
+    if ($isVerifiedManualBuildId) {
+        Write-Warning "using verified source build ID $gfxstreamSourceSnapBuildId for $gfxstreamSourceCommit"
+    } else {
+        Write-Warning "R&D: using manually-specified source build ID: $gfxstreamSourceSnapBuildId"
+    }
 }
 if ([string]::IsNullOrWhiteSpace($baseEmulatorBuildId)) {
     throw "base emulator build id is missing from source.properties: $sourceProperties"
