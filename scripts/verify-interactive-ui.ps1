@@ -182,7 +182,7 @@ $TouchedEnv = @(
     'CHIMERA_GFXSTREAM_HEADLESS_ANGLE', 'CHIMERA_LOG_PATH', 'CHIMERA_QUICK_BOOT',
     'CHIMERA_EMULATOR_CONSOLE_PORT', 'CHIMERA_INTERACTIVE_PRIORITY',
     'CHIMERA_GRPC_TRANSPORT', 'CHIMERA_VIDEO_TRANSPORT',
-    'CHIMERA_GUEST_VULKAN_HOST_SETUP'
+    'CHIMERA_GUEST_VULKAN_HOST_SETUP', 'CHIMERA_GUEST_VULKAN'
 )
 $SavedEnv = @{}
 foreach ($name in $TouchedEnv) { $SavedEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
@@ -304,9 +304,7 @@ function Measure-Segment {
 Require-File -Path $AppExe -Name "chimera-ui.exe"
 Require-File -Path $Adb -Name "adb.exe"
 
-if ($ConsolePort -eq 0) {
-    $ConsolePort = Get-FreeEmulatorConsolePort
-}
+$ConsolePort = Resolve-EmulatorConsolePort -ConsolePort $ConsolePort
 $script:Serial = "emulator-$ConsolePort"
 Write-Host "mode=$Mode"
 Write-Host "selected_console_port=$ConsolePort"
@@ -326,8 +324,17 @@ try {
     # This verifier owns the skiavk framework restart (it re-gates the home frame
     # after, so it never measures mid-restart). Tell chimera-ui to skip its own
     # host-side skiavk restart so the two don't race during boot.
-    if ($GuestVulkan) { $env:CHIMERA_GUEST_VULKAN_HOST_SETUP = "0" }
-    else { Remove-Item Env:\CHIMERA_GUEST_VULKAN_HOST_SETUP -ErrorAction SilentlyContinue }
+    if ($GuestVulkan) {
+        # -feature Vulkan must be enabled at emulator launch or the later skiavk
+        # setprop silently falls back to GLES while getprop still echoes skiavk
+        # (invalid comparison). HOST_SETUP=0 because this verifier owns the restart.
+        $env:CHIMERA_GUEST_VULKAN = "1"
+        $env:CHIMERA_GUEST_VULKAN_HOST_SETUP = "0"
+    }
+    else {
+        Remove-Item Env:\CHIMERA_GUEST_VULKAN -ErrorAction SilentlyContinue
+        Remove-Item Env:\CHIMERA_GUEST_VULKAN_HOST_SETUP -ErrorAction SilentlyContinue
+    }
     if ([string]::IsNullOrEmpty($Priority)) {
         Remove-Item Env:\CHIMERA_INTERACTIVE_PRIORITY -ErrorAction SilentlyContinue
     } else {

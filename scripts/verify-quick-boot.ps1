@@ -25,6 +25,10 @@ $Adb = Join-Path $RepoRoot "third_party\android-sdk\platform-tools\adb.exe"
 $AvdDir = Join-Path $RepoRoot "third_party\android-avd\$AvdName.avd"
 $QtBin = "C:\Qt\6.8.3\msvc2022_64\bin"
 
+# Reuse the shared, command-line-filtered process helpers + free-port picker so this
+# verifier doesn't drift from the others and never force-kills unrelated emulators.
+. (Join-Path $PSScriptRoot 'ChimeraVerifyCommon.ps1')
+
 function Require-File {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -61,14 +65,6 @@ function Invoke-Adb {
         ExitCode = $exitCode
         Output = $text
     }
-}
-
-function Get-ChimeraProcesses {
-    $processes = @()
-    $processes += Get-Process -Name "chimera-ui" -ErrorAction SilentlyContinue
-    $processes += Get-Process -Name "emulator" -ErrorAction SilentlyContinue
-    $processes += Get-Process -Name "qemu-system*" -ErrorAction SilentlyContinue
-    $processes | Where-Object { $null -ne $_ }
 }
 
 function Stop-ChimeraProcesses {
@@ -200,7 +196,19 @@ Require-File -Path $AppExe -Name "chimera-ui.exe"
 Require-File -Path $Adb -Name "adb.exe"
 
 $env:PATH = "$QtBin;$env:PATH"
+
+# Pick a free emulator console/ADB port pair (mirrors the sibling verifiers) so a
+# local service binding the default 5554/5555 can't cause a false boot timeout.
+if (-not $PSBoundParameters.ContainsKey('Serial')) {
+    $consolePort = Get-FreeEmulatorConsolePort
+    $Serial = "emulator-$consolePort"
+} else {
+    $consolePort = [int]($Serial -replace '^emulator-', '')
+}
+Write-Host "console_port=$consolePort serial=$Serial"
+
 $savedEnv = @{
+    CHIMERA_EMULATOR_CONSOLE_PORT = $env:CHIMERA_EMULATOR_CONSOLE_PORT
     CHIMERA_ENABLE_NATIVE_EMBED = $env:CHIMERA_ENABLE_NATIVE_EMBED
     CHIMERA_ALLOW_UNSAFE_NATIVE_WINDOW = $env:CHIMERA_ALLOW_UNSAFE_NATIVE_WINDOW
     CHIMERA_ENABLE_WINDOW_CAPTURE = $env:CHIMERA_ENABLE_WINDOW_CAPTURE
@@ -214,6 +222,7 @@ Remove-Item Env:\CHIMERA_ENABLE_WINDOW_CAPTURE -ErrorAction SilentlyContinue
 Remove-Item Env:\CHIMERA_ALLOW_UNSAFE_WINDOW_CAPTURE -ErrorAction SilentlyContinue
 Remove-Item Env:\CHIMERA_ALLOW_UNSAFE_VISIBLE_EMULATOR_WINDOW -ErrorAction SilentlyContinue
 Remove-Item Env:\CHIMERA_EMULATOR_START_VISIBLE -ErrorAction SilentlyContinue
+$env:CHIMERA_EMULATOR_CONSOLE_PORT = "$consolePort"
 
 if (-not $NoCleanStart) {
     Stop-ChimeraProcesses
@@ -247,6 +256,7 @@ try {
     Write-Host "quick_boot_threshold_sec=$MaxQuickBootSec"
 }
 finally {
+    Restore-EnvValue -Name "CHIMERA_EMULATOR_CONSOLE_PORT" -Value $savedEnv.CHIMERA_EMULATOR_CONSOLE_PORT
     Restore-EnvValue -Name "CHIMERA_ENABLE_NATIVE_EMBED" -Value $savedEnv.CHIMERA_ENABLE_NATIVE_EMBED
     Restore-EnvValue -Name "CHIMERA_ALLOW_UNSAFE_NATIVE_WINDOW" -Value $savedEnv.CHIMERA_ALLOW_UNSAFE_NATIVE_WINDOW
     Restore-EnvValue -Name "CHIMERA_ENABLE_WINDOW_CAPTURE" -Value $savedEnv.CHIMERA_ENABLE_WINDOW_CAPTURE

@@ -30,7 +30,10 @@ param(
     # Isolate ANGLE host GLES from the shared-texture Vulkan bridge: use the
     # stock gRPC display path on the custom runtime so we can tell whether ANGLE
     # hangs by itself or only when the D3D11 bridge is also active.
-    [switch]$GrpcDisplay
+    [switch]$GrpcDisplay,
+    # 0 = autoselect a free console/ADB port pair.
+    [ValidateRange(0, 5680)]
+    [int]$ConsolePort = 0
 )
 
 $ErrorActionPreference = "Continue"
@@ -41,7 +44,17 @@ $Adb      = Join-Path $RepoRoot "third_party\android-sdk\platform-tools\adb.exe"
 $QtBin    = "C:\Qt\6.8.3\msvc2022_64\bin"
 $Runtime  = Join-Path $RepoRoot "build\chimera-gfxstream-runtime\emulator.exe"
 $AvdName  = "chimera_dev"
-$Serial   = "emulator-5554"
+$AvdDir   = Join-Path $RepoRoot "third_party\android-avd\$AvdName.avd"
+$script:RepoRoot = $RepoRoot
+$script:Adb = $Adb
+$script:AvdName = $AvdName
+$script:AvdDir = $AvdDir
+
+. (Join-Path $PSScriptRoot "ChimeraVerifyCommon.ps1")
+
+$ConsolePort = Resolve-EmulatorConsolePort -ConsolePort $ConsolePort
+$Serial = "emulator-$ConsolePort"
+$script:Serial = $Serial
 
 $tmp = Join-Path $RepoRoot "tmp"
 if (-not (Test-Path $tmp)) { New-Item -ItemType Directory -Path $tmp | Out-Null }
@@ -56,10 +69,6 @@ if (-not (Test-Path -LiteralPath $Runtime)) { throw "custom runtime not found: $
 if (Test-Path -LiteralPath $QtBin) { $env:PATH = "$QtBin;$env:PATH" }
 
 function Adb { param([string[]]$A) $o = & $Adb @A 2>$null; return (($o | Out-String).Trim()) }
-function Kill-All {
-    Get-Process -Name chimera-ui, emulator, qemu-system* -ErrorAction SilentlyContinue |
-        Stop-Process -Force -ErrorAction SilentlyContinue
-}
 
 $savedEnv = @{
     CHIMERA_GFXSTREAM_HEADLESS_ANGLE = $env:CHIMERA_GFXSTREAM_HEADLESS_ANGLE
@@ -97,7 +106,9 @@ if ($GrpcDisplay) {
     $env:CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE = "1"
 }
 Remove-Item Env:\CHIMERA_GPU_MODE -ErrorAction SilentlyContinue   # rely on the emugl_config fix
-Remove-Item Env:\CHIMERA_EMULATOR_CONSOLE_PORT -ErrorAction SilentlyContinue
+$env:CHIMERA_EMULATOR_CONSOLE_PORT = "$ConsolePort"
+Write-Host "selected_console_port=$ConsolePort"
+Write-Host "serial=$Serial"
 
 $booted = $false
 $homeBytes = 0
@@ -108,7 +119,10 @@ $postDirect = 0
 
 try {
     Write-Host "verify-hardware-ui: cleanup pre"
-    Kill-All; Start-Sleep -Seconds 2
+    Stop-ChimeraProcesses
+    Wait-NoChimeraProcesses -TimeoutSec 30
+    Remove-StaleAvdLocks
+    Start-Sleep -Seconds 2
 
     Write-Host "verify-hardware-ui: launch custom runtime (ANGLE host GLES; GrpcDisplay=$GrpcDisplay)"
     $appArgs = if ([string]::IsNullOrWhiteSpace($runtimeArg)) { "" } else { " $runtimeArg" }
@@ -143,8 +157,9 @@ try {
 }
 finally {
     Write-Host "verify-hardware-ui: cleanup post"
-    Kill-All; Start-Sleep -Seconds 3
-    $remain = @(Get-Process -Name chimera-ui, emulator, qemu-system* -ErrorAction SilentlyContinue).Count
+    Stop-ChimeraProcesses
+    Wait-NoChimeraProcesses -TimeoutSec 30
+    $remain = @(Get-ChimeraProcesses).Count
 
     # --- log analysis (emulator stdout carries the gfxstream host GL adapter + shaders)
     $logText = ""
