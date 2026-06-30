@@ -24,6 +24,12 @@ public:
     virtual bool isRunning() const = 0;
     virtual QString backendName() const = 0;
 
+    // True while a capture request is still in flight. Lets the boot retry
+    // timer skip a blind stop()/start() that would abort a slow-but-progressing
+    // readback and reset the stream. Backends without an in-flight concept
+    // report false, keeping their restart behaviour unchanged.
+    virtual bool hasInFlight() const { return false; }
+
     // Target capture interval in ms (0 = unlimited)
     void setIntervalMs(int ms) { m_intervalMs = ms; }
     int intervalMs() const { return m_intervalMs; }

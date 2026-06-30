@@ -32,7 +32,13 @@ public:
     void stop() override;
     bool isRunning() const override { return m_running; }
     QString backendName() const override { return QStringLiteral("gRPC"); }
+    bool hasInFlight() const override { return !m_replies.isEmpty(); }
     void notifyInputActivity();
+
+    // Timeout accessors (exposed for the unit guard that the per-request abort
+    // timeout stays decoupled from — and at least as long as — the stall watchdog).
+    int requestTimeoutMs() const { return m_requestTimeoutMs; }
+    int stallTimeoutMs() const { return m_stallTimeoutMs; }
 
     static constexpr int kMinimumCaptureWidth = 1920;
     static constexpr int kMinimumCaptureHeight = 1080;
@@ -95,6 +101,15 @@ private:
     qint64 m_lastFrameMs = 0;
     bool m_everReceived = false;
     int m_stallTimeoutMs = 2000;
+    // Per-request abort timeout, decoupled from the stall watchdog above. Under
+    // host load a 1080p getScreenshot readback can take several seconds to
+    // deliver its first byte; killing the request at m_stallTimeoutMs (2s) means
+    // no frame ever completes — the total=0-under-load freeze. Kept comfortably
+    // longer, overridable via CHIMERA_GRPC_REQUEST_TIMEOUT_MS (never below the
+    // stall watchdog, which would re-couple the two).
+    // ponytail: fixed knob; upgrade to EWMA-adaptive (clamp(k*ewma, floor,
+    // ceiling)) only if a fixed value measurably falls short under real load.
+    int m_requestTimeoutMs = 6000;
     bool m_hasLastFingerprint = false;
     quint64 m_lastFingerprint = 0;
     int m_duplicateStreak = 0;

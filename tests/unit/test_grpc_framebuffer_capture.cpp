@@ -128,6 +128,29 @@ private slots:
         QVERIFY(!ffmpegArgs.contains(QStringLiteral("-vf")));
         QVERIFY(ffmpegArgs.contains(QStringLiteral("bgra")));
     }
+
+    // The per-request abort timeout must outlive the stall watchdog, or a slow
+    // 1080p readback is killed before any frame completes (the total=0-under-load
+    // freeze). Guards against re-coupling the two timeouts.
+    void requestTimeoutDecoupledFromStallWatchdog() {
+        GrpcFramebufferCapture cap(QStringLiteral("127.0.0.1"), 8554, 1920, 1080);
+        QVERIFY(cap.requestTimeoutMs() >= cap.stallTimeoutMs());
+        QVERIFY(cap.requestTimeoutMs() > cap.stallTimeoutMs());
+    }
+
+    void requestTimeoutEnvOverrideHonored() {
+        qputenv("CHIMERA_GRPC_REQUEST_TIMEOUT_MS", "8000");
+        GrpcFramebufferCapture cap(QStringLiteral("127.0.0.1"), 8554, 1920, 1080);
+        qunsetenv("CHIMERA_GRPC_REQUEST_TIMEOUT_MS");
+        QCOMPARE(cap.requestTimeoutMs(), 8000);
+    }
+
+    void requestTimeoutEnvBelowStallRejected() {
+        qputenv("CHIMERA_GRPC_REQUEST_TIMEOUT_MS", "500");
+        GrpcFramebufferCapture cap(QStringLiteral("127.0.0.1"), 8554, 1920, 1080);
+        qunsetenv("CHIMERA_GRPC_REQUEST_TIMEOUT_MS");
+        QVERIFY(cap.requestTimeoutMs() >= cap.stallTimeoutMs());
+    }
 };
 
 QTEST_MAIN(TestGrpcFramebufferCapture)

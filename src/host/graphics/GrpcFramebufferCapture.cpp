@@ -8,6 +8,7 @@
 #include <QtEndian>
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 
@@ -37,6 +38,13 @@ GrpcFramebufferCapture::GrpcFramebufferCapture(QString host, int port, int reque
       m_port(port),
       m_requestedWidth(normalizedCaptureSize(requestedWidth, requestedHeight).width()),
       m_requestedHeight(normalizedCaptureSize(requestedWidth, requestedHeight).height()) {
+    // Per-request timeout is load-dependent (see header). Honour an env override
+    // but never let it drop below the stall watchdog — that re-couples the two
+    // and reintroduces the total=0-under-load freeze this knob exists to avoid.
+    if (const char *timeoutEnv = std::getenv("CHIMERA_GRPC_REQUEST_TIMEOUT_MS")) {
+        const int parsed = std::atoi(timeoutEnv);
+        if (parsed >= m_stallTimeoutMs) m_requestTimeoutMs = parsed;
+    }
     m_watchdog.setInterval(1000);
     connect(&m_watchdog, &QTimer::timeout, this, &GrpcFramebufferCapture::checkStall);
 }
@@ -164,8 +172,10 @@ void GrpcFramebufferCapture::sendRequest() {
     request.setAttribute(QNetworkRequest::CacheSaveControlAttribute, false);
     // Abort a request that makes no progress for this long. A hung HTTP/2
     // stream would otherwise occupy a pipeline slot forever; the timeout turns
-    // it into a normal error that the retry path replaces.
-    request.setTransferTimeout(std::chrono::milliseconds(m_stallTimeoutMs));
+    // it into a normal error that the retry path replaces. Decoupled from the
+    // stall watchdog: a slow-but-progressing 1080p readback must be allowed to
+    // outlive the 2s watchdog or no frame ever completes under load.
+    request.setTransferTimeout(std::chrono::milliseconds(m_requestTimeoutMs));
 
     QNetworkReply *reply = m_network.post(request, m_requestBody);
     if (!reply) return;
