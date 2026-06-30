@@ -422,6 +422,21 @@ std::vector<std::string> buildEmulatorArgsForConfig(const VirtualMachineConfig &
 
     // Do not force "-systemui-renderer skiavk"; GL via gfxstream/ANGLE is the
     // stable path on hosts with Vulkan overlays or software ICD fallback.
+    //
+    // Guest-Vulkan UI path (CHIMERA_GUEST_VULKAN=1, default off). Session 91: with
+    // "-feature Vulkan" the gfxstream backend routes guest Vulkan to the host NVIDIA GPU
+    // (confirmed "Selecting Vulkan device: NVIDIA GeForce RTX 3070 Ti"). After fixing
+    // three MSVCP140 std::future/promise crashes in the gfxstream host backend
+    // (device_op_tracker, sync_thread, WorkerThread), app HWUI on Vulkan
+    // (debug.hwui.renderer=skiavk) renders to "Skia (Vulkan)" without crashing. The
+    // skiavk RenderEngine/HWUI props are set at RUNTIME (adb setprop + framework restart,
+    // NOT emulator -prop which only sets androidboot.* not the runtime debug.* sysprop).
+    // We only enable the guest Vulkan feature here; the verifier/test injects the props.
+    if (truthyEnv("CHIMERA_GUEST_VULKAN")) {
+        args.push_back("-feature");
+        args.push_back("Vulkan");
+    }
+
     args.push_back("-memory");
     args.push_back(std::to_string(config.ramMB));
 

@@ -490,6 +490,37 @@ static void setEnvIfChanged(const char *name, const QByteArray &value) {
         qputenv(name, value);
 }
 
+// Interactive knob resolvers: an explicit env override wins, otherwise the
+// built-in default (chosen to preserve the historical effective behavior).
+static std::string envOrDefault(const char *name, const std::string &fallback) {
+    const char *env = std::getenv(name);
+    if (!env) return fallback;
+    const QString value = QString::fromLocal8Bit(env).trimmed();
+    return value.isEmpty() ? fallback : value.toStdString();
+}
+
+static int envIntOrDefault(const char *name, int fallback) {
+    const char *env = std::getenv(name);
+    if (!env) return fallback;
+    bool ok = false;
+    const int value = QString::fromLocal8Bit(env).trimmed().toInt(&ok);
+    return ok ? value : fallback;
+}
+
+// The emulator priority ceiling is "normal" (enforced by InstanceManager and
+// ProcessLauncher); anything else falls back to the conservative default so a
+// stray value can never starve host audio with a high-priority guest tree.
+static std::string sanitizeProcessPriority(const std::string &priority) {
+    const QString p = QString::fromStdString(priority).trimmed().toLower();
+    if (p == QStringLiteral("idle") || p == QStringLiteral("below_normal") ||
+        p == QStringLiteral("normal") || p == QStringLiteral("eco")) {
+        return p.toStdString();
+    }
+    qWarning() << "Unsupported CHIMERA_INTERACTIVE_PRIORITY value" << p
+               << "- falling back to below_normal";
+    return "below_normal";
+}
+
 static void configureEmuglSharedTextureEnv(const QStringList &args) {
     const bool requested = args.contains(QStringLiteral("--emugl-shared-texture")) ||
                            isTruthyEnv("CHIMERA_ENABLE_EMUGL_SHARED_TEXTURE") ||
@@ -999,14 +1030,20 @@ int main(int argc, char *argv[]) {
 
     std::string g_instanceName;  // persists for NativeEmulatorView PID wiring
     bool v1QuickBootEnabled = false;
+    // Resolved interactive knobs, surfaced later in the CHIMERA_DISPLAY log line.
+    std::string g_v1ProcessPriority = "below_normal";
+    int g_v1Cpus = 4;
+    int g_v1RamMB = 4096;
 
     // v1: Start emulator instance
     if (!hcsBackendMode && !qemuBackendMode && !noEmulator && !g_adbPath.empty()) {
         auto &mgr = InstanceManager::instance();
         InstanceConfig cfg;
         cfg.name = "chimera_dev";
-        cfg.cpus = 2;
-        cfg.ramMB = 2048;
+        // cpus/ramMB are env-overridable but still floored by
+        // normalizedInstanceConfig (>=4 / >=4096) unless that floor is lowered.
+        cfg.cpus = envIntOrDefault("CHIMERA_INTERACTIVE_CPUS", 4);
+        cfg.ramMB = envIntOrDefault("CHIMERA_INTERACTIVE_RAM_MB", 4096);
         cfg.width = 1920;
         cfg.height = 1080;
         cfg.dpi = 320;
@@ -1019,7 +1056,11 @@ int main(int argc, char *argv[]) {
         // Keep emulator/qemu below foreground desktop/audio work. Boot and
         // 1080p screenshot readback can otherwise preempt normal-priority
         // media threads and cause music stutter or crackle on the host.
-        cfg.processPriority = "below_normal";
+        // CHIMERA_INTERACTIVE_PRIORITY (idle|below_normal|normal) trades host
+        // audio headroom against interactive FPS; default preserves today's
+        // effective behavior.
+        cfg.processPriority =
+            sanitizeProcessPriority(envOrDefault("CHIMERA_INTERACTIVE_PRIORITY", "below_normal"));
         cfg.dataDir = (g_projectRoot / "instances" / cfg.name).make_preferred();
         guestInputSize = QSize(cfg.width, cfg.height);
 
@@ -1027,6 +1068,14 @@ int main(int argc, char *argv[]) {
         mgr.deleteInstance(cfg.name);
         if (mgr.createInstance(cfg)) {
             qDebug() << "Instance created:" << QString::fromStdString(cfg.name);
+            // Read back the normalized config so the CHIMERA_DISPLAY log reports
+            // the values actually in effect (after the cpus/ram/priority floors).
+            const InstanceConfig effectiveCfg = mgr.getInstanceConfig(cfg.name);
+            if (!effectiveCfg.name.empty()) {
+                g_v1ProcessPriority = effectiveCfg.processPriority;
+                g_v1Cpus = effectiveCfg.cpus;
+                g_v1RamMB = effectiveCfg.ramMB;
+            }
             mgr.setStateCallback([&app](const std::string &name, VMState s) {
                 qDebug() << "Instance" << QString::fromStdString(name)
                          << "state:" << static_cast<int>(s);
@@ -1466,12 +1515,18 @@ int main(int argc, char *argv[]) {
         }
         if (!grpcCapture && useMmapGrpc) {
             auto *grpcMmapCapture = new chimera::graphics::GrpcMmapFramebufferCapture(
-                QStringLiteral("127.0.0.1"), 8554, grpcCaptureWidth, grpcCaptureHeight, &app);
+                QStringLiteral("127.0.0.1"), g_runtimeCfg.grpcPort, grpcCaptureWidth,
+                grpcCaptureHeight, &app);
             grpcCapture = grpcMmapCapture;
             *grpcMmapCaptureForInput = grpcMmapCapture;
         } else if (!grpcCapture) {
+            // Use the derived gRPC port (8554 + console offset), not a hardcoded
+            // 8554 — otherwise a non-default console port (e.g. the verifier's
+            // auto-picked 5560 → emulator gRPC 8560) makes capture talk to the
+            // wrong port and deliver zero frames (total=0) while ADB still works.
             grpcUnaryCapture = new chimera::graphics::GrpcFramebufferCapture(
-                QStringLiteral("127.0.0.1"), 8554, grpcCaptureWidth, grpcCaptureHeight, &app);
+                QStringLiteral("127.0.0.1"), g_runtimeCfg.grpcPort, grpcCaptureWidth,
+                grpcCaptureHeight, &app);
             grpcCapture = grpcUnaryCapture;
             // Unary getScreenshot is a CPU/GPU readback fallback, not the 60 FPS
             // production path. Keep it conservative so it does not preempt host
@@ -1512,6 +1567,35 @@ int main(int argc, char *argv[]) {
         qWarning() << "Strict GPU capture enabled; raw gRPC/ADB fallback is disabled";
     } else if (sharedTextureCapture) {
         qDebug() << "Shared D3D11 texture path wired; gRPC capture not started";
+    }
+
+    // One authoritative, machine-greppable line naming the display path that
+    // actually wired up (start-chimera's banner reflects intent; a custom
+    // runtime can silently fall back to gRPC). Mirrors the CHIMERA_PERF format.
+    if (emulatorStarted) {
+        const char *displayPath =
+            sharedTextureCapture ? "gfxstream-shared-texture" :
+            sharedMemoryCapture  ? "shmem-cpu-readback"       :
+            windowD3D11Capture   ? "window-d3d11"             :
+            h264Capture          ? "adb-h264"                 :
+            grpcUnaryCapture     ? "grpc-unary"               :
+            grpcCapture          ? "grpc-mmap"                :
+            adbCapture           ? "adb-raw"                  : "none";
+        const char *fallbackPath =
+            grpcUnaryCapture ? "grpc-unary" :
+            grpcCapture      ? "grpc-mmap"  :
+            adbCapture       ? "adb-raw"    : "none";
+        const bool sharedTexture =
+            sharedTextureCapture || sharedMemoryCapture || windowD3D11Capture;
+        qInfo().noquote()
+            << QStringLiteral("CHIMERA_DISPLAY path=%1 sharedTexture=%2 fallback=%3 "
+                              "priority=%4 cpus=%5 ramMB=%6")
+                   .arg(QString::fromLatin1(displayPath))
+                   .arg(sharedTexture ? QStringLiteral("yes") : QStringLiteral("no"))
+                   .arg(QString::fromLatin1(fallbackPath))
+                   .arg(QString::fromStdString(g_v1ProcessPriority))
+                   .arg(g_v1Cpus)
+                   .arg(g_v1RamMB);
     }
 
     if ((requireEmuglSharedTexture || requireGfxstreamSharedTexture) && streamCapture) {
@@ -1731,7 +1815,13 @@ int main(int argc, char *argv[]) {
             if (!grpcCapture->isRunning()) {
                 qDebug() << "Starting" << grpcCapture->backendName() << "screen capture stream";
                 grpcCapture->start();
-            } else if (attempts > 1 && attempts % restartInterval == 0) {
+            } else if (attempts > 1 && attempts % restartInterval == 0 &&
+                       !grpcCapture->hasInFlight()) {
+                // Only hard-restart a genuinely wedged/idle pipeline. While a
+                // request is still in flight a slow 1080p readback is legitimately
+                // progressing; a blind stop()/start() would abort it and reset the
+                // stream, which is the total=0-under-load freeze. The request's own
+                // transfer timeout + error/backoff path reclaims truly hung replies.
                 qWarning() << grpcCapture->backendName()
                            << "capture has not produced a frame; restarting stream";
                 grpcCapture->stop();
