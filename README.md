@@ -106,7 +106,9 @@ Chimera (Host Windows, 單一 Qt6/QML 視窗)
 
 - **日常可用**：stock 路徑 boot 到乾淨的 Chimera Launcher 首頁，真實 home/app/輸入/多開等全部可用；FPS 非 BlueStacks 等級。**這是目前最穩的日常用法（`start-chimera.cmd`）。**
 - **Fast custom runtime**：`-Fast` 現在可 boot 到可見的一般 UI（SwiftShader ES compositor），同時保留 custom gfxstream shared-texture runtime 給連續渲染內容。
-- **1080p/60**：custom runtime 對**連續渲染內容**已驗證 `min 59.8 / avg 60.0 / dup 0`（`scripts\verify-true-1080p60.ps1`）。push-based 的開機動畫 / idle Home 本來就是低 FPS，屬正常。
+- **1080p/60（synthetic）**：custom runtime 對**連續渲染內容**已驗證 `min 59.8 / avg 60.0 / dup 0`（`scripts\verify-true-1080p60.ps1`）。push-based 的開機動畫 / idle Home 本來就是低 FPS，屬正常。
+- **日常互動（真實量測）**：`scripts\verify-interactive-ui.ps1` 是日常可用性的權威證據（非 GL60 synthetic）。Fast 一般 UI（Settings 連續滾動）實測 `effFps≈20、dup=0`，走 **gpu-direct**（`postFrameDirectGpu`、無 CPU readback）；`guest≈stream≈render` 代表 host pipeline 1:1 跟上，瓶頸是 **guest SurfaceFlinger render cadence**（push-based ~20 unique fps）+ app cold-launch hitch（早期 `maxMs` 可達數秒）。一般 UI 60 仍需 gfxstream compositor R&D。
+- **背景音樂干擾**：emulator priority 現在可由 `CHIMERA_INTERACTIVE_PRIORITY`（或 `start-chimera.ps1 -AudioFirst`/`-InteractiveFirst`）調整；實測 steady-state helper churn ≈ 0，主要競爭來自 1080p readback 與 emulator 本體 CPU。`-AudioFirst`（idle/EcoQoS）最大化保護 host 音樂。
 - **一般 UI 合成**：custom runtime 的一般 UI 黑屏已修正為 SwiftShader ES compositor path；ANGLE/D3D11 硬體 compositor 已確認會在 SurfaceFlinger draw 觸發 ANGLE `libGLESv2.dll` AV，暫不作正式路徑。
 - 真實遊戲 flow 受益於 direct-VK 路徑，但尚未逐一重測。
 

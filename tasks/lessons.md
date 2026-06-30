@@ -1,5 +1,30 @@
 # Chimera Lessons
 
+## 2026-06-30 — 量測「真實負載 60」前先分清 guest backend；md5 非 gate；PS verifier success path 要顯式 exit
+
+- **重 GLES fill 量到的是 SwiftShader 軟體填色牆，不是 host 顯示/post path**（Session 94 item 2）：custom runtime headless 下 guest GLES → host **SwiftShader（軟體）**。gl60 加重 fragment（`-HeavyIterations 96` 全螢幕 plasma）→ 同一 gpu-direct path 60→6.6 fps、dup=0。瓶頸是 guest 軟體填色，非 post path。**Rule**：設計「真實遊戲負載」探針前先確定 guest 繪製跑在哪（GLES=SwiftShader 軟體 / Vulkan=NVIDIA 硬體），否則會把軟體填色慢誤判成顯示路徑慢。GLES heavy 數字只能標成「GLES/SwiftShader fill 天花板」，HW 遊戲負載要走 guest Vulkan 才有意義。
+- **dup=0 才能宣稱「guest 真的只產出 N unique fps」**：heavy96 的 6.6 fps dup=0 證明是 guest render cadence 限制（真不重複幀），非 host 重送舊幀。量瓶頸定位時 dup 是關鍵判別。
+- **gfxstream DLL 的 md5 不是 runtime gate**：build 非 byte-deterministic，md5 會在功能等價的 rebuild 間漂移（Session 94 部署 md5 `c81d2092…` ≠ doc 記錄）。**Rule**：驗 DLL 健康用 manifest buildId gate + 實測 gpu-direct 60 + guest-Vulkan robustness，不要把 md5 字串當通過條件；docs 記 md5 只作參考。
+- **PowerShell verifier 的 documented-success 路徑要 `exit 0` 顯式收尾，不能靠 bare `return`**：`finally` 內的 cleanup native（taskkill/adb，process 已不在時回非零）會洩漏 `$LASTEXITCODE`，讓 baseline/observe/pass 成功卻 exit 255 → 自動化誤判失敗。**Rule**：success 路徑用 `exit 0`，失敗用 `throw`（engine 給 nonzero）；實測確認 `try` 內 `exit` **仍會先跑 `finally`**（cleanup 不被跳過），故安全。
+
+## 2026-06-30 — capture 連線 port 必須用 derived port，不可硬寫；「ADB 有畫面但 gRPC 0 幀」是 port mismatch 的招牌
+
+- **症狀**：可見 gate（ADB `screencap`）拿到正常 Home 畫面，但 `CHIMERA_PERF` 全程 `total=0` / `stream=0`、`grpc_active_samples<2`。容易被誤判成「readback 太慢」或「stock flakiness」。
+- **根因**：ADB（console+1）與 gRPC（`8554 + console offset`）是兩條獨立通道。emulator console port 非預設（verifier auto-pick 5560）時，ADB 仍對（serial 已 override），但 capture 若**硬寫** gRPC `8554` 就連到不存在/別的 endpoint → 0 幀。`main.cpp:1124` 已正確 derive `g_runtimeCfg.grpcPort`，但 capture 建構（`GrpcFramebufferCapture`/`GrpcMmapFramebufferCapture`）卻忽略它、硬寫 8554（與 Session 86 的 ADB-port hardcode 同類 bug）。
+- **Rule**：任何對 emulator 的連線（capture / input / keyboard / console）都必須從同一個 derived port 公式取值，不可各自硬寫常數。預設 console 5554 → 8554 會「剛好對」而長期遮蔽此 bug；只有非預設 port 才暴露。
+- **Rule**：可見性 gate 用 ADB，但 ADB 通就不代表 gRPC display path 通；display-path 驗證要直接看 `total/stream`，不可只靠 ADB 截圖。
+- **Rule（歸因紀律）**：把 0-frame 歸因成「負載/延遲」前，先排除「連錯 port / 連不上」這種確定性失敗。確定性 bug（連 0 幀）優先於機率性假說（負載敏感）。
+
+## 2026-06-28 — GL60 synthetic pass ≠ 真實互動 pass；量測工具不可干擾被測對象
+
+- `verify-true-1080p60.ps1` 的 60 FPS PASS 只證明 **synthetic 連續渲染 app（`chimera-gl60-smoke`）** 在 custom gfxstream GPU-direct shared-texture path 達標；它**不能**代表日常 Home/Settings/遊戲互動。一般 SurfaceFlinger UI 走 SwiftShader ES 合成 + CPU readback（`postFrameCpu`），非 `postFrameDirectGpu`，因此非 60。
+- **Rule**：日常可用性要用獨立的互動 verifier（`verify-interactive-ui.ps1`）量測真實互動（Home→Settings→sustained scroll→app switch），並**分類實際 display path**（`gpu-direct` / `gpu-shared-cpu-composited` / `grpc-unary` …）。Stock 永遠回報 `result=baseline`（不可宣稱 60）；Fast 只有 `path=gpu-direct` 且 sustained eff≥門檻才 `pass-gpu-direct-60`，否則 `fast-ui-visible-not-60` + root-cause。
+- **idle Home 低 FPS 是 push-based 正常行為**（`effective=min(guest,stream,render)`，guest 只在內容改變時渲染；BlueStacks 亦然）。verifier 不可 gate idle FPS，只 gate sustained-scroll 段。
+- **量測工具不可干擾被測對象（Heisenberg）**：互動 verifier 初版每秒做 2–3 次 `Get-CimInstance Win32_Process`（會 join command line，極昂貴）取 CPU/churn，足以與 capture threads 搶 CPU。**Rule**：telemetry 改用 per-PID `Get-Process`（無 WMI）+ 2s cadence，昂貴的 CIM adb-children churn 掃描節流到 ~4s。
+- **host 互動會 reset gRPC idle throttle，但 `adb input swipe` 不會**（`notifyInputActivity()` 只由 host `InputBridge` 觸發，main.cpp:848）。不過連續 scroll 產生 unique frames 使 `m_duplicateStreak<2`，仍維持 active interval，所以 adb scroll 量到的是真正天花板（1080p readback 吞吐），不是 idle throttle。手動互動情境用 `-Observe` 模式涵蓋。
+- **stock gRPC `getScreenshot` 整輪 0 幀（`total=0`）的真正根因是 hardcoded port，非 readback 延遲**（Session 90 的「延遲 > watchdog」歸因已被 Session 93 證偽）：`main.cpp` 建 `GrpcFramebufferCapture` 時硬寫 gRPC port `8554`，但 emulator gRPC port 是 `g_runtimeCfg.grpcPort = 8554 + ((console-5554)/2)*2`。verifier auto-pick console 5560 → emulator 聽 8560、capture 連 8554 → 幀**永遠**到不了。改用 derived port 後 GrpcOnly `result=pass`（grpc_active_samples 0→9）。次要的負載硬化（transfer timeout 與 stall watchdog 解耦、retry timer `hasInFlight()` gate）對「真實慢 readback」有益，但**不是** 0-frame 的根因。custom runtime shared-texture path 不經 gRPC，不受此影響。
+- **emulator config 硬寫值可能被 normalizer 蓋掉**：`main.cpp` 曾硬寫 `cfg.cpus=2; ramMB=2048`，但 `InstanceManager::normalizedInstanceConfig` floor 回 `>=4 / >=4096`，所以實際只有 `processPriority` 生效。改成可設定時要記得：env→default resolver 的預設值要等於 normalizer 後的「實際生效值」，否則 `CHIMERA_DISPLAY` log 會誤報。priority 上限被 normalizer + `ProcessLauncher::safePriorityClass` 雙層夾到 `normal`。
+
 ## 2026-06-28 — verifier 不能過濾 post-warmup 零 FPS，且 emulator port 要檢查 pair
 
 - Android Emulator 的 ADB port 是 console port + 1；本機服務可能只占用 odd ADB port（例如 `5561`），造成 emulator 內部 boot completed，但 ADB server 顯示 `no emulators found`。
@@ -224,184 +249,45 @@
 - 舊 qemu build system 在 system MinGW 下應只 patch 臨時 copy：關閉 32-bit、跳過 emulator executable/tests/qapi Python2，直接 build 四個 `objs-chimera-emugl/lib64/*.dll` target。
 - `ChimeraSharedTextureBridge` 這類 EmuGL source 要用 MinGW/GCC 驗證，不只靠 MSVC；nested class 的定義不能放在 anonymous namespace，缺標準 header 也會被 GCC 抓出來。
 
-## 2026-05-22 — 顯示與效能驗證
+## 標準規範（彙整 2026-05-22 ~ 06-02 lessons，依主題）
 
-- 不可把 Android Emulator Win32 native embed 當作預設修法；它會黑畫面、破壞 Qt emulator 視窗群組，且可能讓工具列外漏。預設維持 headless gRPC streaming，native embed 只能作 opt-in 實驗。
-- FPS log 只代表 frame 有 paint，不代表使用者看到可用桌面。遇到「空畫面」必須同時抓 ADB screenshot 與 Chimera/GuestDisplay 畫面，判斷是 guest state 還是 host display path。
-- Quick Boot snapshot 可能保存壞的 guest state；在 snapshot 穩定前，預設 full boot，Quick Boot 只能用 `CHIMERA_QUICK_BOOT=1` 或 verifier 明確啟用。
-- 開機後要主動 wake、dismiss keyguard、HOME，否則 stream 可能停在近乎空的鎖定/載入畫面。
+**解析度 floor（不偷偷降解析度換 FPS）**
+- guest `hw.lcd.width/height`、emulator `-window-size`、capture request、UI `wm size` preset、legacy QEMU/HCS backend、CPU shmem、InstanceManager saved config 全部至少 1920×1080；低於就 clamp 或 reject。960x540/896x504/800x450 已被使用者明確否決。
+- 測試要直接驗 emulator args 不出現低解析度，不能只看 gRPC request。
 
-## 2026-05-24 — 觸控與解析度效能
+**誠實 FPS**
+- 主側欄顯示 `effective=min(guest,stream,render)`；靜止/duplicate 顯示 0 是正確。Stream/Guest/Render/Dup 細節留 HUD/log。
+- duplicate frame 只更新 stream metric，不送 QML repaint（省 host 開銷）。
+- unary `getScreenshot` 的 `Image.seq` 固定 0，不可當 dirty signal；sampled fingerprint 會低估內容變化；要可靠 dirty signal 或 full-frame fingerprint（成本可接受時）。
 
-- Android Console `event mouse` 會回 OK，但不保證被 Android launcher 當成 touchscreen tap；普通點擊要走 emulator gRPC `sendTouch` 或其他真觸控路徑，不可讓 console mouse 假成功吃掉事件。
-- 不能把 guest 解析度和 stream 擷取解析度混為一談；Android 與 capture/request 都必須維持至少 1920x1080。raw `getScreenshot` 1080p 會掉到 15-30 FPS 時，不能再用低解析度換 FPS，必須改 shared texture/custom runtime。
-- 使用者抱怨「畫面靜止/點不動」時，驗證要包含「點擊後 foreground package 改變」，只看 screenshot 或 FPS 不夠。
-- 不可把 capture loop FPS 當成使用者體感 FPS；靜止畫面重複擷取 60 次只代表 host 在輪詢。UI 必須分開顯示 guest/content FPS、stream FPS、render FPS 與 duplicate rate。
-- 使用者明講「FPS 虛報」時，主側欄不可顯示單純 Stream FPS；Stream 只代表畫面傳輸 cadence，Guest 內容 FPS、Render FPS、Dup rate 必須保留在 HUD/log 供查證。
-- 降低主機卡頓要避免靜止畫面重複 repaint：重複 frame 應只更新 stream metric，不送入 QML。若產品面要求主 FPS 穩定 60，capture 可維持 16ms，但 duplicate path 仍不可觸發 repaint。
-- 想做 BlueStacks 類乾淨首頁，應做真正 Android HOME launcher 並在 boot completed 後 install/set-home，而不是只在 host UI 疊一層假首頁。
-- 側邊欄是操作面板，不是除錯儀表板；使用者要乾淨時，主卡只顯示單一 FPS，Guest/Stream/Render/Dup 這類細節留給 log 或可切換 HUD。
-- Android HOME launcher 不可用接近純黑的空狀態；至少要有固定標題或固定入口與 empty state，並用 `uiautomator dump` + screencap 驗證畫面真的有內容。
-- 設 HOME 成功不等於當前畫面已切到 HOME；host boot flow 要 explicit `am start -n com.chimera.launcher/.MainActivity`，再用 top activity / UI tree 驗證。
-- Android HOME 要常駐 status bar 時，theme 不可設 `android:windowFullscreen=true`；只隱藏 navigation bar 即可，否則橫向畫面會出現厚黑邊且狀態列圖示不可見。
-- 乾淨首頁不要再列舉所有 `CATEGORY_LAUNCHER` app；固定展示必要入口，缺套件時顯示停用狀態，避免 TMobile/Setup 類系統殘留破壞簡潔感。
+**輸入路徑**
+- 普通點擊走 emulator gRPC `sendTouch`（Console `event mouse` 回 OK 不代表 launcher 當 tap）；驗證要看 tap 後 foreground package 改變。
+- wheel/拖曳照 60Hz frame pacing 合併、throttle ~16ms、單次 swipe request 最小化；`adb input swipe` 每次 spawn shell 會抖動，只當 fallback。輸入只由 `GuestDisplay` 做座標轉換後轉發，window 層直接送會雙送/座標錯。
 
-## 2026-05-25 — App provisioning 與 Home 啟動
+**Chimera HOME launcher**
+- 做真 Android HOME（`com.chimera.launcher`）並 boot completed 後 install/set-home + explicit `am start`，不在 host UI 疊假首頁。固定必要入口（缺套件顯示停用 + fallback Activity），動態只追加 user-installed（排除 TMobile/Setup 系統殘留）。theme 不可 `windowFullscreen`（否則厚黑邊 + status bar 不見）。Google Play 需 `google_apis_playstore` image；file manager 用實際 package（如 `me.zhanghai.android.files`）。驗證用 `uiautomator` tile bounds + screencap。
 
-- 需要 Google Play 時必須切到 `google_apis_playstore` system image；單純側載 Play Store APK 不等於有 Play services/授權環境。
-- Android `DocumentsUI` 不是可靠的檔案管理首頁；要有可點的「檔案管理」入口，應安裝並驗證實際 file manager package，例如 `me.zhanghai.android.files`。
-- Home App 不能只手刻四個 intent；固定入口要置頂，但也要掃描 `ACTION_MAIN` + `CATEGORY_LAUNCHER`，讓 Google Play 新安裝的 app 自動出現在首頁。
-- 驗證 Launcher 點擊時要用 `uiautomator` 的 tile bounds / content-desc 點擊，再用 foreground package 判斷；只看圖示存在或用固定座標容易誤判。
-- 固定入口不能以灰色 disabled tile 交付；Chrome / Files 缺失時要有內建 fallback Activity，否則使用者看到的是假入口。
-- 動態掃描不可無差別追加 system launchers；只追加 user-installed packages，否則 Play image 會把 `Settings`、`TMobile` 這類系統殘留塞回乾淨首頁。
-- 使用者回報「開模擬器後音樂卡、雜音」時，要先看 host 資源搶占：qemu 不可 High priority、vCPU 不可預設吃滿 4 核、開機前不可啟動 gRPC screenshot loop；`enableAudio=false` 時也不可掛 `virtio-snd-pci`。
-- 不可用 ADB shell 處理滾輪/滑動主路徑；`adb shell input swipe` 每次都 spawn shell，會造成 host 與 Android input queue 抖動。wheel 要走 emulator gRPC touch swipe 並 throttle，高成本 ADB 只能當 fallback。
-- BelowNormal priority 不一定比較好；它能保護 host audio，但本機 app switch smoke 曾掉到 41-46 FPS。預設要用 2 vCPU + Normal priority + 不高於 Normal 的上限，再靠降低 raw capture 尖峰取得 host headroom。
-- gRPC raw capture 的預設值必須用 runtime smoke 證明；過去 960x540 / 896x504 / 800x450 的低解析度調整已被使用者明確否決。現行 policy 是至少 1920x1080，效能只能靠 shared memory/shared texture/custom runtime 解，不准再降解析度。
+**host audio 優先於 emulator**
+- child 先 suspended 建立 → 套 priority/memory priority/EcoQoS/ignore-timer-resolution → resume；startup 先 `Idle` 高頻重套整棵 tree（覆蓋 qemu child 出生競態），暖機後回 `below_normal`。高 priority 在 InstanceConfig/VirtualMachine/ProcessLauncher 三層封到 ≤ Normal。
+- boot completed 前不啟動 gRPC capture；Quick Boot load/save 都 opt-in（`CHIMERA_QUICK_BOOT=1`/`CHIMERA_SAVE_QUICK_BOOT=1`，含 `stop()` 同步 save）；`enableAudio=false` 不掛 `virtio-snd-pci`；raw capture/snapshot I/O/orphan qemu/shared-texture retry 都要盤點。
 
-## 2026-05-26 — 誠實 FPS 與互動流暢度
+**shared texture（非 CPU-copy）**
+- producer 建 named D3D11 shared handle，consumer 在 render thread `OpenSharedResourceByName` → `QSGD3D11Texture::fromNative()`；persistent texture 逐幀 `UpdateSubresource`，不每幀重建。
+- metadata 用 odd/even seqlock（consumer 只收一致 even）；frame event 由 worker 等待，非 UI QTimer。
+- 發布 GPU shared texture 後跳過 `m_onPost`/`ColorBuffer::readback()`；`FrameBuffer::post()` 的 sub-window 與 headless 分支都要接。
+- opportunistic：沒第一幀讓 gRPC fallback 接手（含 input activity boost）；env `CHIMERA_D3D11_TEXTURE_*`（host）/`CHIMERA_EMUGL_D3D11_TEXTURE_*`（producer）opt-in 自動互補；test 至少建真 D3D11 resource + 第二 device 開啟；producer 自測用 GPU render/clear + 固定 pacing，不用 CPU 全圖填色。
 
-- 主側欄 FPS 不可再顯示單純 Stream delivery；使用者體感要看 `min(Guest, Stream, Render)`，靜止畫面或 duplicate frame 顯示 0 是正確且誠實的。
-- sampled fingerprint 會低估 Android 內容變化，不能拿來當誠實 Guest FPS；除非有逐 flow 驗證，否則維持 full-frame fingerprint 或更可靠的 frame-dirty signal。
-- raw `getScreenshot` + `QImage`/`QQuickPaintedItem` 不是可宣稱真 1080p/60 的路徑；通知欄/滑動 flow 實測 Stream 60+ 時 Guest/Render 仍可能只有 9-14 FPS。真 60 phase 要改 shared memory/shared texture + scene graph texture renderer。
-- 滾輪/拖曳的優化目標不是把事件全部送進 guest，而是照 60Hz frame pacing 合併；wheel burst 應節流到約 16ms，且單次 instant swipe request 數要最小化。
-- BlueStacks 類效能方向應拆成硬體加速 boot gate、renderer profile、frame pacing、resource profile、Eco mode 與低延遲 input；不要只調高 qemu priority 或盲目提高 capture 解析度。
+**raw fallback 是診斷非 60fps**
+- raw gRPC/MMAP/screenrecord/ADB 只能同次 CLI `--allow-raw-capture-fallback`（env 不生效）；request RGBA8888（RGB888 在 capture 層轉，不丟 format convert 進 render thread）；idle cadence 保守、有輸入才 boost；失敗帶 adb/ffmpeg stderr；都要誠實標「非 60fps 完成」。MMAP stock stream 實測 ~12 FPS。
 
-## 2026-05-27 — Shared texture 不是 CPU-copy
+**custom runtime 需硬證據 / fail-closed**
+- standalone DLL 有 marker ≠ 可替換 SDK backend；必須比對 SDK ABI export（如 `gfxstream_backend_set_screen_background`）+ SDK runtime imports + manifest（`VulkanDisplayVkPost`、build id 對齊）。缺則 manifest writer 先刪 stale manifest 並 fail closed，不標 runtime ready。
+- `CHIMERA_REQUIRE_*_SHARED_TEXTURE=1` fail closed：runtime 不可用/無第一幀/fallback 啟動都直接失敗，不留空 UI 或假跑。verifier 失敗做 stock 對照 boot（stock 能 boot→問題在 custom ABI/producer）。
+- classic `emulator64-x86.exe`+`lib64OpenglRender.dll` 只是 build/probe artifact，非 Android 34 Play production（image 只有 `kernel-ranchu`）；對 classic runtime 不可傳新版 stock flags（`-grpc`/`-window-size`/`-vsync-rate`…）。verifier 鎖 `CHIMERA_EMULATOR_PATH`。
+- custom build：Windows 用 `wsl -d Ubuntu-24.04`、qemu subtree CRLF→LF 臨時 copy、需完整 AOSP `prebuilts/gcc`（缺則 fail fast）；Unicode argv 用 `wmain`。
 
-- CPU shared memory 只能降低 IPC/程序啟動成本，仍會有 CPU copy 與 Qt texture upload；不可把它宣稱為真正 shared texture。
-- D3D11 shared texture 必須用 producer 建立 named shared handle，consumer 用 Qt scene graph 的 D3D11 device 在 render thread `OpenSharedResourceByName`，再交給 `QSGD3D11Texture::fromNative()`。
-- 即使還在 CPU frame fallback，也不要每幀 `createTextureFromImage()` 重建 GPU texture；D3D11 RHI 下應維持 persistent texture，逐幀 `UpdateSubresource()`。
-- Shared capture backend 必須是 opportunistic：沒有第一幀時要讓 gRPC fallback 接手，不能因為 env var 設錯就永久黑畫面。
-- Shared frame metadata 必須用 odd/even sequence 做 seqlock；只看 header 或只測字串會漏掉 producer 寫入中的 torn frame。
-- 測試 shared texture 時至少要建立真 D3D11 shared resource，並用第二個 D3D11 device 打開；只測 metadata signal 不足以證明 named handle 可用。
-- 不可讓 shared texture metadata capture 依賴 UI thread QTimer；frame event 應由 worker 等待，且只有新 even sequence 才能計入 Stream/Guest，否則又會變成「看起來 60、實際沒新 frame」。
-- Runtime helper producer 也不能用高成本 CPU 全圖填色來測 60fps；要用 GPU render/clear 與固定 frame pacing，否則會把 producer 自己的 30fps 誤判成 renderer 瓶頸。
-- 不可用降低 capture 解析度來換取漂亮 FPS；Chimera 的 capture/request floor 必須至少 1920x1080，低於這個值的 env 或預設都要被程式 clamp 回 1080p。
-
-## 2026-05-27 — 回歸不能傷到主機音訊
-
-- Native embed attach log 成功不等於 display path 可用；只要 toolbar 外漏、viewport 黑畫面或視窗覆蓋異常，就只能維持 opt-in 實驗，不可當預設。
-- Emulator gRPC MMAP frame 在目前環境是 top-down；照 bottom-up 複製會把 Android 畫面翻轉。這類 orientation 修正一定要用 screenshot 實證，不可憑記憶猜。
-- 1080p MMAP / raw CPU path 不能做 full-frame hash 當每幀 dirty detection；那會把成本搬到 host CPU，造成音訊和滑動卡頓。要用可靠 sequence / dirty signal。
-- 追 1080p 60 FPS 時不可回歸到搶主機資源：預設 qemu 應低於前景音樂工作、套 EcoQoS、Quick Boot opt-in、guest audio disabled、boot completed 前不啟動 gRPC capture。
-- 靜止畫面 raw fallback 不能用 16ms busy cadence 長時間輪詢；idle duplicate cadence 要保守，只有輸入或內容變化時才 boost。
-
-## 2026-05-31 — Producer contract 要先變成正式模組
-
-- 不能把 1080p/60 的 shared texture producer 寫死在測試 helper 裡；helper 能跑不代表 emulator bridge 可接。先抽正式 publisher API，讓 helper、unit test、未來 QEMU bridge 共用同一份 metadata / named texture / sequence 寫法。
-- Shared D3D11 metadata 必須由 producer 用 odd/even sequence 寫入；consumer 只接受 even 且一致的 sequence，避免 UI 顯示半寫入 metadata。
-- 測試 source 預設也要是 1920x1080 / 60fps；測試 helper 預設 1280x720 會讓驗證訊號偏離使用者要求。
-- CPU shared-memory framebuffer 也不能留低解析度成功案例；即使只是 fallback/test source，低於 1920x1080 都要 reject 或 clamp，否則會變成下一個假 60 FPS 入口。
-
-## 2026-05-31 — Shared texture hook 要關掉 readback
-
-- 在 EmuGL 端加入 shared texture hook 時，成功發布 GPU shared texture 後必須跳過 `m_onPost` 的 `ColorBuffer::readback()`；否則 CPU readback 還是會吃滿頻寬，體感不會接近 60 FPS。
-- `FrameBuffer::post()` 的 sub-window 與 headless/no-subwindow 分支都要接 shared texture；只改 native window 分支會漏掉 Chimera 目前常用的 headless streaming 路徑。
-- Bridge env 應 fallback 到 host 使用的 `CHIMERA_D3D11_TEXTURE_*`，避免 host consumer 與 emulator producer 需要兩套不同設定。
-
-## 2026-06-01 — 真 1080p/60 要 fail closed
-
-- `CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE=1` 不能只擋 runtime probe；runtime 不可用、shared texture 沒出第一幀、或 capture fallback 被啟動時都必須 fail closed，不可留下空 UI 或回落 raw gRPC 假跑。
-- 60 FPS verifier 必須 parse `Guest/Stream/Render` 或 `CHIMERA_PERF effective`，並在動態畫面下檢查 duplicate rate；只看側欄或單一 Stream FPS 一律不算證據。
-- `scripts/verify-true-1080p60.ps1` 的成功條件是 Android `wm size >= 1920x1080`、custom EmuGL shared texture runtime ready、Shared D3D11 capture started、有效 FPS 達標、且沒有 raw gRPC/ADB/screenrecord fallback。
-- Windows 測試 helper 若要驗證 Unicode argv，必須用 `wmain` 取得 wide argv 再輸出 UTF-8；`main(char**)` 會經 ANSI codepage 破壞中文。
-
-## 2026-05-31 — 音訊回歸要卡在啟動第一瞬間
-
-- 修 host 音樂卡頓時，不能只在 emulator 已經 resume 後才調 priority；child process 必須先 suspended 建立、套 priority/EcoQoS，再 resume，否則啟動前 1-2 秒仍會搶 foreground audio。
-- qemu child 是 emulator resume 後才生出來；只在父程序 resume 前套 priority 不夠，啟動前幾秒要高頻重套整棵 process tree，避免 child 短暫以 Normal priority 搶主機音訊。
-- 高 priority 必須在多層邊界被封住：Instance config 正規化、VirtualMachine priority mapping、ProcessLauncher applyPriority 都不得允許 High/Realtime 落到 emulator tree。
-- UI 解析度 preset 也算降階入口；既然要求至少 1920x1080，就不能留下 720p/低於 1080p 的 `wm size` 快捷按鈕，ADB control 邊界也要 clamp。
-- Legacy/R&D backend 也不能留下低解析度 fallback；`--qemu-backend`、`--hcs-backend`、config loader default 都要和 production path 一樣至少 1920x1080，否則之後 debug 或 fallback 會把降階重新帶回來。
-- Quick Boot snapshot 保存不是免費的背景工作；不可每次 boot completed 後自動保存。預設只載入 snapshot，保存/重建必須走 verifier 或 `CHIMERA_SAVE_QUICK_BOOT=1`。
-- 實驗 shared texture env 不能造成 UI/log 錯誤洪水；producer 尚未建立 metadata mapping 時應安靜重試，讓 gRPC fallback 維持可用。
-
-## 2026-06-05 — modified gfxstream 不能只看 marker/manifest
-
-- standalone build 出來的 `libgfxstream_backend.dll` 即使含 `ChimeraGfxstreamSharedTextureBridge` marker，也不代表可替換 SDK emulator 的 backend；必須比對 SDK 版本 ABI exports。
-- Android Emulator 36.5.11 stock backend 需要 `gfxstream_backend_set_screen_background` 等 entrypoint；缺這類 export 的 custom DLL 會讓 QEMU 活著但 Android/ADB 不起來，最後表現成黑屏、卡 boot 與資源干擾。
-- manifest writer 與 host runtime probe 都要 fail closed：缺 SDK ABI export 時不得寫 manifest，也不得把 runtime 標成 shared texture ready。
-- verifier 失敗時要做 stock 對照 boot；若 stock 同 AVD 能 boot 而 custom 不行，問題在 custom runtime ABI/producer，不要回頭亂改 UI 或 AVD。
-- 不可讓 `CHIMERA_ENABLE_NATIVE_EMBED`、`CHIMERA_ALLOW_UNSAFE_NATIVE_WINDOW`、`CHIMERA_ENABLE_WINDOW_CAPTURE`、`CHIMERA_ALLOW_UNSAFE_WINDOW_CAPTURE` 這類環境變數啟用原生 emulator 視窗；unsafe display 只能靠同一次命令列明確傳入，正式 verifier 要先清掉舊 env，避免多開 stock Android Emulator 視窗。
-- Modern Android 34/gfxstream 走 Vulkan host path；只有 legacy GL bridge marker 不等於有可用 1080p/60 producer。gfxstream manifest 必須證明 `VulkanDisplayVkPost` 接點與 SDK 36 ABI，否則不得標成 runtime ready。
-- 若 verifier 顯示 runtime ready 但 `AndroidConsoleInput` 一直 connection refused、ADB 不起、FPS 全 0，優先檢查 runtime probe 是否過寬，不要把問題推給 UI 或前端 FPS。
-
-## 2026-05-31 — Shared texture runtime 只能 opt-in 啟用
-
-- 在 modified EmuGL 尚未成為預設 runtime 前，不可預設建立 shared texture capture；stock emulator 不會產生 metadata，預設打開只會增加 retry 與排查噪音。
-- Host 與 EmuGL env 必須用同一組名稱：`CHIMERA_D3D11_TEXTURE_*` 給 host consumer，`CHIMERA_EMUGL_D3D11_TEXTURE_*` 給 producer，opt-in 時自動互相補齊。
-- shared texture opt-in 不能拿掉 gRPC fallback 的 input activity boost；在第一個 shared texture frame 出現前，滾輪/觸控仍需要讓 fallback capture 進入互動 cadence。
-- Custom emulator 不應覆蓋官方 SDK 目錄；用 `CHIMERA_EMULATOR_PATH` 指向實驗 runtime，並在啟動前把旁邊的 `lib64/` / `lib/` 放進 PATH，方便切回 stock emulator。
-
-## 2026-05-31 — Quick Boot 不可再次變成預設
-
-- 使用者再次回報 host 背景音樂卡頓時，要檢查 Quick Boot load/save 是否被重新打開；載入 snapshot 與保存 snapshot 都可能造成啟動/關閉時 I/O 尖峰。
-- Quick Boot 必須是明確 opt-in：`CHIMERA_QUICK_BOOT=1` 才載入，`CHIMERA_SAVE_QUICK_BOOT=1` 才保存。不可只關掉 boot 後 auto-save，卻漏掉 `VirtualMachine::stop()` 的同步 snapshot save。
-- 修音訊回歸不能只看 qemu priority；還要盤點 full-res raw capture、snapshot I/O、orphan qemu 與 shared texture retry 是否把背景資源壓力帶回來。
-
-## 2026-05-31 — Unary MMAP sequence 不能當 dirty signal
-
-- Android Emulator unary `getScreenshot` 的 `Image.seq` 固定是 0；拿它判斷新幀會讓畫面變化被誤判成 duplicate，造成 Guest/Render FPS 失真。
-- 1080p MMAP fallback 仍不可每幀做 full-frame hash；這會把成本搬回 host CPU，增加主機音樂卡頓風險。
-- MMAP 若要用 emulator 提供的 dirty signal，必須走 `streamScreenshot` sequence；但 stock emulator MMAP stream 實測仍只有約 12 FPS，不能當真 1080p 60+ 完成證據。
-
-## 2026-05-31 — Screenrecord 與 raw gRPC 不可傷 host audio
-
-- 新增 ADB/ffmpeg 類實驗 transport 時，不可在未出第一幀時短週期重啟；每 5 秒重啟 adb/ffmpeg 會把「黑畫面」變成 host 資源干擾。
-- screenrecord/H.264 失敗必須帶 adb/ffmpeg stderr tail；只顯示 0 FPS 或黑畫面會讓下一輪又用猜的。
-- raw unary `getScreenshot` 是 CPU/GPU readback fallback，不是 1080p/60 的生產路徑；預設不可用 16ms 1080p readback 硬撐，否則背景音樂/前景瀏覽器會受影響。
-- 若為保護 host audio 降低 raw fallback cadence，必須誠實記錄「這不是 60 FPS 完成」，下一步仍是 shared texture/custom emulator runtime。
-
-## 2026-06-01 — Shared texture runtime 需要硬證據
-
-- `--emugl-shared-texture` 不能只設定 env 就算接上；host 必須檢查 emulator runtime 是否真的能載入 Chimera producer。
-- Stock Android SDK emulator 目前是 `libgfxstream_backend.dll`，不會載入 QEMU subrepo 裡的 legacy `ChimeraSharedTextureBridge`；看到 stock gfxstream 時要明確標示不支援，不可讓 shared texture capture 安靜 retry 成假成功。
-- Custom EmuGL runtime 必須同時有 legacy `lib64OpenglRender.dll` 與 Chimera manifest，才可視為 producer runtime ready；只有 DLL 或只有 env 都不夠。
-- Custom EmuGL runtime ready 不能只看 renderer DLL；還必須有 EGL/GLES translator DLL、合法 manifest schema、1920x1080/60 manifest floor。缺 dependency 的 runtime 會導致啟動後回落 raw readback 或黑畫面，必須 fail fast。
-- 若需要把 shared texture 作為必需條件驗證，使用 `CHIMERA_REQUIRE_EMUGL_SHARED_TEXTURE=1` 讓錯誤直接 fail fast，而不是落回 raw readback 後誤判。
-
-## 2026-06-01 — Custom emulator build 不能靠 qemu subtree 假設
-
-- Windows 上直接 `bash` 可能走壞的 WSL relay；需要明確指定 `wsl -d Ubuntu-24.04`。
-- qemu 子倉庫在 Windows checkout 會有 CRLF，WSL build 應用臨時 copy 轉 LF，不要大面積改原始檔換行。
-- `mingw-w64` 只是必要條件；這份 qemu subtree 還需要完整 AOSP `prebuilts/gcc`。缺 prebuilts 時要 fail fast，不可繼續 package manifest。
-- custom runtime build script 的失敗輸出也是產品證據：它證明目前缺的是完整 AOSP build tree，不是可以靠調 host fallback 補上的效能問題。
-
-## 2026-06-01 — 解析度 floor 必須覆蓋 guest/window/capture
-
-- 只 clamp capture request 不夠；如果 VM config 或 AVD hardware 被寫成低解析度，guest 本身仍會降階，違反「不要偷偷降解析度」。
-- `hw.lcd.width/height`、`-window-size`、capture request 都必須使用同一個至少 1920x1080 的 floor。
-- 測試不能只看 gRPC request；要直接驗證 emulator args 不會出現 `800x450` 這類低解析度。
-- InstanceManager 也要正規化 saved config；否則 UI/設定層仍會保存或回傳低解析度，讓後續流程再次把低解析度當合法輸入。
-
-## 2026-06-01 — Raw fallback 不可把格式轉換丟到 render thread
-
-- 1080p raw gRPC/MMAP fallback 若要求 RGB888，Qt D3D11 texture upload 前仍要轉成 RGBA；這會把每幀 CPU 轉換放進顯示路徑，造成滑動/通知欄體感卡頓。
-- fallback capture request 應直接要求 RGBA8888；若 runtime 回 RGB888，也要在 capture 層轉成 `QImage::Format_RGBA8888`，不要讓 `GuestDisplay::updatePaintNode()` 每幀做 format convert。
-- 這只是降低 fallback 開銷，不是真 1080p/60 完成證據；穩定 60 仍要靠 shared texture/custom producer，避免 screenshot readback 成為主要 display path。
-
-## 2026-06-01 — Host audio 優先於 emulator 啟動速度
-
-- 使用者回報「一開模擬器背景音樂就卡」時，不要只看 capture cadence；capture 可能已延後到 boot completed，真正干擾仍可能來自 emulator/qemu 啟動尖峰。
-- emulator/qemu 啟動前段應用比 steady state 更低干擾的 policy：先 `Idle`，高頻重套整棵 process tree，覆蓋 qemu child 出生競態；boot 完或暖機後再回到 `below_normal`。
-- 低 priority process 不只要降 CPU priority，還要套 memory priority / power throttling / ignore timer resolution，避免影響前景瀏覽器播放音樂。
-- 驗證這類修正時，不要為了證明而直接 full boot 干擾使用者；先用 build/unit tests 鎖住資源 policy，再安排明確的短 runtime smoke。
-
-## 2026-06-01 — 不可把 stock emulator 視窗當正式顯示路徑
-
-- Windows Graphics Capture 依賴 stock Android Emulator HWND；它會暴露原生 emulator 視窗與工具列，違反 Chimera 必須由自有 UI 接管的產品方向。
-- `--window-capture` 必須預設拒絕，只有 `--allow-unsafe-window-capture` / `CHIMERA_ALLOW_UNSAFE_WINDOW_CAPTURE=1` 才能做本機實驗；正式驗證不得用它當 1080p/60 完成證據。
-- Window capture 或 shared texture 嚴格模式失敗時不可退回 1080p raw gRPC/ADB，否則會重新造成 host audio 卡頓與 FPS 假象。
-- Eco mode 解除時也不能把 emulator/qemu 拉回 Normal；預設最多回到 BelowNormal，並且必須套整棵 process tree。
-
-## 2026-06-02 — Classic EmuGL artifact 不是 Android 34 production runtime
-
-- `emulator64-x86.exe` + legacy `lib64OpenglRender.dll` 可以作為 shared texture hook 的 build/probe artifact，但它是 classic goldfish path，不等於可跑現代 Android 34 Play Store AVD。
-- 現有 `google_apis_playstore/x86_64` image 只有 `kernel-ranchu`；classic emulator 預設找 `kernel-qemu`，直接指定 `kernel-ranchu` 也會因 kernel 格式解析失敗而退出。
-- custom runtime verifier 必須鎖定 `CHIMERA_EMULATOR_PATH`，否則很容易「要求 EmuGL」卻實際測到 stock SDK emulator。
-- 對 classic runtime 不能傳新版 stock emulator flags：`-grpc`、`-idle-grpc-timeout`、`-window-size`、`-fixed-scale`、`-vsync-rate`、`-no-metrics`、`-crash-report-mode` 都要被排除。
-- 真正可對標 BlueStacks 的方向是 modern ranchu/gfxstream runtime bridge：保留現代 Android/Play image 相容性，但把 display producer 改成 shared D3D11 texture；不能回退到 stock emulator HWND 或 raw screenshot readback。
+**no native window（headless 強制）**
+- native embed 黑屏/破壞 Qt 視窗群組/外漏 toolbar → 只能 opt-in 實驗；`--window-capture`/`--native-embed` 需各自 unsafe flag + `CHIMERA_ALLOW_UNSAFE_VISIBLE_EMULATOR_WINDOW=1` + 同次 CLI internal diagnostics session，env 不可單獨放行；嚴格模式失敗不可退 raw gRPC/ADB；Eco 解除最多回 BelowNormal。
 
 ## 2026-06-06 — 不要用 C++ ABI wrapper 硬包 stock gfxstream
 
@@ -449,3 +335,42 @@
 
 - 反覆 install 同 package 會撞 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`（debug keystore 變動造成簽章不符）。install 前先 `adb uninstall`（IgnoreExit）最穩。
 - CHIMERA_LOG_PATH 是 `fopen(path,"w")` 持開 + per-message `fflush`；不要在 run 中途 truncate（offset 會錯亂）。要分 warmup/measure window 就用「記錄 warmup 結束時的 perf-sample 數當 boundary」，Assert 只看 boundary 之後的 samples。
+
+## 2026-06-29 — host Qt render 抖到 floor 以下：是視窗 occlusion 節流 + 自誘 hitch，不是 path 回歸
+
+- strict 60fps gate 偶發 `min=54–56 < 57` 或 render→0，**不是** GPU-direct path 壞掉（同 run `guest=stream=60` solid、`postFrameCpu=0`）。根因是 host 端：① Qt Quick render thread 在視窗被其他視窗遮擋時 occlusion-throttle 到 0；② verifier 每 tick 無條件呼叫 `SetWindowPos`+`SetForegroundWindow` 強迫 window-manager 工作，週期性 hitch render thread，單一 ~1s 視窗 FPS 被拉低就讓 min sample 破 floor。
+- 從背景 process 呼叫 `SetForegroundWindow` 在 Windows foreground-lock 下不可靠（常靜默失敗）。要讓視窗不被 occlusion 節流，靠的是 **z-order（HWND_TOPMOST）** 而非 foreground；TOPMOST 釘住就算別人有 focus 也不被遮。
+- 週期性「保前景」必須 **idempotent**：先用 `GetWindowLongPtr(GWL_EXSTYLE) & WS_EX_TOPMOST` + `IsIconic` 檢查，已 topmost 且非最小化就 return，不要重複 `SetWindowPos`。修正後 min 從 54.1 → 59.5，120s strict gate `result=pass`（min 59.5 / avg 60.0 / dup 0）且 `PWSH_EXIT=0`。
+- foreground vs background 啟動差異會造成假失敗：foreground pwsh 啟動的 chimera-ui 與工具共用 console，會收到 Ctrl+C/console-close → `STATUS_CONTROL_C_EXIT (0xC000013A / -1073741510)` 在 boot 前被殺。emulator-boot verifier 一律走 **detached background** 跑，別在 foreground 跑。
+- 殘留檢查要分清「誰的 process」：`crashpad_handler` 多半是 Corsair iCUE / 瀏覽器等第三方的，不是 Chimera 洩漏；過濾殘留只比對 `chimera-ui/emulator/qemu-system`，別把無關 crashpad 當成洩漏而誤判或無限等待。
+- 另：跑前要清 `*.avd\hardware-qemu.ini.lock` stale lock，否則 emulator 啟動即 crash（boot 前死）。
+
+## 2026-06-29 — Venus/Vulkan 攻堅：emulator -prop ≠ runtime sysprop；app HWUI Vulkan 崩 gfxstream
+
+- **emulator `-prop X=Y` 設的是 `androidboot.X`（kernel cmdline），不是 runtime `debug.*` sysprop**。SurfaceFlinger/HWUI 讀的是 runtime `debug.renderengine.backend` / `debug.hwui.renderer`，所以想切 RenderEngine 用 `-prop` 是 no-op（實測 `getprop debug.renderengine.backend` 回空、log 只見 `androidboot.debug.hwui.renderer`）。正解是 **runtime `adb setprop` + `ctl.restart surfaceflinger`**（app 層要 `am force-stop` 再開）。寫 feature 前先用 `getprop` 確認真的生效，別假設旗標等於生效。
+- **量測前確認「被測旗標真的開了」**：先前一輪 end-to-end「skiavk 持平」其實是 `-prop` 沒生效、根本還在 skiagl 的假結果。任何 A/B 都要在 report 印出實際 backend/pipeline（`dumpsys gfxinfo` 的 `Pipeline=Skia (OpenGL|Vulkan)`），否則會拿到 invalid 對照。
+- **app HWUI 上 Vulkan 會崩 gfxstream host backend**：`debug.hwui.renderer=skiavk` 讓 app 以 Vulkan 繪製時，gfxstream 崩在 `DeviceOpTracker::PollAndProcessGarbage`（`device_op_tracker.cpp:72`，poll fence/semaphore 的 use-after-free）。guest Vulkan 做 device init（gl60-style）OK，但 HWUI 大量 fence/semaphore 流量觸發 lifetime bug。general-UI 60 的牆精準定位在此。
+- **headless emulator 的 VM process 名是 `qemu-system-x86_64-headless.exe`**（不是 `qemu-system-x86_64.exe`）。cleanup / stale-VM 偵測漏了它 → 上一輪 wedged VM 殘留佔住 AVD lock，下一輪 `-avd` 直接 FATAL「Running multiple emulators with the same AVD」。production verifier 用 `qemu-system*.exe` glob 已涵蓋，但臨時腳本用精確名要記得加 `-headless`。
+- **emulator-boot 探測一律 detached background 跑 + 全 adb 帶 timeout（Start-Job + Wait-Job）+ force-kill cleanup**（`adb emu kill` 在 device offline 時會 hang）。skiavk/HWUI 實驗會把 guest 弄 offline，沒有 timeout 護欄整個 probe 會卡死。
+
+## 2026-06-29 — gfxstream MSVCP140 std::future crash 是全域反覆出現的，不只 frame_buffer
+
+- Session 76 只在 `frame_buffer.cpp` 修掉 `std::promise<void>` MSVCP140 crash，但 **gfxstream host tree 還有多處** `std::promise`/`std::future`/`std::packaged_task` 會踩同一個雷（本機兩個不相容 MSVCP140.dll 對 `_Associated_state` layout 不一致 → `_Set_value` null-deref）。重度 guest Vulkan（HWUI Vulkan）一驅動就崩。修法統一：`std::promise/shared_future` → `std::shared_ptr<std::atomic<bool>>`；`std::packaged_task<int(...)>`+`future.get()` → `std::function` + `gfxstream::base::Lock + ConditionVariable`（caller block 時用 stack Result + 指標捕捉，免 heap）。
+- **注意區分**：`std::async(std::launch::deferred, []{})` 的 deferred future **不踩雷**（`.get()`/`.wait()` inline 跑，不走 `_Set_value`），codebase 已大量安全使用；別盲目改它。危險的只有 `promise::set_value()` 與被 invoke 的 `packaged_task`。
+- crash stack 會逐一指路：修一個、重建、重測，下一個 crash stack 指向下一處。比一次盲改所有檔案安全（deferred-async 那些不該動）。
+- **codify 進 `apply-chimera-gfxstream-patch.ps1` 後一定要驗證**：拿已改好的 source 跑一次 patch script（`-SourceDir tmp\aosp-github\...\gfxstream`）。`Replace-FirstAvailable` idempotent——replacement 已在檔案就 no-op，**有 typo（含註解差一字、em-dash）就 throw**。EXIT=0 才代表 patch-script 的 replacement 與實際 source byte-match，clean checkout 才能正確套用。
+- 改 `sync_thread.cpp`（每條路徑都用的 sync command）後**務必跑 60fps 回歸**；但要先排除 host 桌面 contention（msedge/FPS overlay 會把 render FPS 壓到 ~22–53，old/new DLL 同樣受影響）——量測期間我自己也不能跑並行 pwsh，否則污染 render 量測。
+
+## 2026-06-29 — 「hang」可能其實是沒符號化的 crash；用 llvm-symbolizer 解 raw stack
+
+- Chimera VEH handler 印的是 **raw** `[chimera-gfxstream-crash] stk[NN] <dll>+0x<offset>`（不符號化），跟 emulator 內建 reporter 的 `.cpp, line` 格式不同。**grep crash 不能只比對符號化格式**，否則會把 crash 誤判成「hang」（device offline / TIMEOUT 兩者表象一樣）。
+- 解 raw offset：`llvm-symbolizer --obj=<dll> <addr>`，但 addr 要加 PE preferred image base——**x64 DLL 預設 `0x180000000`**（`dumpbin /headers` 的 "image base" 確認），即 `llvm-symbolizer --obj=gfxstream_backend.dll 0x1800bf111`，且 `.pdb` 要在 DLL 旁邊。offset 直接餵（不加 base）會回 `??:0:0`。llvm-symbolizer 在 `…/VC/Tools/MSVC/<ver>/bin/Hostx64/x64/`。
+- 重新量 crash 前要先重建出**對應當前 PDB** 的 DLL（offset 隨 build 變），否則符號化對不上。
+- gfxstream 的 MSVCP140 future crash 不只前兩處——**threadpool 核心 `WorkerThread.h` 的 `Command::mCompletedPromise` (`std::promise<void>`) 也是**，SyncThread/post/readback/cleanup worker 全踩。修 primitive（`WorkerCompletion`=Lock+CV；`WorkerWaitable` wrapper 保留舊 `.wait()` / `.wait_for()` API，同時內部可 `->signal()`）一次覆蓋所有 worker pool。回傳型別改了要找出 cascade 的 consumer（`frame_buffer.cpp` 有多處用 `std::future<void>` 接 enqueue；其中 `sendPostWorkerCmd` 要回傳 `std::future<void>`，用 `std::async(std::launch::deferred,[w]{w.wait();})` 橋接——deferred-async 在此環境安全、不踩 `_Set_value`）。
+- 改 threadpool primitive（每條路徑都用）後必跑 **gl60 60fps 回歸**：確認 `min≥57`（本次 final rebuild 後 `min 59.6/avg 60.0` PASS）+ ctest 20/20 + Fast SelfTest PASS，才算非回歸。
+
+## 2026-06-30 — 用自訂 signal 取代 std::promise，每條 early-return/skip 路徑都要顯式 signal
+
+- `std::promise<void>` 析構而未 `set_value()` 時，等候端的 `future.wait()` 會因 **broken_promise** 自動解除阻塞（這是 STL 免費給的「工作被跳過也算完成」語義）。換成自訂 `WorkerWaitable`（Lock+CV，析構不 auto-complete）後，**這層保護消失**：任何「不排隊就 return」的捷徑路徑若沒手動 `->signal()`，對應的 `.wait()` 會永久卡死。
+- 本例：`PostWorker::block()` 在 `m_mainThreadPostingOnly` 時 early-return，舊版靠 promise 析構喚醒 `blockPostWorker()` 的 `scheduledSignal.wait()`，新版漏 signal → hang。修法是 return 前補 `scheduledSignal->signal()`。**Chimera Windows 不可達**（`postOnlyOnMainThread()` 只有 `__APPLE__ && !QEMU_NEXT` 為 true，PostWorkerVk/Gl 都傳 false），屬 latent/macOS-only regression，故修 source + codify 進 patch script 即可，**不需重建已驗證的 Windows DLL**（該分支對 Windows 行為 byte-identical）。
+- 通則：把 promise/future 換成自訂 primitive 時，grep 出該函式所有 `return;` / `continue;` / 提早結束分支，逐一確認等候端不會因少一次 signal 而卡死。code review 抓 correctness 比「能編譯」重要——這個 HIGH 是 review 在最後一刻抓到的。
