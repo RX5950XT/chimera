@@ -2,6 +2,49 @@
 
 ---
 
+## 2026-07-01 Session 99 — /goal 修復所有問題：sibling-grep 補洞（harness 全域 kill）
+
+### Context
+`/goal 修復所有問題`。延續 Session 96-98 已做的 8 維審查（baseline 已綠：ctest 23/23、build current、git clean）。本輪聚焦 lessons.md 第一條規則（修過一類 bug 要 grep 全 repo sibling），把先前各 session 修過的 bug class 在 production host + harness 全面複查，補先前漏網的同類。
+
+### Plan
+- [x] 驗證 baseline：`ctest -LE integration` 23/23 PASS、build current、git clean。
+- [x] Sibling-grep C++ production host 的已修 bug class：硬寫 port（8554/5554/5555）、`CreateSharedHandle` flag、`waitForExit`/`CloseHandle` double-close、env-var `stoi/atoi` 解析、tap press/release pairing。
+- [x] Sibling-grep PowerShell harness 的全域 kill / 硬寫 port。
+- [x] 修漏網、parse + runtime 煙霧驗證。
+- [x] 文件同步：lessons / todo。
+
+### Review
+- **複查結果（C++ production host）：5 類 sibling 全乾淨，無新 bug**：
+  - 硬寫 port：production 路徑（main.cpp/InstanceManager/AdbFramebufferCapture）都從 derived-port 公式取值；剩餘 `5554/5555` 命中都在 legacy `src/virtualization/qemu` fork（R&D `--qemu-backend`）與 `.h` 預設（建構時被覆蓋）。
+  - `CreateSharedHandle`：3 個 site（proxy d3d11 / Vulkan bridge ×2 / SharedD3D11TexturePublisher）全用 `DXGI_SHARED_RESOURCE_READ|WRITE`，無殘留 `GENERIC_ALL`。
+  - `waitForExit`/`CloseHandle`：`QemuBackend::stop()`/`onHealthCheck()` 邏輯正確（只在 `waitForExit<0` 或 process 已不在時才 close）。
+  - env `stoi/atoi`：所有 `std::stoi`（main.cpp:1152 / InstanceManager:529,835 / ConfigManager:51,63）都包 try/catch；`atoi` 不丟例外且後續被 clamp。
+  - tap press/release：MacroEngine 已成對；swipe 路徑都以 `sendTouch(...,0)` 釋放結尾。無漏網。
+- **修掉的 2 個（PowerShell harness）**：
+  1. **`run-proxy-smoke-test.ps1:284` 殘留掃描全域 `Get-Process -Name "emulator","qemu-system*"` + `$rp.Kill()`**（Sessions 96-97 修主 verifier 時漏的 R&D probe sibling）→ dot-source `ChimeraVerifyCommon.ps1`、改用 cmdline-filtered `Get-ChimeraProcesses`。它本來就 `taskkill /F /T /PID` 殺過自己的 tree，全域補刀只會殺到別人的 emulator（Android Studio/BlueStacks/其他 instance）。
+  2. **`verify-quick-boot.ps1` local re-def `Stop-/Wait-NoChimeraProcesses`**（與 dot-sourced 共用版行為完全一致、shadow 之）→ 刪 local，走共用版（lessons「重抄就是漂移源」）。
+- **驗證**：兩支 .ps1 parse OK；`Get-ChimeraProcesses` 在 `run-proxy-smoke-test.ps1` 的 script-var context 可呼叫（乾淨機器回 0）；`verify-quick-boot.ps1` 刪 local 後共用 `Stop-/Wait-/Get-ChimeraProcesses` 仍由 dot-source 提供。
+
+### 追加：實修 Session 98 deferred 的 2 個 finding（goal hook 要求不留 deferral；重判後兩者都可正當修復）
+3. **`AudioBridge.cpp` WASAPI forced-format bug（實際比 Session 98 認定嚴重）**：`GetMixFormat` 多回 `WAVE_FORMAT_EXTENSIBLE`(cbSize=22)，code 改 `wFormatTag=IEEE_FLOAT` 卻沒重設 `cbSize` → shared-mode `Initialize` 對**任何** rate 都失敗（"Audio (WASAPI)" 功能其實全壞，非只非原生 rate）。修法：`pwfx->cbSize=0` + `AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM|SRC_DEFAULT_QUALITY`。新增 `test_audio_bridge.cpp::forcedNonNativeRateInitializesViaAutoConvert`（probe 48000/2 判 device 再試 22050/mono）。**RED→GREEN 實機驗證**：修前該測試 `QSKIP("no WASAPI render endpoint")`（連 probe 都失敗，被 bug 偽裝成無裝置）→ 修後 `PASS`（10 passed/0 skipped）。
+4. **`ChimeraGfxstreamVulkanSharedTextureBridge` `mStagingBuffer` 死分支**：全 repo grep 證明無 `vkCreateBuffer(&mStagingBuffer)`、無非 null 賦值 → 分支恆 false（Session 89 GPU-direct path 取代後的殘骸）。移除 recordCopy 死 if-branch（保留 live DisplayVk else）+ reset() 死 destroy + `.h` 死 member（mStagingBuffer/Memory/Data）。靜態可證死碼，移除不改 runtime；template 由 patch script `Copy-TextTemplate` verbatim 複製，會流入下次 DLL rebuild。recordCopy/reset 編輯後括號平衡、repo 無殘留 `mStaging` 參照（僅解釋註解）。
+- **驗證（全部）**：完整 Release build PASS；`ctest -LE integration` **23/23 PASS**（`test-audio-bridge` 內含新 GREEN 方法）；兩支 .ps1 parse OK。
+- **誠實邊界**：harness 防誤殺 sibling + AudioBridge 真 bug（實機 RED→GREEN）+ gfxstream 靜態可證死碼移除，皆非 FPS。gfxstream template 兩處未經 DLL runtime 重驗（靜態證明 + 下次 rebuild 帶入，同 Session 98 #7 模式）。未使用任何會搶實體滑鼠的測試。
+
+### 追加：深層路線 general-UI 60（使用者選「投入深層路線」）— 建真實路徑量測器 + 修正 ~20fps 誤判
+- **根因發現**：過去「general-UI ~20fps not-60」大半是 **adb-swipe 量測污染**。本輪 adb-swipe GuestVulkan sustained-scroll 量到 `guestFps=0.0 dup=0.0`（連 duplicate 都 0＝完全沒驅動 guest 重繪）。真實輸入路徑（host mouse-drag）Session 95 曾量 `render=57.4` 但會搶實體滑鼠。
+- **新增 real-path 量測器（lessons 早開的處方，可驗、可重用、不搶滑鼠）**：`CHIMERA_SYNTHETIC_SCROLL`（`main.cpp`，diagnostics-only 預設關）— boot 後 QTimer 走 production 路徑 `InputBridge::onTouchPoint → gRPC sendTouch` 連續 fling，**零 SendInput/SetCursorPos**。`verify-interactive-ui.ps1 -SyntheticScroll` 設 env 並跳過 adb swipe。
+- **實測（真實輸入路徑，GuestVulkan/skiavk、gpu-direct）**：sustained-scroll `guestFps=55.9 / streamFps=52.8 / renderFps=52.6 / effFps=52.6 / effMin=51.0 / dup=0 / bottleneck=render`。→ **一般 UI 真實路徑 ~53 eff/~56 guest，近 60，非 ~20**。修正長期誤判。
+- **達成 general-UI 60（真實輸入路徑）✅ — 瓶頸是 HOST 端，非 guest gfxstream**。~53→60 靠**兩個 host-only 改動、零 DLL 重建**：
+  1. **`QSG_RENDER_LOOP=threaded`**（main.cpp，QGuiApplication 前）：basic render loop 讓 scroll 期 GUI-thread 拖慢 host 消費 → gfxstream backpressure → guest 跳 vsync（55.9）。threaded 後 **guest→60.1**。
+  2. **GuestDisplay present timer 16ms→200ms**：62Hz `update()` wakeups 排擠 GUI-thread 處理 per-frame texture 訊號（`onFrameReceived`＝streamFps）→ 只處理 54/59.4。降頻後 **stream/render→59.6/59.8**（present timer 對 shared-texture path 冗餘，event-driven 已 per-frame 驅動）。
+- **驗證（重現 2×）**：`verify-interactive-ui.ps1 -Mode Fast -GuestVulkan -SyntheticScroll` strict gate **`result=pass-gpu-direct-60`**：run1 `effFps 59.6/effMin 58.1/guest 60.1/dup 0`、run2 `59.6/58.2/60.2/0`。gl60 連續渲染非回歸 `min 59.9/avg 60.0 pass`。`ctest -LE integration` 23/23 PASS、0 residual。
+- **根因翻轉**：跨 ~15 session 的「general-UI 60 卡 guest gfxstream frame-pacing、out-of-scope」判斷**是錯的**（被 adb-swipe 量測污染遮蔽）；真實瓶頸是 host render-loop backpressure + GUI-thread present-timer contention，皆 host-side 可修。
+- **誠實 caveat**：① 用 `CHIMERA_SYNTHETIC_SCROLL` fling 注入器走 production 輸入路徑量（不搶實體滑鼠），反映真實 fling 輸入；② custom runtime 仍偶發 black-boot（本輪一次 boot ADB 13KB near-black，屬既有 intermittent，非 host 改動造成；host present timer 不影響 guest ADB screencap）；60 重現需 boot 成功。
+
+---
+
 ## 2026-07-01 Session 98 — audit-driven concrete bug 修復（8 維 find → 對抗式 verify）
 
 ### Context
