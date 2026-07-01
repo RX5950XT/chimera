@@ -80,6 +80,14 @@ param(
     # hardware-Vulkan UI rendering beats the default skiagl->SwiftShader path.
     [switch]$GuestVulkan,
 
+    # Drive the sustained-scroll segment through the host's PRODUCTION input path
+    # (chimera-ui's CHIMERA_SYNTHETIC_SCROLL injector -> InputBridge -> emulator gRPC
+    # sendTouch) instead of adb input swipe. This measures the real input path — the
+    # one a user's mouse-drag actually takes — without grabbing the physical mouse.
+    # adb-swipe is a separate injection path and (as measured) may not drive continuous
+    # guest rendering at all.
+    [switch]$SyntheticScroll,
+
     [ValidateRange(1, 7680)][int]$MinWidth = 1920,
     [ValidateRange(1, 4320)][int]$MinHeight = 1080,
 
@@ -182,7 +190,8 @@ $TouchedEnv = @(
     'CHIMERA_GFXSTREAM_HEADLESS_ANGLE', 'CHIMERA_LOG_PATH', 'CHIMERA_QUICK_BOOT',
     'CHIMERA_EMULATOR_CONSOLE_PORT', 'CHIMERA_INTERACTIVE_PRIORITY',
     'CHIMERA_GRPC_TRANSPORT', 'CHIMERA_VIDEO_TRANSPORT',
-    'CHIMERA_GUEST_VULKAN_HOST_SETUP', 'CHIMERA_GUEST_VULKAN'
+    'CHIMERA_GUEST_VULKAN_HOST_SETUP', 'CHIMERA_GUEST_VULKAN',
+    'CHIMERA_SYNTHETIC_SCROLL'
 )
 $SavedEnv = @{}
 foreach ($name in $TouchedEnv) { $SavedEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
@@ -335,6 +344,13 @@ try {
         Remove-Item Env:\CHIMERA_GUEST_VULKAN -ErrorAction SilentlyContinue
         Remove-Item Env:\CHIMERA_GUEST_VULKAN_HOST_SETUP -ErrorAction SilentlyContinue
     }
+    if ($SyntheticScroll) {
+        # Host-internal real-path scroll injector (no physical-mouse grab). The scroll
+        # segment below then skips adb-swipe and lets chimera-ui drive the fling.
+        $env:CHIMERA_SYNTHETIC_SCROLL = "1"
+    } else {
+        Remove-Item Env:\CHIMERA_SYNTHETIC_SCROLL -ErrorAction SilentlyContinue
+    }
     if ([string]::IsNullOrEmpty($Priority)) {
         Remove-Item Env:\CHIMERA_INTERACTIVE_PRIORITY -ErrorAction SilentlyContinue
     } else {
@@ -432,11 +448,14 @@ try {
         # 60Hz frame source on the hardware-HWUI path, and matches how a user actually
         # flings rather than slow-dragging. (On the software path it is just a faster
         # gesture; harmless.)
-        if ($up) {
-            Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "input", "swipe", "960", "950", "960", "150", "40") -IgnoreExit | Out-Null
-        } else {
-            Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "input", "swipe", "960", "150", "960", "950", "40") -IgnoreExit | Out-Null
+        if (-not $SyntheticScroll) {
+            if ($up) {
+                Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "input", "swipe", "960", "950", "960", "150", "40") -IgnoreExit | Out-Null
+            } else {
+                Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "input", "swipe", "960", "150", "960", "950", "40") -IgnoreExit | Out-Null
+            }
         }
+        # else: chimera-ui's CHIMERA_SYNTHETIC_SCROLL injector drives the real input path.
         $up = -not $up
         $now = Get-Date
         if (($now - $lastTelemetry).TotalMilliseconds -ge 2000) { Sample-Telemetry; $lastTelemetry = $now }
