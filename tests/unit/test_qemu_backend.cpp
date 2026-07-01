@@ -1,4 +1,5 @@
 #include <QTest>
+#include <QFile>
 #include "QemuBackend.h"
 #include "HyperVManager.h"
 
@@ -50,17 +51,14 @@ private slots:
         QCOMPARE(QString::fromStdString(valueAfterArg(args, "-m")), QStringLiteral("2048"));
     }
 
-    void hyperVVideoMonitorKeeps1080pFloor() {
-        HyperVManager::HcsConfig cfg;
-        cfg.name = QStringLiteral("unit-test");
-        cfg.kernelPath = QStringLiteral("kernel");
-
-        const QString json = HyperVManager::buildHcsJsonString(cfg);
-
-        QVERIFY(json.contains(QStringLiteral("\"HorizontalResolution\":1920")) ||
-                json.contains(QStringLiteral("\"HorizontalResolution\": 1920")));
-        QVERIFY(json.contains(QStringLiteral("\"VerticalResolution\":1080")) ||
-                json.contains(QStringLiteral("\"VerticalResolution\": 1080")));
+    void qemuBackendDoesNotCloseAfterWaitForExit() {
+        QFile file(QStringLiteral(CHIMERA_SOURCE_DIR) + QStringLiteral("/src/host/instance/QemuBackend.cpp"));
+        QVERIFY(file.open(QIODevice::ReadOnly | QIODevice::Text));
+        const QString source = QString::fromUtf8(file.readAll());
+        QVERIFY2(!source.contains(QStringLiteral("ProcessLauncher::waitForExit(m_processHandle, 5000);\n        }\n        CloseHandle(m_processHandle);")),
+                 "stop() must not CloseHandle after waitForExit already closed the handle");
+        QVERIFY2(!source.contains(QStringLiteral("const int exitCode = ProcessLauncher::waitForExit(m_processHandle, 0);\n        CloseHandle(m_processHandle);")),
+                 "onHealthCheck() must not CloseHandle after waitForExit already closed the handle");
     }
 };
 

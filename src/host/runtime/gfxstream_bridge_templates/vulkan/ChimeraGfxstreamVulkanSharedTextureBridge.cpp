@@ -489,6 +489,7 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::ensureInitialized(
     res = vk.vkBindImageMemory(device, mImage, mMemory, 0);
     if (res != VK_SUCCESS) {
         std::fprintf(stderr, "Chimera gfxstream Vulkan bridge: vkBindImageMemory(GPU-direct) failed %d\n", res);
+        CloseHandle(sharedHandle);
         d3dTex->Release();
         d3dDevice->Release();
         reset(&vk, device);
@@ -584,70 +585,26 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::recordCopy(
     vk.vkCmdBlitImage(commandBuffer, source.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                       mImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, filter);
 
-    if (mStagingBuffer != VK_NULL_HANDLE) {
-        // Transition mImage from TRANSFER_DST_OPTIMAL → TRANSFER_SRC_OPTIMAL for the buffer copy.
-        VkImageMemoryBarrier toSrcBarrier = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext = nullptr,
-            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = mImage,
-            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-        };
-        vk.vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr,
-                                1, &toSrcBarrier);
-
-        VkBufferImageCopy copyRegion = {
-            .bufferOffset = 0,
-            .bufferRowLength = 0,
-            .bufferImageHeight = 0,
-            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-            .imageOffset = {0, 0, 0},
-            .imageExtent = {targetExtent.width, targetExtent.height, 1},
-        };
-        vk.vkCmdCopyImageToBuffer(commandBuffer, mImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                  mStagingBuffer, 1, &copyRegion);
-
-        // Ensure the staging buffer write is visible to the host after the fence signals.
-        VkBufferMemoryBarrier bufBarrier = {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-            .pNext = nullptr,
-            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = mStagingBuffer,
-            .offset = 0,
-            .size = VK_WHOLE_SIZE,
-        };
-        vk.vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr,
-                                1, &bufBarrier, 0, nullptr);
-        mLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    } else {
-        // DisplayVk path: no staging buffer, just transition to GENERAL.
-        VkImageMemoryBarrier releaseTargetBarrier = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext = nullptr,
-            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = mImage,
-            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-        };
-        vk.vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr,
-                                1, &releaseTargetBarrier);
-        mLayout = VK_IMAGE_LAYOUT_GENERAL;
-    }
+    // The CPU-staging copy path was abandoned for the Session 89 GPU-direct D3D11
+    // import path; mStagingBuffer is never created (no vkCreateBuffer anywhere), so
+    // only the DisplayVk branch ever ran. Transition the target to GENERAL for the
+    // display read.
+    VkImageMemoryBarrier releaseTargetBarrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext = nullptr,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = mImage,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    vk.vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr,
+                            1, &releaseTargetBarrier);
+    mLayout = VK_IMAGE_LAYOUT_GENERAL;
     ++mRecordSuccesses;
     if (shouldLogCounter(mRecordSuccesses)) {
         std::fprintf(stderr,
@@ -732,18 +689,6 @@ void ChimeraGfxstreamVulkanSharedTextureBridge::reset(const VulkanDispatch* vk,
                                                       VkDevice device) {
 #ifdef _WIN32
     if (vk && device != VK_NULL_HANDLE) {
-        if (mStagingData) {
-            vk->vkUnmapMemory(device, mStagingMemory);
-            mStagingData = nullptr;
-        }
-        if (mStagingBuffer != VK_NULL_HANDLE) {
-            vk->vkDestroyBuffer(device, mStagingBuffer, nullptr);
-            mStagingBuffer = VK_NULL_HANDLE;
-        }
-        if (mStagingMemory != VK_NULL_HANDLE) {
-            vk->vkFreeMemory(device, mStagingMemory, nullptr);
-            mStagingMemory = VK_NULL_HANDLE;
-        }
         if (mImage != VK_NULL_HANDLE) {
             vk->vkDestroyImage(device, mImage, nullptr);
         }
@@ -751,9 +696,6 @@ void ChimeraGfxstreamVulkanSharedTextureBridge::reset(const VulkanDispatch* vk,
             vk->vkFreeMemory(device, mMemory, nullptr);
         }
     }
-    mStagingData = nullptr;
-    mStagingBuffer = VK_NULL_HANDLE;
-    mStagingMemory = VK_NULL_HANDLE;
     mImage = VK_NULL_HANDLE;
     mMemory = VK_NULL_HANDLE;
     mDevice = VK_NULL_HANDLE;

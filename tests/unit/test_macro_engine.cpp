@@ -1,5 +1,6 @@
 #include <QtTest>
 #include "MacroEngine.h"
+#include "InputBridge.h"
 
 using namespace chimera::input;
 
@@ -65,29 +66,34 @@ private slots:
         QVERIFY(!ok);
     }
 
-    void recordAndSaveAndLoad() {
-        auto &e = MacroEngine::instance();
-        const std::string name = "unit_test_macro";
+    void playbackTapReleasesMouseButton() {
+        auto &engine = MacroEngine::instance();
+        auto &bridge = InputBridge::instance();
+        const std::string name = "unit_test_tap_release_macro";
+        std::vector<InputBridge::Event::Type> types;
 
-        e.startRecording(name);
+        engine.startRecording(name);
         MacroEvent ev;
         ev.type = MacroEvent::Tap;
-        ev.timestamp = std::chrono::milliseconds(100);
-        ev.x = 50;
-        ev.y = 75;
+        ev.timestamp = std::chrono::milliseconds(0);
+        ev.x = 10;
+        ev.y = 20;
         ev.keyCode = 0;
-        e.recordEvent(ev);
-        e.stopRecording();
+        engine.recordEvent(ev);
+        engine.stopRecording();
 
-        const bool saved = e.saveMacro(name);
-        if (saved) {
-            const bool loaded = e.loadMacro(name);
-            QVERIFY(loaded);
-            e.deleteMacro(name);
-        } else {
-            // File I/O unavailable in test env — not a failure
-            QVERIFY(true);
-        }
+        bridge.setEventCallback([&types](const InputBridge::Event &event) {
+            types.push_back(event.type);
+        });
+        engine.startPlayback(name, 1);
+        QTRY_VERIFY_WITH_TIMEOUT(!engine.isPlaying(), 1000);
+        engine.stopPlayback();
+        bridge.setEventCallback(InputBridge::EventCallback{});
+        engine.deleteMacro(name);
+
+        QCOMPARE(types.size(), static_cast<size_t>(2));
+        QCOMPARE(types[0], InputBridge::Event::MouseButtonDown);
+        QCOMPARE(types[1], InputBridge::Event::MouseButtonUp);
     }
 };
 

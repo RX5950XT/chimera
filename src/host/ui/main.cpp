@@ -659,11 +659,10 @@ static void applyGuestPerformanceSettings() {
     }, 5000);
     qDebug() << "Guest performance settings applied";
 
-    // On the hardware-Vulkan HWUI path (skiavk) per-frame render is ~9ms with
-    // headroom to 60 (measured), so smooth fling/transition animations are
-    // affordable — and they are what makes general-UI scrolling feel 60fps instead
-    // of jumping. The animation-disable above is a crutch only for the slow
-    // software (SwiftShader) path; lift it when guest Vulkan UI is in play.
+    // On the hardware-Vulkan HWUI path (skiavk), animations are affordable enough
+    // for normal usability and avoid the jumpy feel caused by the old software-path
+    // crutch. This is not a general-UI 60 claim; verify-interactive-ui.ps1 remains
+    // the daily-usability gate.
     if (isTruthyEnv("CHIMERA_GUEST_VULKAN")) {
         runAdbShell({
             "settings", "put", "global", "window_animation_scale", "1", ";",
@@ -774,6 +773,13 @@ int main(int argc, char *argv[]) {
     // before QGuiApplication is created so the UI does not fall back to OpenGL.
     qputenv("QSG_RHI_BACKEND", "d3d11");
     qputenv("QT_QUICK_BACKEND", "rhi");
+    // Pin the threaded render loop: guest frames arrive from the capture worker as
+    // queued signals on the GUI thread; on the basic (GUI-thread) render loop, scroll-
+    // time GUI-thread work delays those signals and depresses render cadence below the
+    // guest's. The threaded loop renders on its own thread so it tracks the guest 1:1.
+    // Allow an explicit override for debugging (QSG_RENDER_LOOP already set wins).
+    if (qEnvironmentVariableIsEmpty("QSG_RENDER_LOOP"))
+        qputenv("QSG_RENDER_LOOP", "threaded");
 
     QGuiApplication app(argc, argv);
     app.setApplicationName("Chimera");
@@ -1595,7 +1601,7 @@ int main(int argc, char *argv[]) {
 
         if (!g_adbPath.empty() && app.arguments().contains(QStringLiteral("--adb-display-fallback"))) {
             adbCapture = new chimera::graphics::AdbFramebufferCapture(
-                QString::fromStdString(g_adbPath.string()), 5555, false, &app);
+                QString::fromStdString(g_adbPath.string()), g_runtimeCfg.adbPort, false, &app);
             adbCapture->setIntervalMs(1000);
             wireCapture(adbCapture);
         }
@@ -1734,6 +1740,57 @@ int main(int argc, char *argv[]) {
             });
         });
         guestPerfTimer->start();
+    }
+
+    // Synthetic real-path scroll injector (diagnostics-only, default OFF). Drives a
+    // continuous vertical drag through the PRODUCTION input path
+    // (InputBridge::onTouchPoint -> emulator gRPC sendTouch) WITHOUT moving the host
+    // cursor (no SendInput/SetCursorPos), so a verifier can measure real input-path
+    // render cadence. adb-swipe cannot represent the real path, and the host
+    // mouse-drag probe could only measure it by grabbing the physical mouse (which
+    // the user forbade). Gated by CHIMERA_SYNTHETIC_SCROLL (=1, or a tick-period in
+    // ms 4..200); never runs in normal use.
+    if (const QByteArray synthRaw = envValue("CHIMERA_SYNTHETIC_SCROLL");
+        !synthRaw.isEmpty() && synthRaw != "0" &&
+        synthRaw.toLower() != "false" && synthRaw.toLower() != "off") {
+        bool okPeriod = false;
+        int period = synthRaw.toInt(&okPeriod);
+        if (!okPeriod || period < 4 || period > 200) period = 16;
+        // Guest is enforced >= 1920x1080; center column + a mid vertical band is a
+        // valid scroll region on any conforming guest.
+        const int cx = 960;
+        const int yTop = 270;
+        const int yBottom = 860;
+        const int step = 90;
+        struct ScrollState { int y; int dir = -1; bool pressed = false; int gestureTicks = 0; };
+        auto st = std::make_shared<ScrollState>();
+        st->y = (yTop + yBottom) / 2;
+        auto *synthTimer = new QTimer(&app);
+        synthTimer->setTimerType(Qt::PreciseTimer);
+        QObject::connect(synthTimer, &QTimer::timeout, [st, androidBootReady, cx, yTop, yBottom, step]() {
+            if (!*androidBootReady) return; // wait for full boot before injecting
+            auto &ib = chimera::input::InputBridge::instance();
+            // Repeated fast flings: press, drag hard over ~0.7s, lift, repress reversed.
+            // The LIFT with velocity is what triggers Android fling momentum (continuous
+            // vsync-paced frames); a held drag instead parks at the list boundary and
+            // produces ~0 unique frames. Measured real-path guest cadence ~56fps.
+            if (!st->pressed) {
+                ib.onTouchPoint(0, cx, st->y, true);
+                st->pressed = true;
+                st->gestureTicks = 0;
+                return;
+            }
+            st->y += st->dir * step;
+            if (st->y <= yTop) { st->y = yTop; st->dir = 1; }
+            else if (st->y >= yBottom) { st->y = yBottom; st->dir = -1; }
+            ib.onTouchPoint(0, cx, st->y, true);
+            if (++st->gestureTicks >= 45) {          // ~0.7s gestures, then lift + repress
+                ib.onTouchPoint(0, cx, st->y, false);
+                st->pressed = false;
+            }
+        });
+        synthTimer->start(period);
+        qInfo().noquote() << QStringLiteral("[main] CHIMERA_SYNTHETIC_SCROLL active — real-path scroll injector period=%1ms (no host cursor movement)").arg(period);
     }
 
     // Log FPS every 5 seconds

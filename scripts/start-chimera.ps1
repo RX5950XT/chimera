@@ -1,32 +1,34 @@
 <#
 .SYNOPSIS
-    One-click Chimera launcher. Defaults to the stock SDK + gRPC display path,
-    which renders the normal Android home/apps correctly. The experimental
-    custom gfxstream "60fps" runtime is opt-in via -Fast.
+    Chimera launcher. Root start-chimera.cmd defaults to the fastest usable
+    path; direct script usage without flags stays on stock SDK + gRPC for
+    conservative diagnostics.
 
 .DESCRIPTION
-    Double-click usage: run via start-chimera.cmd at the repo root, or
-        powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-chimera.ps1
+    Double-click usage: run via start-chimera.cmd at the repo root. That wrapper
+    passes -Fast -InteractiveFirst, selecting custom gfxstream + GuestVulkan when
+    the runtime is available.
 
-    Default (via root start-chimera.cmd): custom gfxstream + GuestVulkan +
-    interactive priority when available. Direct script usage without flags still
-    defaults to stock SDK + gRPC for conservative diagnostics; pass -Fast for the
-    production fast path.
+    Direct script usage without flags:
+        powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-chimera.ps1
+    uses stock SDK + gRPC. Pass -Fast for the production fast path.
 
     -Fast: custom gfxstream shared-texture runtime. Hits 1080p/60 for
-    continuously-rendering content and uses a SwiftShader ES compositor path for
-    normal Android UI so the home/apps remain visible.
+    continuously-rendering content and uses GuestVulkan/skiavk plus the safe ES
+    compositor path for normal Android UI visibility. General UI 60 is not the
+    gate; scripts\verify-interactive-ui.ps1 is the daily-usability evidence.
 
 .PARAMETER Fast
-    Opt into the experimental custom gfxstream 60fps runtime (see caveat above).
+    Opt into the custom gfxstream fast runtime (see caveat above).
 
 .PARAMETER ConsolePort
-    Android console base port. Defaults to 5554 (matches the host's adb serial
-    wiring). The host honours this via CHIMERA_EMULATOR_CONSOLE_PORT, so a
-    non-default port stays consistent end-to-end.
+    Android console base port. Direct launch defaults to 5554 (matches the host's
+    adb serial wiring). SelfTest without an explicit ConsolePort auto-picks a free
+    even console/ADB pair. The host honours this via CHIMERA_EMULATOR_CONSOLE_PORT,
+    so a non-default port stays consistent end-to-end.
 
 .PARAMETER Stock
-    Force the stock SDK emulator + gRPC display path (this is also the default).
+    Force the stock SDK emulator + gRPC display path.
 
 .PARAMETER RequireSharedTexture
     With -Fast, fail-closed: require the gfxstream shared-texture path (no gRPC
@@ -45,15 +47,14 @@
     audio contention. Sets CHIMERA_INTERACTIVE_PRIORITY=normal.
 
 .NOTES
-    The default launch mode stays Stock (known-usable). Whether the daily default
-    should flip to -Fast must be backed by scripts\verify-interactive-ui.ps1 data
-    (Fast general UI is visible but composited via SwiftShader ES — not 60 FPS);
-    that verifier is the authoritative daily-usability evidence, not the synthetic
-    GL60 60fps proof in verify-true-1080p60.ps1.
+    GL60/verify-true-1080p60 proves the continuous-rendering 60 FPS path.
+    Daily normal-UI usability is tracked by scripts\verify-interactive-ui.ps1;
+    do not treat adb swipe results or GL60 as a general-UI 60 claim.
 #>
 [CmdletBinding()]
 param(
-    [ValidateRange(5554, 5680)]
+    # 0 = autoselect a free console/ADB port pair.
+    [ValidateRange(0, 5680)]
     [int]$ConsolePort = 5554,
     [switch]$Fast,
     [switch]$Stock,
@@ -74,6 +75,17 @@ $AppExe   = Join-Path $RepoRoot "build\$Configuration\chimera-ui.exe"
 $Adb      = Join-Path $RepoRoot "third_party\android-sdk\platform-tools\adb.exe"
 $QtBin    = "C:\Qt\6.8.3\msvc2022_64\bin"
 $Runtime  = Join-Path $RepoRoot "build\chimera-gfxstream-runtime"
+$AvdName  = "chimera_dev"
+$AvdDir   = Join-Path $RepoRoot "third_party\android-avd\$AvdName.avd"
+
+. (Join-Path $PSScriptRoot "ChimeraVerifyCommon.ps1")
+
+$explicitConsolePort = $PSBoundParameters.ContainsKey('ConsolePort')
+if ($SelfTest -and -not $explicitConsolePort) {
+    $ConsolePort = Resolve-EmulatorConsolePort -ConsolePort 0
+} else {
+    $ConsolePort = Resolve-EmulatorConsolePort -ConsolePort $ConsolePort
+}
 
 if (-not (Test-Path -LiteralPath $AppExe -PathType Leaf)) {
     throw "chimera-ui.exe not found: $AppExe (build the project first)"
@@ -94,6 +106,11 @@ $customAvailable =
     (Test-Path -LiteralPath (Join-Path $Runtime "lib64\libgfxstream_backend.dll") -PathType Leaf) -and
     (Test-Path -LiteralPath (Join-Path $Runtime "lib64\chimera-gfxstream-shared-texture.json") -PathType Leaf)
 
+# Fail-closed: -RequireSharedTexture must never silently fall back to stock gRPC.
+if ($customRequested -and $RequireSharedTexture -and -not $customAvailable) {
+    throw "-RequireSharedTexture: custom gfxstream runtime not found at $Runtime (fail-closed; refusing stock gRPC fallback)"
+}
+
 if ($customAvailable) {
     # CHIMERA_EMULATOR_PATH must be the emulator.exe file: the host derives the
     # runtime dir via parent_path() and execs this path directly. Pointing it at
@@ -105,8 +122,9 @@ if ($customAvailable) {
     # the direct-VK shared-texture path used by continuously-rendering content.
     $env:CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES = "1"
     # Route guest app HWUI through hardware Vulkan (skiavk on NVIDIA). chimera-ui
-    # applies the skiavk runtime props + re-enables smooth animations after boot.
-    # This is what makes general-UI scrolling/flinging feel ~60 instead of ~20.
+    # applies the skiavk runtime props and re-enables normal Android animations
+    # after boot. This improves daily UI over the software path, but general-UI 60
+    # remains a verifier/R&D target, not a launch-script claim.
     $env:CHIMERA_GUEST_VULKAN = "1"
     Remove-Item Env:\CHIMERA_GFXSTREAM_HEADLESS_ANGLE -ErrorAction SilentlyContinue
     if ($RequireSharedTexture) {
@@ -162,11 +180,6 @@ if (-not (Test-Path (Join-Path $RepoRoot "tmp"))) { New-Item -ItemType Directory
 $env:CHIMERA_LOG_PATH = $logPath
 if (Test-Path $logPath) { Remove-Item $logPath -Force }
 
-function Kill-All {
-    Get-Process -Name chimera-ui,emulator,qemu-system* -ErrorAction SilentlyContinue |
-        Stop-Process -Force -ErrorAction SilentlyContinue
-}
-
 # adb writes to stderr for transient "device not found"; under StrictMode+Stop
 # that aborts the loop. Wrap it so polling survives until the device appears.
 function Invoke-AdbQuiet {
@@ -186,7 +199,9 @@ $resumed = "(unknown)"
 $size = "(unknown)"
 try {
     Write-Host "self-test: cleanup pre"
-    Kill-All
+    Stop-ChimeraProcesses
+    Wait-NoChimeraProcesses -TimeoutSec 30
+    Remove-StaleAvdLocks
     Start-Sleep -Seconds 2
 
     Write-Host "self-test: launch (serial $Serial)"
@@ -238,9 +253,10 @@ try {
 }
 finally {
     Write-Host "self-test: cleanup post"
-    Kill-All
+    Stop-ChimeraProcesses
+    Wait-NoChimeraProcesses -TimeoutSec 30
     Start-Sleep -Seconds 3
-    $remain = @(Get-Process -Name chimera-ui,emulator,qemu-system* -ErrorAction SilentlyContinue)
+    $remain = @(Get-ChimeraProcesses)
     Write-Host "residual_processes=$($remain.Count)"
 }
 

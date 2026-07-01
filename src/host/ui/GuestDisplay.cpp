@@ -70,8 +70,13 @@ GuestDisplay::GuestDisplay(QQuickItem *parent)
     setFlag(QQuickItem::ItemHasContents, true);
     setActiveFocusOnTab(true);
     setFocus(true);
-    m_presentTimer.setInterval(16);
-    m_presentTimer.setTimerType(Qt::PreciseTimer);
+    // Idle safety re-present only. Active frames are driven per-frame by the
+    // event-driven setSharedD3D11Texture()->update() (the capture is 1:1 event-driven),
+    // so a 16ms (62Hz) timer here just adds GUI-thread wakeups that compete with the
+    // queued per-frame texture signals during scroll and depress stream/render cadence
+    // below the guest's. 200ms keeps a cheap idle re-present without that contention.
+    m_presentTimer.setInterval(200);
+    m_presentTimer.setTimerType(Qt::CoarseTimer);
     connect(&m_presentTimer, &QTimer::timeout, this, [this]() {
         if (m_sharedD3D11TextureName.isEmpty()) {
             m_presentTimer.stop();

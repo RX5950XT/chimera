@@ -37,6 +37,16 @@ function Get-FreeEmulatorConsolePort {
     throw "no free Android emulator console/ADB port pair found"
 }
 
+function Resolve-EmulatorConsolePort {
+    param([Parameter(Mandatory = $true)][int]$ConsolePort)
+
+    if ($ConsolePort -eq 0) { return Get-FreeEmulatorConsolePort }
+    if ($ConsolePort -lt 5554 -or $ConsolePort -gt 5680 -or ($ConsolePort % 2) -ne 0) {
+        throw "Android emulator console port must be an even port from 5554 to 5680 (ADB uses console+1); got $ConsolePort"
+    }
+    return $ConsolePort
+}
+
 function Invoke-Adb {
     param(
         [Parameter(Mandatory = $true)][string[]]$Arguments,

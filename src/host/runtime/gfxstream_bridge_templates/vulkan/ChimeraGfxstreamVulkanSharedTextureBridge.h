@@ -70,9 +70,6 @@ class ChimeraGfxstreamVulkanSharedTextureBridge {
     VkDevice mDevice = VK_NULL_HANDLE;
     VkImage mImage = VK_NULL_HANDLE;
     VkDeviceMemory mMemory = VK_NULL_HANDLE;
-    VkBuffer mStagingBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory mStagingMemory = VK_NULL_HANDLE;
-    void* mStagingData = nullptr;  // persistently mapped HOST_COHERENT staging pointer
     VkImageLayout mLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkExtent2D mExtent = {};
     uint64_t mSequence = 0;

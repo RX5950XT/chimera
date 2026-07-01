@@ -84,6 +84,7 @@ void MacroEngine::playbackLoop(int loopCount) {
             switch (ev.type) {
             case MacroEvent::Tap:
                 bridge.onMouseButton(true, 1, ev.x, ev.y); // 1 = left button
+                bridge.onMouseButton(false, 1, ev.x, ev.y);
                 break;
             case MacroEvent::Swipe:
                 bridge.onMouseMove(ev.x, ev.y, 0, 0);
