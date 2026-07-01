@@ -89,10 +89,17 @@ bool AudioBridge::initRenderDevice() {
     pwfx->wBitsPerSample = 32;
     pwfx->nBlockAlign = pwfx->nChannels * sizeof(float);
     pwfx->nAvgBytesPerSec = pwfx->nSamplesPerSec * pwfx->nBlockAlign;
+    // GetMixFormat usually returns WAVE_FORMAT_EXTENSIBLE (cbSize=22). We now
+    // describe a plain WAVEFORMATEX IEEE_FLOAT, so cbSize MUST be 0 — leaving the
+    // stale EXTENSIBLE cbSize makes the struct inconsistent and Initialize reject it.
+    pwfx->cbSize = 0;
 
+    // The forced channels/rate above will differ from the device mix format on most
+    // endpoints; in shared mode that needs AUTOCONVERTPCM (+ default-quality SRC) so
+    // WASAPI inserts a converter instead of failing with AUDCLNT_E_UNSUPPORTED_FORMAT.
     hr = m_pAudioClient->Initialize(
         AUDCLNT_SHAREMODE_SHARED,
-        0,
+        AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
         10000000, // 1-second buffer
         0,
         pwfx,

@@ -28,6 +28,12 @@ $ProxyDll = Join-Path $ProxyRuntimeDir "lib64\libgfxstream_backend.dll"
 $StockDll = Join-Path $ProxyRuntimeDir "lib64\libgfxstream_backend_stock.dll"
 $AnalyzeScript = Join-Path $RepoRoot "scripts\analyze-gfxstream-proxy-log.ps1"
 
+# Shared, side-effect-free verifier harness. Used for cmdline-filtered process
+# cleanup (Get-ChimeraProcesses) so residual cleanup never force-kills a
+# non-Chimera emulator such as Android Studio / BlueStacks / another instance.
+$AvdName = "chimera_dev"
+. (Join-Path $PSScriptRoot "ChimeraVerifyCommon.ps1")
+
 foreach ($f in @($EmulatorExe, $Adb, $ProxyDll, $StockDll, $AnalyzeScript)) {
     if (-not (Test-Path -LiteralPath $f -PathType Leaf)) {
         Write-Host "FATAL: Required file not found: $f"
@@ -280,13 +286,17 @@ try {
     # Wait for processes to die
     Start-Sleep -Seconds 4
 
-    # Verify no residual emulator/qemu processes
-    $residuals = @(Get-Process -Name "emulator","qemu-system*" -ErrorAction SilentlyContinue)
+    # Verify no residual Chimera emulator/qemu processes. Filtered by command line
+    # (Get-ChimeraProcesses) so we never force-kill a non-Chimera emulator such as
+    # Android Studio / BlueStacks / another machine instance — the proxy tree was
+    # already taskkill /T'd by PID above, so anything a *global* scan turned up
+    # would not be ours to kill.
+    $residuals = @(Get-ChimeraProcesses | Where-Object { $_.ProcessName -ne "chimera-ui" })
     if ($residuals.Count -gt 0) {
         Write-Host "WARNING: Residual processes found:"
         foreach ($rp in $residuals) {
             Write-Host "  PID=$($rp.Id) Name=$($rp.ProcessName)"
-            try { $rp.Kill() } catch {}
+            try { Stop-Process -Id $rp.Id -Force -ErrorAction SilentlyContinue } catch {}
         }
     } else {
         Write-Host "no_residual_processes=OK"

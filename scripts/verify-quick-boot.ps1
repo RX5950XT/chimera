@@ -67,29 +67,9 @@ function Invoke-Adb {
     }
 }
 
-function Stop-ChimeraProcesses {
-    $processes = @(Get-ChimeraProcesses)
-    if ($processes.Count -eq 0) {
-        return
-    }
-
-    $processes | Stop-Process -Force -ErrorAction SilentlyContinue
-}
-
-function Wait-NoChimeraProcesses {
-    param([int]$TimeoutSec = 30)
-
-    $deadline = (Get-Date).AddSeconds($TimeoutSec)
-    while ((Get-Date) -lt $deadline) {
-        if (@(Get-ChimeraProcesses).Count -eq 0) {
-            return
-        }
-        Start-Sleep -Milliseconds 500
-    }
-
-    $remaining = @(Get-ChimeraProcesses | ForEach-Object { "$($_.ProcessName):$($_.Id)" })
-    throw "Timed out waiting for Chimera processes to exit: $($remaining -join ', ')"
-}
+# Get-ChimeraProcesses / Stop-ChimeraProcesses / Wait-NoChimeraProcesses come from
+# the dot-sourced ChimeraVerifyCommon.ps1 (cmdline-filtered). No local copies —
+# re-copying the shared harness is a drift source (see tasks/lessons.md).
 
 function Remove-StaleAvdLocks {
     if (-not (Test-Path -LiteralPath $script:AvdDir -PathType Container)) {
