@@ -3,6 +3,7 @@
 > **For**: Next AI Agent
 > **Date**: 2026-05-11
 > **Project**: D:\Workspace_cloud\Personal_Project\chimera
+> **⚠ 歷史文件（2026-05-11 快照）**：部分敘述已過時（例如「預設 native window embedding」——現行預設是 headless + shared texture / gRPC）。現況以根目錄 `CLAUDE.md`、`CONTEXT.md` 與 `docs/project/STATUS.md` 為準。
 
 ---
 

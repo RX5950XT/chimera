@@ -31,3 +31,4 @@
 | [windows_android_virtualization_analysis.md](references/windows_android_virtualization_analysis.md) | Windows Android 虛擬化分析 |
 | [bluestacks.conf](references/bluestacks.conf) | BlueStacks 設定格式參考 |
 | [bluestacks_runtime_findings.md](references/bluestacks_runtime_findings.md) | BlueStacks 設定/日誌可借鏡策略摘要 |
+| [competitor-emulator-smoothness.md](references/competitor-emulator-smoothness.md) | 競品（BlueStacks/LDPlayer/MuMu）平滑度研究 |

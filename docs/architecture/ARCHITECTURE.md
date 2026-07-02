@@ -1,5 +1,7 @@
 # Project Chimera — Architecture Overview
 
+> **⚠ 部分內容為 2026-05 快照**：量測數字與「native embedding / 1280×720」等敘述已過時（現行：headless 強制、1920×1080 floor、custom gfxstream shared texture 顯示路徑）。現況以根目錄 `CLAUDE.md` 與 `docs/project/STATUS.md` 為準；模組分層與設計目標仍有效。
+
 ## 1. Design Goals
 
 - **Open Source**: Apache 2.0 (host) + GPL v2 (QEMU virtualization layer via IPC separation)

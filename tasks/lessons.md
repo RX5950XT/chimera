@@ -67,7 +67,7 @@
 
 - **`adb input swipe` 不能代表實際操作流暢度**：Stage 3 量到 `adb` verifier 只有 `effAvg≈20`，但真實 host mouse-drag → Chimera → gRPC `sendTouch` 路徑瞬間量到 `guestMax=116.7 / render=57.4`、dup=0。**Rule**：日常互動性能結論必須區分「adb 測試路徑」與「host input production 路徑」；不能用 adb swipe 的 20fps 直接判定使用者手感。
 - **不可用會搶使用者滑鼠的測試**：Win32 `SendInput` / `SetCursorPos` 會移動實體游標，使用者明確要求「不要影響到我的滑鼠」。**Rule**：之後禁止用會搶實體滑鼠的自動化；若要測 host input，必須做不移動使用者游標的工具化路徑（例如 host 內部 synthetic touch/test hook）或先取得明確同意。
-- **GuestVulkan/skiavk 需要 HWUI + SurfaceFlinger 一起切 Vulkan 並 framework restart**：只 set `debug.hwui.renderer=skiavk`、不重啟 SF，會出現只剩背景/空畫面；完整路徑要 `debug.renderengine.backend=skiavk` + `debug.hwui.renderer=skiavk` + `stop/start`，再重新 gate 可見畫面。
+- ~~GuestVulkan/skiavk 需要 HWUI + SurfaceFlinger 一起切 Vulkan 並 framework restart~~ **（已被 Session 100 定案推翻：playstore user image 無 root，`stop/start` 必失敗，skiavk UI 切換結構性不可行、禁止再試；見 2026-07-02 lesson）**。
 
 ## 2026-06-30 — 量測「真實負載 60」前先分清 guest backend；md5 非 gate；PS verifier success path 要顯式 exit
 
@@ -388,10 +388,10 @@
 - 啟動前不能只靠 Job Object 清「本次」子程序；若前一輪已經留下佔用 `5554/5555/8554` 的 emulator/qemu，下一輪會疊出雙 VM 並搶 host audio。正式啟動前要清同 port 且 process 名稱為 emulator/qemu 的 stale VM tree。
 - 清 stale process 要縮小打擊面：不可殺所有 Android Studio emulator；只能依 Chimera 固定 ports 與 VM process 名稱交集處理。
 
-## 2026-06-22 — 真 60 FPS 的瓶頸是 guest render cadence，不是 host pipeline
+## 2026-06-22 — 真 60 FPS 的瓶頸是 guest render cadence，不是 host pipeline（⚠ 數字被 S101 重新定性）
 
 - 先前 7–24 FPS 的結論誤導：boot 動畫 / Settings 滾動 / idle Home 都是 push-based，guest 不連續渲染，量到的低 FPS 是 guest 沒在畫，不是 host 撐不住。要驗 host pipeline 上限，必須用連續渲染 workload（`RENDERMODE_CONTINUOUSLY` 的 GL app），否則永遠誤判。
-- `chimera-gl60-smoke` 連續渲染後，direct-Vulkan→D3D11 path 立刻 steady 60（min 59.8 / avg 60.0 / dup 0 / avgMs 16.2ms）。瓶頸定位錯誤會浪費好幾個 session 往錯方向（async PBO、GPU-to-GPU zero-copy）優化。
+- `chimera-gl60-smoke` 連續渲染後，direct-Vulkan→D3D11 path 立刻 steady 60（min 59.8 / avg 60.0 / dup 0 / avgMs 16.2ms）。瓶頸定位錯誤會浪費好幾個 session 往錯方向（async PBO、GPU-to-GPU zero-copy）優化。**⚠ Session 101 更正：此 60 量的是零幀 blit 節奏（shared texture 實際發佈全零、host 視窗黑）；「用連續渲染 workload 量 host 上限」的方法論仍成立，但任何 FPS 數字必須配 host 視窗像素證據。**
 - benchmark 的「真 60」門檻要容許 windowed-counter jitter：真 60 FPS 的 5s 視窗 FPS 會在 58.9–60.2 跳動，硬卡 `min ≥ 60` 永遠 fail。正解是 warmup 排除冷啟 transient + `min ≥ 57 容許 jitter` + `avg ≥ 59 證明 sustained` + `dup ≤ 5%`。
 
 ## 2026-06-22 — PowerShell StrictMode + finally：env-restore 不對稱會 mask 結果並洩漏 process
