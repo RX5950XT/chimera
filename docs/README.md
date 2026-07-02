@@ -1,30 +1,15 @@
 # Project Chimera 文件索引
 
-根目錄只保留協作入口文件：`README.md`、`AGENTS.md`、`CLAUDE.md`。其他專案文件集中在 `docs/`。
-
-## Project
+根目錄保留協作入口：`README.md`、`AGENTS.md`（工作流/標準/疑難排解）、`CLAUDE.md`（現況/決策/flags）、`CONTEXT.md`（開發歷程）。`docs/` 只放長期參考文件：
 
 | 文件 | 用途 |
 |------|------|
-| [BUILD.md](project/BUILD.md) | Windows/MSVC/Qt 建置與測試流程 |
-| [STATUS.md](project/STATUS.md) | 目前狀態、驗證記錄、已知限制 |
-| [PLAN.md](project/PLAN.md) | 長期實作計畫與階段拆解 |
-| [CODE_REVIEW.md](project/CODE_REVIEW.md) | 最新程式碼審查與後續追蹤項 |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 願景、模組分層、通訊流、技術選型、法律/授權邊界（含原 PLAN.md 參考內容） |
+| [BUILD.md](BUILD.md) | 環境安裝、建置、測試、執行與貢獻流程（含原 CONTRIBUTING.md） |
+| [STATUS.md](STATUS.md) | 目前狀態快照、誠實邊界、驗證入口 |
+| [ADR-001-shared-folder.md](ADR-001-shared-folder.md) | SharedFolder 技術選型 ADR（ADB Downloads sync v1） |
 
-## Architecture
-
-| 文件 | 用途 |
-|------|------|
-| [ARCHITECTURE.md](architecture/ARCHITECTURE.md) | 模組責任、資料流、技術選型 |
-
-## Process
-
-| 文件 | 用途 |
-|------|------|
-| [CONTRIBUTING.md](process/CONTRIBUTING.md) | 貢獻流程 |
-| [HANDOVER.md](process/HANDOVER.md) | 交接摘要 |
-
-## References
+## References（外部研究/逆向參考）
 
 | 文件 | 用途 |
 |------|------|
@@ -32,3 +17,5 @@
 | [bluestacks.conf](references/bluestacks.conf) | BlueStacks 設定格式參考 |
 | [bluestacks_runtime_findings.md](references/bluestacks_runtime_findings.md) | BlueStacks 設定/日誌可借鏡策略摘要 |
 | [competitor-emulator-smoothness.md](references/competitor-emulator-smoothness.md) | 競品（BlueStacks/LDPlayer/MuMu）平滑度研究 |
+
+> 歷史文件去向：`PLAN.md` 參考價值內容併入 ARCHITECTURE.md；`CONTRIBUTING.md` 併入 BUILD.md；`HANDOVER.md`/`CODE_REVIEW.md` 已被 `CONTEXT.md`（歷程）與 `tasks/lessons.md`（教訓）取代並刪除（追蹤項全數已解決，見 git history）。

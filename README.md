@@ -46,7 +46,7 @@ ctest --test-dir build -C Release --output-on-failure -LE integration   # 23/23
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-chimera-gfxstream-runtime.ps1
 ```
 
-詳見 [docs/project/BUILD.md](docs/project/BUILD.md)。
+詳見 [docs/BUILD.md](docs/BUILD.md)。
 
 ---
 

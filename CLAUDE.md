@@ -141,14 +141,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-quick-boot.
 | `AGENTS.md` | Build、測試、Git、Coding 標準、疑難排解 |
 | `CONTEXT.md` | 開發歷程、session 記錄、bug 修正紀錄 |
 | `tasks/todo.md` / `tasks/lessons.md` | 當前任務規劃回顧 / 修正教訓規則 |
-| `docs/project/STATUS.md` | 目前狀態快照與已知限制 |
+| `docs/STATUS.md` | 目前狀態快照與已知限制 |
 | `scripts/verify-quick-boot.ps1` | Quick Boot smoke（重建 snapshot、驗秒數與 cleanup） |
 | `scripts/verify-true-1080p60.ps1` | 連續渲染 runtime gate（gl60 synthetic，非日常 UI）；`-HeavyIterations N` 量 GLES/SwiftShader fill 天花板。**S101 後 GLES 內容嚴格 60 gate 不再通過（同步成本），任何數字要配 host 視窗像素證據** |
 | `scripts/verify-interactive-ui.ps1` | 日常可用性 gate（Home→Settings→scroll→app switch；path 分類 + per-segment metrics + telemetry）；`-SyntheticScroll` 走真實輸入路徑；Stock 永不宣稱 60 |
 | `scripts/ChimeraVerifyCommon.ps1` | 共用 harness（port 挑選、adb、screenshot/host-window 像素 gate、`CHIMERA_PERF` 解析、cmdline-filtered cleanup） |
 | `scripts/build-chimera-gfxstream-runtime.ps1` / `apply-chimera-gfxstream-patch.ps1` | custom gfxstream runtime build / patch codify（改 script 後必 grep tree 確認落地） |
 | `scripts/build-chimera-launcher.ps1` | 建置/簽章 Android HOME launcher APK |
-| `docs/adr/ADR-001-shared-folder.md` | SharedFolder 技術選型 ADR |
+| `docs/ADR-001-shared-folder.md` | SharedFolder 技術選型 ADR |
 | `docs/references/competitor-emulator-smoothness.md` | 競品（BlueStacks/LDPlayer/MuMu）平滑度研究 |
 
 **禁止 commit**: BlueStacks binaries (Binaries/, Client/, Engine/, Dumps/)、root 層 ISO/QCOW2/installer、QEMU/debug logs、R&D throwaway scripts、runtime output dirs。

@@ -9,7 +9,7 @@ namespace chimera::storage {
 /**
  * @brief Host↔Guest file sharing.
  *
- * v1: ADB-based Downloads sync (see docs/adr/ADR-001-shared-folder.md).
+ * v1: ADB-based Downloads sync (see docs/ADR-001-shared-folder.md).
  * QEMU backend: -virtfs mounts via toQemuArgs().
  */
 class SharedFolder {

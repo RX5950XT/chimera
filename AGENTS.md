@@ -106,7 +106,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-chimera-gfxs
 | `CLAUDE.md` | 架構、模組邊界、決策變更時 |
 | `AGENTS.md` | 工作流程、環境、標準變更時 |
 | `CONTEXT.md` | 每個重大 Phase 完成後 |
-| `docs/project/STATUS.md` | 重大里程碑或 blocker 解決後 |
+| `docs/STATUS.md` | 重大里程碑或 blocker 解決後 |
 
 ## Safety Checklist（commit 前）
 
