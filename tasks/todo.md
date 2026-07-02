@@ -2,6 +2,24 @@
 
 ---
 
+## 2026-07-02 Session 102 — 畫面糊根因修復（Nearest 縮小取樣）
+
+### 根因（已實證）
+
+使用者回報 S101 修復後「性能顯著改善但畫面糊，1080p 會這麼糊嗎」。producer texture 實證 1920×1080 正確（log `size 1920 1080`）；糊在 host 呈現端：預設視窗 1480×860 扣側欄後 item ~0.65×，縮小 filtering 是 Nearest（丟整行整列像素→文字殘缺）。`QSGSimpleTextureNode` material filtering 預設 Nearest 且 render 時覆寫 per-texture `setFiltering()`——原三處 `texture->setFiltering()` 全是 no-op。
+
+### 修復項目（全部完成）
+- [x] `GuestDisplay.cpp`：node 建立時 `setFiltering(QSGTexture::Linear)`；移除三處 no-op per-texture 設定
+- [x] 三處 `setRect` 經 `snapRectToDevicePixels()`（letterbox 小數座標對齊 device-pixel 格）
+- [x] Build + ctest 23/23 + `-Fast -SelfTest` PASS（1920×1080、host_window_nonblack 100%、interactivity ok、0 residual）；host 截圖對比修復前文字平滑完整
+- [x] 文件：CONTEXT.md / lessons.md / todo.md；commit `a80dcee`
+
+### Review
+- 60fps 不穩＝已知 GLES 同步成本邊界（S101 定性，~43 eff FPS），非回歸，不在本輪範圍。
+- 殘餘：縮小顯示本質損失細節（Linear 是柔和非殘缺）；完全銳利需 ≥1:1 顯示或未來 guest 解析度跟隨視窗。
+
+---
+
 ## 2026-07-02 Session 101 — `-Fast` host 視窗黑屏（三層疊加根因）+ emulator idle 自殺
 
 ### 根因（已實證，全部修復）

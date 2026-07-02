@@ -2,7 +2,7 @@
 
 > AI 工作階段快速參考。每次重大變更後更新。開發歷程與 per-session 詳細記錄一律在 `CONTEXT.md`，本檔不重複保留。
 
-## 當前狀態（2026-07-02 / Session 101）
+## 當前狀態（2026-07-02 / Session 102）
 
 - **完成度**：BlueStacks Parity Roadmap v3 P0–P4e + 補強 COMPLETE；核心功能同等級（見下方功能清單）。
 - **生產引擎**：`emulator.exe`（Google QEMU+WHPX fork）。`--qemu-backend` / `--hcs-backend` / `--cuttlefish` 為 legacy R&D，保留不刪。
@@ -101,6 +101,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-quick-boot.
 
 | 問題 | 狀態 |
 |------|------|
+| 畫面糊（1080p texture 縮小顯示文字殘缺） | RESOLVED — Session 102：`QSGSimpleTextureNode` material filtering 預設 Nearest 且 render 時覆寫 per-texture 設定（原 `texture->setFiltering()` 全 no-op）；改 node `setFiltering(Linear)` + letterbox rect snap 到 device-pixel 格。縮小顯示本質損失細節，完全銳利需 ≥1:1 顯示 |
 | `-Fast` host 視窗零幀黑屏（S85 起潛伏） | RESOLVED — Session 101 三層修復（`flushFromGl+invalidateForVk` 前置同步、`D3D11_TEXTURE_BIT`+dedicated import、GuestDisplay keyed-mutex acquire+私有副本〔`WAIT_TIMEOUT` 過得了 `SUCCEEDED()`，須 `==S_OK`〕）；SelfTest 新增 host 視窗像素 gate |
 | emulator idle 自殺（黑屏「等多久都黑」第二半） | RESOLVED — Session 101 移除 `-idle-grpc-timeout 300` + regression test；orphan 由 Job Object 管 |
 | `-Fast` skiavk 半套用黑屏 | RESOLVED — Session 100 移除 skiavk UI 切換（user image 結構性不可行，禁再試）；SelfTest 補 screenshot 內容 gate |
@@ -154,4 +155,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-quick-boot.
 **禁止 commit**: BlueStacks binaries (Binaries/, Client/, Engine/, Dumps/)、root 層 ISO/QCOW2/installer、QEMU/debug logs、R&D throwaway scripts、runtime output dirs。
 
 ---
-*Updated: 2026-07-02 — Session 101：`-Fast` host 視窗黑屏三層根因全修（GL→VK 同步 / D3D11_TEXTURE import / keyed-mutex acquire）+ emulator idle 自殺修復 + host 視窗像素 gate；歷史 GPU-direct 60fps 宣稱全面更正為零幀 blit 節奏。詳細歷程見 `CONTEXT.md`。*
+*Updated: 2026-07-02 — Session 102：畫面糊根因修復（QSG node filtering Nearest→Linear + device-pixel rect snap）。Session 101：`-Fast` 黑屏三層根因全修 + idle 自殺修復 + host 視窗像素 gate；歷史 GPU-direct 60fps 宣稱全面更正為零幀 blit 節奏。詳細歷程見 `CONTEXT.md`。*

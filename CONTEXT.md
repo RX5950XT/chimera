@@ -7,6 +7,14 @@
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 **引擎決策（最重要）**：生產引擎 = `emulator.exe`（Google QEMU+WHPX fork）；`--qemu-backend`（stock QEMU 11 + Cuttlefish）與 `--hcs-backend`（Hyper-V HCS）= legacy R&D，保留不刪。BlueStacks 輸入路徑更正：`BstkDrv.sys` 是 network/filter driver 非 input driver；BlueStacks 走 `HD-Bridge-Native.dll` → virtio-input，Chimera 等效路徑是 emulator gRPC + Console `event` protocol。
 
+## 2026-07-02 — Session 102 — 畫面糊根因修復（Nearest 縮小取樣）
+
+- **使用者回報**（S101 修復後）：性能顯著改善但不穩 60fps、畫面糊（「1080p 會這麼糊嗎」）。
+- **根因（糊）**：producer 端 texture 實證 1920×1080 無誤（log `size 1920 1080 format 28`）；糊在 host 呈現端——預設視窗 1480×860 扣側欄/工具列後 GuestDisplay item 只有約 0.65×，1080p texture 縮小顯示時 filtering 是 **Nearest**（整行整列丟像素→文字筆畫殘缺）。**陷阱**:`QSGSimpleTextureNode` 的 material filtering 預設 Nearest 且 render 時會覆寫 per-texture `setFiltering()`——原代碼三處 `texture->setFiltering()` 全是 no-op，必須設在 node 上。
+- **修復**（`GuestDisplay.cpp`，commit `a80dcee`）：node 建立時 `setFiltering(QSGTexture::Linear)`（1:1 對齊時 Linear 取樣 texel 中心＝Nearest，無損）；三處 `setRect` 改經 `snapRectToDevicePixels()`（letterbox 置中的小數座標對齊 device-pixel 格，消除 1:1 時半像素模糊）。
+- **驗證**：build + ctest 23/23 + `-Fast -InteractiveFirst -SelfTest` PASS（1920×1080、`host_window_nonblack_pct=100`、interactivity ok、0 residual）；host 視窗截圖對比修復前——文字/圖示邊緣平滑完整。
+- **殘餘限制（誠實）**：縮小顯示本質上會損失細節，Linear 只是把「殘缺」變「柔和」；要完全銳利需視窗 ≥1:1 顯示（全螢幕於 ≥1080p 內容區）或未來做 guest 解析度跟隨視窗。60fps 不穩＝已知 GLES 同步成本邊界（見 S101），非回歸。
+
 ## 2026-07-02 — Session 101 — `-Fast` host 視窗黑屏三層根因全修 + emulator idle 自殺修復
 
 - **使用者回報**（Session 100 修復後仍黑）：啟動等很久還是黑畫面、有效 FPS 0。取證：guest ADB screencap 75KB 正常、producer `published sequence` 跳動、host `total` 幀數增長、host 視窗 PrintWindow 中心像素 (2,5,4)=純黑——**counters 全綠、像素全黑**。且 AVD 檔案時間軸顯示使用者那次 run 的 emulator 在 boot 後 ~4 分鐘死亡。

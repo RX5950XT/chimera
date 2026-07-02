@@ -1,5 +1,11 @@
 # Chimera Lessons
 
+## 2026-07-02 — Session 102：QSGSimpleTextureNode 的 filtering 要設在 node 上，texture 上的會被覆寫
+
+- **`texture->setFiltering()` 對 `QSGSimpleTextureNode` 是 no-op**：render 時 `QSGOpaqueTextureMaterial` 會把自己的 filtering 套回 texture，material 預設 **Nearest** → 三處 per-texture 設定全部無效，1080p texture 縮到 ~0.65× 顯示時整行整列丟像素、文字筆畫殘缺（使用者回報「畫面糊」）。**Rule**：用 `QSGSimpleTextureNode` 時 filtering 一律 `node->setFiltering(...)`；任何「設定看起來有寫但行為像預設值」先查框架是否在後面覆寫。
+- **縮放顯示的 texture 用 Linear**：1:1 對齊時 Linear 取樣 texel 中心＝Nearest（無損），縮放時遠優於 Nearest；letterbox 置中會產生小數座標，rect 要 snap 到 device-pixel 格避免 1:1 時半像素模糊。
+- **「糊」的排查順序**：先驗 producer 端實際尺寸（log `Opened shared D3D11 texture size W H`），確定來源解析度沒問題，再查 host 呈現端 filtering/縮放/DPI——別上來就懷疑解析度被降。
+
 ## 2026-07-02 — Session 101：counters 全綠不代表像素有到；跨 API 資源共享要驗「另一端讀到什麼」
 
 - **零幀黑屏是三層獨立 bug 疊加**（修一層看不到效果，必須逐層取證）：① compose 路徑不標 `mGlTexDirty` → `invalidateForVk` 恆 no-op → kVk sibling image 從未被寫入（blit 複製零）；② D3D11 NT handle 用 `OPAQUE_WIN32` 匯入 → 無 aliasing → 就算 blit 有內容也寫不進 D3D11 texture；③ consumer 不 AcquireSync → 跨 process 就算 texture 有內容也讀到零。**Rule**：顯示鏈黑屏用「分層讀回」逐跳取證——producer 內部（VK readback）、共享資源（D3D11 staging 讀回，有/無 acquire）、consumer 視窗（PrintWindow）——每跳一個獨立 probe，一次定位所有斷層；只修一層再測整條會誤判「修錯了」。
