@@ -13,6 +13,7 @@
 #include <QtQuick/qsgtexture_platform.h>
 #include <QDebug>
 #include <algorithm>
+#include <cmath>
 #include "InputBridge.h"
 
 #ifdef Q_OS_WIN
@@ -47,6 +48,17 @@ public:
     QString nativeTextureName;
     QSize nativeTextureSize;
 };
+
+// Letterbox centering yields fractional item coordinates; unsnapped rects
+// sample off the texel grid and soften the image even at 1:1 scale.
+QRectF snapRectToDevicePixels(const QRectF &rect, qreal dpr) {
+    if (dpr <= 0.0) return rect;
+    const qreal left = std::round(rect.left() * dpr) / dpr;
+    const qreal top = std::round(rect.top() * dpr) / dpr;
+    const qreal right = std::round(rect.right() * dpr) / dpr;
+    const qreal bottom = std::round(rect.bottom() * dpr) / dpr;
+    return QRectF(QPointF(left, top), QPointF(right, bottom));
+}
 
 } // namespace
 
@@ -260,6 +272,11 @@ QSGNode *GuestDisplay::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) 
 
     if (!node) {
         node = new GuestTextureNode();
+        // The 1920x1080 guest texture is almost always scaled to fit the window;
+        // the material default (Nearest) decimates rows/columns on downscale and
+        // mangles text. Node filtering overrides per-texture setFiltering at
+        // render time, so it must be set here.
+        node->setFiltering(QSGTexture::Linear);
     }
 
     if (m_nativeD3D11Texture || !m_sharedD3D11TextureName.isEmpty()) {
@@ -376,7 +393,6 @@ QSGNode *GuestDisplay::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) 
                 m_nativeD3D11TextureSize,
                 options);
             if (texture) {
-                texture->setFiltering(QSGTexture::Nearest);
                 node->replaceTexture(texture);
                 node->sequence = m_nativeD3D11TextureSequence;
                 node->nativeD3D11 = true;
@@ -389,7 +405,8 @@ QSGNode *GuestDisplay::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) 
         node->sequence = m_nativeD3D11TextureSequence;
 
         const QRectF dr = m_mapper.displayRect();
-        node->setRect(dr.isEmpty() ? boundingRect() : dr);
+        node->setRect(snapRectToDevicePixels(dr.isEmpty() ? boundingRect() : dr,
+                                             quickWindow->effectiveDevicePixelRatio()));
         if (frameAdvanced) {
             emit framePainted();
         }
@@ -454,7 +471,6 @@ QSGNode *GuestDisplay::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) 
                         imageSize,
                         QQuickWindow::TextureHasAlphaChannel);
                     if (texture) {
-                        texture->setFiltering(QSGTexture::Nearest);
                         node->replaceTexture(texture);
                         node->nativeD3D11 = true;
                         node->nativeTexture = nativeTexture;
@@ -465,7 +481,8 @@ QSGNode *GuestDisplay::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) 
                 const bool frameAdvanced = textureChanged || node->sequence != m_frameSequence;
                 node->sequence = m_frameSequence;
                 const QRectF dr = m_mapper.displayRect();
-                node->setRect(dr.isEmpty() ? boundingRect() : dr);
+                node->setRect(snapRectToDevicePixels(dr.isEmpty() ? boundingRect() : dr,
+                                                     quickWindow->effectiveDevicePixelRatio()));
                 if (frameAdvanced) {
                     emit framePainted();
                 }
@@ -481,7 +498,6 @@ QSGNode *GuestDisplay::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) 
     if (!texture) {
         return node;
     }
-    texture->setFiltering(QSGTexture::Nearest);
     node->replaceTexture(texture);
     const bool frameAdvanced = node->sequence != m_frameSequence;
     node->sequence = m_frameSequence;
@@ -491,7 +507,8 @@ QSGNode *GuestDisplay::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) 
     node->nativeTextureSize = QSize();
 
     const QRectF dr = m_mapper.displayRect();
-    node->setRect(dr.isEmpty() ? boundingRect() : dr);
+    node->setRect(snapRectToDevicePixels(dr.isEmpty() ? boundingRect() : dr,
+                                         quickWindow->effectiveDevicePixelRatio()));
     if (frameAdvanced) {
         emit framePainted();
     }
