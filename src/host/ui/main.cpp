@@ -9,6 +9,9 @@
 #include <QSize>
 #include <QPointer>
 #include <QFileInfo>
+#include <QFile>
+#include <QCryptographicHash>
+#include <QWindow>
 #include "ChimeraWindow.h"
 #include "GuestDisplay.h"
 #include "NativeEmulatorView.h"
@@ -615,6 +618,26 @@ static void installChimeraLauncher() {
 
     const QString serial = QString::fromStdString(g_runtimeCfg.adbSerial);
     const QString apk = QString::fromStdString(apkPath.string());
+
+    // Skip the reinstall + force-stop + relaunch when the installed APK already
+    // matches this build: "pm install -r" kills the running HOME on every boot,
+    // which costs ~5-8s and flashes the home screen for no reason.
+    QFile apkFile(apk);
+    if (apkFile.open(QIODevice::ReadOnly)) {
+        QCryptographicHash hash(QCryptographicHash::Md5);
+        if (hash.addData(&apkFile)) {
+            const QByteArray localMd5 = hash.result().toHex();
+            const QByteArray deviceMd5 = runAdbOutput(
+                {"-s", serial, "shell",
+                 "p=$(pm path com.chimera.launcher | sed -n 's/^package://p' | head -n1); "
+                 "[ -n \"$p\" ] && md5sum -b \"$p\""}, 5000);
+            if (!localMd5.isEmpty() && deviceMd5.contains(localMd5)) {
+                qDebug() << "Chimera launcher up to date; skipping reinstall";
+                return;
+            }
+        }
+    }
+
     if (!runAdbCommand({"-s", serial, "install", "-r", apk}, 20000))
         return;
 
@@ -659,10 +682,11 @@ static void applyGuestPerformanceSettings() {
     }, 5000);
     qDebug() << "Guest performance settings applied";
 
-    // On the hardware-Vulkan HWUI path (skiavk), animations are affordable enough
-    // for normal usability and avoid the jumpy feel caused by the old software-path
-    // crutch. This is not a general-UI 60 claim; verify-interactive-ui.ps1 remains
-    // the daily-usability gate.
+    // Fast path keeps normal Android animations: the Session 99 general-UI 60
+    // evidence (threaded render loop + present-timer fix) was measured with these
+    // on. CHIMERA_GUEST_VULKAN only means "-feature Vulkan" (guest Vulkan available
+    // to apps); it is NOT a skiavk UI switch — see the note above main()'s boot
+    // poller for why skiavk cannot work on this image.
     if (isTruthyEnv("CHIMERA_GUEST_VULKAN")) {
         runAdbShell({
             "settings", "put", "global", "window_animation_scale", "1", ";",
@@ -697,27 +721,16 @@ static void applyGuestFirstBootSetup() {
     qDebug() << "Guest first-boot setup applied";
 }
 
-// Route guest app HWUI AND SurfaceFlinger RenderEngine through hardware Vulkan
-// (skiavk) on the host NVIDIA GPU, then restart the framework so both come up on
-// Vulkan together. The restart is required: app HWUI renders its surfaces with
-// Vulkan, and SurfaceFlinger must also be on Vulkan (skiavk) to composite them —
-// otherwise only SF's own GL-drawn background shows and app content is dropped
-// (empty UI). sys.boot_completed is cleared so the boot poller waits for the
-// genuine post-restart boot rather than re-reading the stale pre-restart "1". The
-// Session 91 MSVCP140 future-crash fixes make app HWUI Vulkan stable. Only
-// meaningful on the custom gfxstream runtime launched with -feature Vulkan
-// (CHIMERA_GUEST_VULKAN=1). These are runtime debug.* sysprops; emulator -prop only
-// sets androidboot.* (a HWUI no-op), so they must be set here at runtime.
-static void applyGuestVulkanHardwareUi() {
-    runAdbShell({
-        "setprop", "debug.renderengine.backend", "skiavk", ";",
-        "setprop", "debug.hwui.renderer", "skiavk", ";",
-        "stop", ";",
-        "setprop", "sys.boot_completed", "0", ";",
-        "start",
-    }, 10000);
-    qDebug() << "Guest Vulkan hardware UI (skiavk) applied; framework restarting";
-}
+// No skiavk (Vulkan HWUI / SF RenderEngine) switch exists here — do not re-add one.
+// The google_apis_playstore image is a user build (ro.debuggable=0): "adb shell
+// stop"/"start" fail with "Must be root", so the framework restart such a switch
+// requires can never run, and init does not translate
+// ro.boot.debug.renderengine.backend, so SurfaceFlinger can never leave SkiaGL.
+// A half-applied state (HWUI on Vulkan, SF still on GLES) blanks every app window:
+// guest Vulkan surfaces live in host NVIDIA memory that the SwiftShader-ES GL
+// compositor cannot sample. Probed 2026-07-02: boot-time "-systemui-renderer
+// skiavk" renders Pipeline=Skia (Vulkan) but home/Settings screencaps are uniform
+// blanks — this was the "-Fast loads to a black center screen" bug.
 
 int main(int argc, char *argv[]) {
 #ifdef _WIN32
@@ -1235,7 +1248,16 @@ int main(int argc, char *argv[]) {
         });
         auto *gpTimer = new QTimer(&app);
         QObject::connect(gpTimer, &QTimer::timeout, &app, [&gp]() {
-            gp.poll();
+            // Only forward gamepad input while Chimera is the active application.
+            // XInput reads controllers system-wide, so an unfocused poll leaks the
+            // user's inputs from another game straight into the guest — a B press
+            // becomes Android BACK and kills the foreground app (observed as
+            // "guest randomly stops rendering" while the user played a controller
+            // game). A button held across focus loss stays held in the guest until
+            // the window regains focus and the next poll diffs it — acceptable.
+            if (QGuiApplication::applicationState() == Qt::ApplicationActive) {
+                gp.poll();
+            }
         });
         gpTimer->start(16); // ~60 Hz polling
 
@@ -1279,6 +1301,24 @@ int main(int argc, char *argv[]) {
     for (auto *obj : roots) {
         guestDisplay = obj->findChild<GuestDisplay*>("guestDisplay");
         if (guestDisplay) break;
+    }
+
+    // Optional initial window position ("x,y", negatives valid for a left-of-primary
+    // monitor). Verifiers export CHIMERA_VERIFY_WINDOW_ORIGIN so the test window
+    // opens on the user's secondary screen from the very first frame — if it first
+    // appears over the user's active screen they will (reasonably) close it, which
+    // aborts the run.
+    if (const QByteArray origin = envValue("CHIMERA_VERIFY_WINDOW_ORIGIN"); !origin.isEmpty()) {
+        const QList<QByteArray> parts = origin.split(',');
+        bool okX = false, okY = false;
+        const int x = parts.value(0).trimmed().toInt(&okX);
+        const int y = parts.value(1).trimmed().toInt(&okY);
+        if (okX && okY && !roots.isEmpty()) {
+            if (auto *rootWindow = qobject_cast<QWindow *>(roots.first())) {
+                rootWindow->setPosition(x, y);
+                qDebug() << "[main] window origin from CHIMERA_VERIFY_WINDOW_ORIGIN:" << x << y;
+            }
+        }
     }
 
     // Pin NativeEmulatorView only for explicit unsafe diagnostics. The default
@@ -1681,14 +1721,23 @@ int main(int argc, char *argv[]) {
     }
 
     if (!hcsBackendMode && !qemuBackendMode && !noEmulator && emulatorStarted && !g_adbPath.empty()) {
+        // Keep the QML "waiting for Android" placeholder up until the guest is
+        // actually usable: with -no-boot-anim the shared-texture path delivers
+        // black frames long before boot completes, and hiding the placeholder on
+        // the first such frame reads as a dead black screen.
+        qmlAndroidControls.setBootReady(false);
         auto *guestPerfTimer = new QTimer(&app);
         guestPerfTimer->setInterval(2000);
         guestPerfTimer->setProperty("attempts", 0);
         QObject::connect(guestPerfTimer, &QTimer::timeout,
-                         [guestPerfTimer, androidBootReady, v1QuickBootEnabled, &app]() {
+                         [guestPerfTimer, androidBootReady, v1QuickBootEnabled, &qmlAndroidControls, &app]() {
             int attempts = guestPerfTimer->property("attempts").toInt() + 1;
             guestPerfTimer->setProperty("attempts", attempts);
-            if (attempts >= 60) { guestPerfTimer->stop(); return; }
+            if (attempts >= 60) {
+                guestPerfTimer->stop();
+                qmlAndroidControls.setBootReady(true); // fail-open: show whatever the guest has
+                return;
+            }
 
             auto *proc = new QProcess(guestPerfTimer);
             startLowInterferenceProcess(proc,
@@ -1696,41 +1745,18 @@ int main(int argc, char *argv[]) {
                                         QStringList() << "-s" << QString::fromStdString(g_runtimeCfg.adbSerial)
                                                       << "shell" << "getprop" << "sys.boot_completed");
             QObject::connect(proc, &QProcess::finished, proc,
-                             [proc, guestPerfTimer, androidBootReady, v1QuickBootEnabled, &app](
+                             [proc, guestPerfTimer, androidBootReady, v1QuickBootEnabled, &qmlAndroidControls, &app](
                                  int, QProcess::ExitStatus) {
                 const QString booted = QString::fromLocal8Bit(proc->readAllStandardOutput()).trimmed();
                 proc->deleteLater();
                 if (booted == QStringLiteral("1")) {
-                    // GuestVulkan: on the first boot, switch HWUI + SF to hardware
-                    // Vulkan (skiavk) and restart the framework once so both come up
-                    // on Vulkan; boot_completed re-fires and this poller then runs the
-                    // normal setup below on the Vulkan framework. The interactive
-                    // verifier owns the restart itself (it re-gates the home frame to
-                    // avoid measuring mid-restart) and disables this via
-                    // CHIMERA_GUEST_VULKAN_HOST_SETUP=0; production keeps it on.
-                    const QByteArray hostSetup = envValue("CHIMERA_GUEST_VULKAN_HOST_SETUP");
-                    const bool hostDoesSkiavk = isTruthyEnv("CHIMERA_GUEST_VULKAN") &&
-                        hostSetup != "0" && hostSetup.toLower() != "false" && hostSetup.toLower() != "off";
-                    if (hostDoesSkiavk && !guestPerfTimer->property("skiavkApplied").toBool()) {
-                        guestPerfTimer->setProperty("skiavkApplied", true);
-                        guestPerfTimer->setProperty("attempts", 0);
-                        applyGuestVulkanHardwareUi();
-                        return;
-                    }
-                    // Grace after the skiavk restart: the shell may be unable to clear
-                    // sys.boot_completed, so wait ~12s (6 polls) before accepting "1"
-                    // to be sure the genuine post-restart boot is observed, not the
-                    // stale pre-restart value.
-                    if (guestPerfTimer->property("skiavkApplied").toBool() &&
-                        guestPerfTimer->property("attempts").toInt() < 6) {
-                        return;
-                    }
                     *androidBootReady = true;
                     guestPerfTimer->stop();
                     applyGuestPerformanceSettings();
                     installGuestSupportApps();
                     installChimeraLauncher();
                     applyGuestFirstBootSetup();
+                    qmlAndroidControls.setBootReady(true);
                     if (v1QuickBootEnabled && shouldAutoSaveQuickBootSnapshot()) {
                         QTimer::singleShot(30000, &app, [&app]() {
                             saveQuickBootSnapshotAsync(&app);

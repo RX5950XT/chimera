@@ -14,9 +14,13 @@
     uses stock SDK + gRPC. Pass -Fast for the production fast path.
 
     -Fast: custom gfxstream shared-texture runtime. Hits 1080p/60 for
-    continuously-rendering content and uses GuestVulkan/skiavk plus the safe ES
-    compositor path for normal Android UI visibility. General UI 60 is not the
-    gate; scripts\verify-interactive-ui.ps1 is the daily-usability evidence.
+    continuously-rendering content; normal Android UI renders on the safe ES
+    compositor path. CHIMERA_GUEST_VULKAN=1 only enables the guest Vulkan FEATURE
+    (Vulkan apps/games reach the host NVIDIA GPU) — there is no skiavk UI switch:
+    on this user-build image it cannot complete (no root) and a half-applied
+    state blanks app windows (the old "-Fast boots to a black center" bug).
+    General UI 60 is not the gate; scripts\verify-interactive-ui.ps1 is the
+    daily-usability evidence.
 
 .PARAMETER Fast
     Opt into the custom gfxstream fast runtime (see caveat above).
@@ -121,18 +125,18 @@ if ($customAvailable) {
     # This avoids the headless HOST/core-profile shader mismatch while preserving
     # the direct-VK shared-texture path used by continuously-rendering content.
     $env:CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES = "1"
-    # Route guest app HWUI through hardware Vulkan (skiavk on NVIDIA). chimera-ui
-    # applies the skiavk runtime props and re-enables normal Android animations
-    # after boot. This improves daily UI over the software path, but general-UI 60
-    # remains a verifier/R&D target, not a launch-script claim.
+    # Guest Vulkan FEATURE only: Vulkan apps/games reach the host NVIDIA GPU, and
+    # chimera-ui keeps normal Android animations on. NOT a skiavk UI switch — that
+    # cannot work on this user-build image (no root for the framework restart) and
+    # half-applying it blanks app windows.
     $env:CHIMERA_GUEST_VULKAN = "1"
     Remove-Item Env:\CHIMERA_GFXSTREAM_HEADLESS_ANGLE -ErrorAction SilentlyContinue
     if ($RequireSharedTexture) {
         $env:CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE = "1"
-        Write-Host "display=gfxstream-shared-texture (-Fast, fail-closed; normal UI via GuestVulkan/skiavk)"
+        Write-Host "display=gfxstream-shared-texture (-Fast, fail-closed; guest Vulkan feature on)"
     } else {
         Remove-Item Env:\CHIMERA_REQUIRE_GFXSTREAM_SHARED_TEXTURE -ErrorAction SilentlyContinue
-        Write-Host "display=gfxstream-shared-texture (-Fast; normal UI via GuestVulkan/skiavk)"
+        Write-Host "display=gfxstream-shared-texture (-Fast; guest Vulkan feature on)"
     }
 } else {
     Remove-Item Env:\CHIMERA_EMULATOR_PATH -ErrorAction SilentlyContinue
@@ -205,6 +209,7 @@ try {
     Start-Sleep -Seconds 2
 
     Write-Host "self-test: launch (serial $Serial)"
+    $launchAt = Get-Date
     $p = Start-Process -FilePath $AppExe -WorkingDirectory $RepoRoot -PassThru
     $deadline = (Get-Date).AddSeconds($SelfTestBootSec)
     while ((Get-Date) -lt $deadline) {
@@ -217,6 +222,7 @@ try {
         Start-Sleep -Seconds 2
     }
     Write-Host "booted=$booted"
+    if ($booted) { Write-Host ("boot_seconds={0}" -f [int]((Get-Date) - $launchAt).TotalSeconds) }
 
     if ($booted) {
         Start-Sleep -Seconds 6
@@ -229,11 +235,29 @@ try {
         Invoke-AdbQuiet -Args @("-s", $Serial, "shell", "am", "start", "-n", "com.chimera.launcher/.MainActivity") | Out-Null
         Start-Sleep -Seconds 4
         $resumed = (Invoke-AdbQuiet -Args @("-s", $Serial, "shell", "dumpsys window | grep -m1 mCurrentFocus")).Out
-        Invoke-AdbQuiet -Args @("-s", $Serial, "shell", "screencap", "-p", "/sdcard/chimera_home.png") | Out-Null
-        Invoke-AdbQuiet -Args @("-s", $Serial, "pull", "/sdcard/chimera_home.png", $shotPath) | Out-Null
         Write-Host "wm_size=$size"
         Write-Host "resumed=$resumed"
-        if (Test-Path $shotPath) { Write-Host "screenshot_bytes=$((Get-Item $shotPath).Length)" }
+
+        # Content gate: the home frame must be real pixels, not a blank/black
+        # surface. dumpsys-focus alone let the skiavk half-applied blank-screen
+        # bug pass this self-test; assert bytes/nonblack/luma like the verifiers.
+        $homeStats = $null
+        $gateDeadline = (Get-Date).AddSeconds(30)
+        while ((Get-Date) -lt $gateDeadline) {
+            try { $homeStats = Get-AdbScreenshotStats -Name "selftest_home" } catch { $homeStats = $null }
+            if ($null -ne $homeStats -and $homeStats.Bytes -ge 20000 -and
+                $homeStats.NonBlackPercent -ge 10.0 -and $homeStats.LumaSpread -ge 40) { break }
+            Start-Sleep -Seconds 2
+        }
+        if ($null -eq $homeStats) { throw "self-test FAILED: could not capture home screenshot" }
+        Copy-Item -LiteralPath $homeStats.Path -Destination $shotPath -Force
+        Write-Host "screenshot_bytes=$($homeStats.Bytes)"
+        Write-Host ("screenshot_nonblack_pct={0:N1}" -f $homeStats.NonBlackPercent)
+        Write-Host "screenshot_luma_spread=$($homeStats.LumaSpread)"
+        Write-Host ("visible_home_seconds={0}" -f [int]((Get-Date) - $launchAt).TotalSeconds)
+        if ($homeStats.Bytes -lt 20000 -or $homeStats.NonBlackPercent -lt 10.0 -or $homeStats.LumaSpread -lt 40) {
+            throw "self-test FAILED: home frame looks blank/black (bytes=$($homeStats.Bytes) nonblack=$([math]::Round($homeStats.NonBlackPercent,1))% spread=$($homeStats.LumaSpread))"
+        }
 
         # Interactivity proof: launch Settings, confirm it reaches the foreground.
         for ($i = 0; $i -lt 5; $i++) {

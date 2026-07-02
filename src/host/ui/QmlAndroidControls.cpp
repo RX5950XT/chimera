@@ -53,6 +53,13 @@ QmlAndroidControls::QmlAndroidControls(QObject *parent)
     m_pinnedApps = s.value(QStringLiteral("chimera/pinnedApps")).toStringList();
 }
 
+void QmlAndroidControls::setBootReady(bool ready) {
+    if (m_bootReady == ready)
+        return;
+    m_bootReady = ready;
+    emit bootReadyChanged();
+}
+
 bool QmlAndroidControls::back() {
     return sendKey(static_cast<int>(input::AndroidKeyCode::Back));
 }

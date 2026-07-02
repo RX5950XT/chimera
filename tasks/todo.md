@@ -2,6 +2,60 @@
 
 ---
 
+## 2026-07-02 Session 100 — -Fast 啟動黑屏根因修復 + 載入加速 + 1080p60 驗證
+
+### 根因（已實證，2026-07-02）
+
+使用者雙擊 `start-chimera.cmd`（`-Fast -InteractiveFirst`）後中間模擬畫面全黑、側邊 UI 正常。
+
+**證據鏈**：
+1. 重現 boot（port 5554、production env）：guest 螢幕 = status bar/導覽列可見（SystemUI）+ launcher 視窗內容純黑（ADB screencap 14KB，t=46s 起持續 4 分鐘）。
+2. `applyGuestVulkanHardwareUi()`（main.cpp）在 boot_completed 立即 `setprop debug.hwui.renderer=skiavk` + `stop`/`start`。
+3. 此 AVD 是 `google_apis_playstore` **user build**（`ro.debuggable=0`）→ `adb shell stop` → **"Must be root" 失敗**（被 runAdbShell 吞掉）→ framework 從未 restart、SurfaceFlinger 永遠留在 SkiaGL。
+4. setprop 之後才第一次 HWUI init 的 process（launcher 等）走 Vulkan 渲染 → guest VK buffer 在 host 是 NVIDIA VK memory，SF 的 GLES 合成在 host 是 SwiftShader → 跨裝置無法取樣 → **視窗內容全黑**。setprop 之前就啟動的 process（SystemUI）維持 GLES → 可見。
+5. 獨立 probe：`-systemui-renderer skiavk` boot（HWUI 從開機就 Vulkan，`Pipeline=Skia (Vulkan)` 實證）→ home 10.7KB / Settings 10.6KB spread=0 全空白 → 確認 HWUI-VK + SF-GL 結構性全黑，且 init 不翻譯 `ro.boot.debug.renderengine.backend` → **SF 在此 image 上永遠無法切 Vulkan（無 root、無 boot hook）→ skiavk UI 路線在此 image 不可行**。
+6. 「偶發 black-boot」假象：可見與否取決於前景 app process 是在 setprop 前或後啟動（timing），因此舊 verifier 有時可過（sampled pre-setprop process）。
+
+### 修復計畫
+- [x] 重現 + 根因（上述）
+- [x] main.cpp：移除 `applyGuestVulkanHardwareUi()` 與 poller 內 skiavk apply/grace 邏輯（省 12s grace + 移除黑屏觸發源）
+- [x] main.cpp：`installChimeraLauncher()` 加 md5 比對，APK 未變時跳過 reinstall/force-stop/relaunch（省 ~5-8s + 移除 home 重啟閃爍）
+- [x] QmlAndroidControls + ChimeraWindow.qml：新增 `bootReady`，「等待 Android 啟動…」placeholder 保持到 boot 完成（不再在第一張黑幀就消失）
+- [x] VirtualMachine.cpp：更新過時註解（skiavk 不可行的實證；保留 `-feature Vulkan`）
+- [x] start-chimera.ps1：更新 -Fast 說明；SelfTest 加 screenshot 內容 gate（bytes≥20000/nonblack≥10%/spread≥40）
+- [x] verify-interactive-ui.ps1：移除 -GuestVulkan 的 setprop/stop/start 虛構路徑與 HOST_SETUP env
+- [x] ChimeraVerifyCommon.ps1：`Invoke-CheckedTool` EAP=Continue（javac stderr Note 在 redirect 下變 terminating error 的 harness bug）
+- [x] Build PASS + ctest 23/23 PASS
+- [x] SelfTest（-Fast）PASS：`boot_seconds=33`、`visible_home_seconds=49`、screenshot 76,219B/nonblack 100%/spread 716、interactivity=ok、0 residual
+- [x] **第二個真 bug（60fps 驗證時抓到）：背景手把輸入漏進 guest** — 使用者玩 P5R（手把），`GamepadManager` XInput 全域輪詢無條件轉發 → B/HOME 進 guest 把 gl60 切到背景 → 量測「隨機」凍結。sidecar 凍結瞬間取證（guest 前景=launcher、gl60 活著、螢幕 Awake）。修：`gp.poll()` focus gate（`ApplicationActive` 才轉發）。修後 sidecar 實錄 gl60 全程前景、`mObscuringWindow=null`。ctest 23/23。
+- [~] verify-true-1080p60（連續渲染 60 gate）— 管線健康證據：量測窗內連續 150 秒 60.0fps（`total 510→9197`、min 59.5/avg ~60.0/dup 0，**與 P5R 同跑 + 副螢幕**）；producer `postFrameDirectGpu 0.4-0.6ms` 全程健康。惟嚴格 `min≥57` gate 在使用者 AAA 遊戲同跑時會被負載尖峰打穿（min=8.6 的瞬間掉速），乾淨 PASS 需機器空閒時重跑（歷史 Session 89/99 同 render path 已 PASS；本輪未動 render path）
+- [x] verify-interactive-ui -Mode Fast -GuestVulkan -SyntheticScroll（副螢幕、與 P5R 同跑）— 完整跑完不再中斷：`path=gpu-direct / sharedTexture=yes / fallback=none`、sustained scroll `guest 55.9 / eff 49.1 / dup=0`、`result=fast-ui-visible-not-60`（遊戲同跑掉 ~10fps；Session 99 空機同路徑 59.6 strict PASS）
+- [x] **第三批修正（60fps 驗證中挖出）**：① chimera-ui 啟動即讀 `CHIMERA_VERIFY_WINDOW_ORIGIN` setPosition（測試視窗從第一幀就在副螢幕，不再在 boot 期間蓋住使用者畫面被關掉）；② `Ensure-HostWindowVisible` 對 exited process 的 `MainWindowHandle`（ETS null → `[IntPtr]$null` cast 炸）try/catch 防禦；③ `Invoke-CheckedTool` EAP=Continue（javac stderr Note 假失敗）。build PASS、ctest 23/23、common parse 0 errors
+- [x] `setprop ctl.restart surfaceflinger` 第三路 probe — **SELinux denied**（`avc: denied { set } property=ctl.restart$surfaceflinger scontext=u:r:shell:s0 permissive=0`、SF pid 不變）→ skiavk 三路全死，文件定案
+- [x] 最終 SelfTest（全部修復、與 P5R 同跑）— **PASS**：`boot_seconds=35`、`visible_home_seconds=52`、screenshot 75,584B/nonblack 100%/spread 716、`interactivity=ok`、0 residual、exit 0
+- [x] 檢查其他問題：repo 根目錄 2026-05 殘留 runtime log 已刪（gitignored）；instances.json 執行時 priority 持久化 diff 已還原
+- [x] 使用者要求：verifier 視窗開副螢幕（`CHIMERA_VERIFY_WINDOW_ORIGIN=-2520,45` 存 User env；harness 原生支援）
+- [x] 文件同步：CLAUDE.md / AGENTS.md / CONTEXT.md / tasks/lessons.md / memory（venus-vulkan-wall 更正）
+
+### 載入速度（修復後預期）
+舊（壞掉前的「正常」路徑）：boot ~37s + skiavk restart + 12s grace + launcher reinstall/relaunch ≈ 80–110s 才有畫面（中途多段黑屏）。
+新：boot ~37s → 立即 setup（無 restart/grace）→ launcher md5 跳過 reinstall → **~40s 可見 home**，全程 placeholder 覆蓋。
+Quick Boot snapshot（~15-25s）維持 opt-in（既有 host audio 政策，不動）。
+
+### Review
+
+**修了 3 個真 bug（皆有現場證據）＋載入減半＋量測環境整修：**
+1. **黑屏（主訴）**：skiavk 半套用（`stop/start` "Must be root" 靜默失敗 + `debug.hwui.renderer=skiavk` 生效 → HWUI-VK+SF-GL 跨裝置無法合成 → app 視窗全黑）。移除 skiavk 切換；三條替代路（root restart / boot-prop / `ctl.restart`）全 probe 實證死路，文件定案禁再試。
+2. **背景手把輸入漏進 guest**：`GamepadManager` XInput 全域輪詢無條件轉發，使用者玩 P5R 按 B/HOME 直接關掉 guest 前景 app（sidecar 凍結瞬間取證：前景=launcher、gl60 活著、螢幕 Awake）。修 `gp.poll()` focus gate。
+3. **測試視窗蓋住使用者畫面**：boot 階段視窗停主螢幕預設位、蓋住遊戲被使用者關掉 → run 中斷。chimera-ui 啟動即讀 `CHIMERA_VERIFY_WINDOW_ORIGIN` 開副螢幕（User env `-2520,45`）。
+- **載入**：~80–110s → 35s boot / ~52s 可見 home（移除 skiavk restart+12s grace、launcher md5 跳過 reinstall）；placeholder 綁 `bootReady` 全程覆蓋，不再裸黑。
+- **harness 加固**：SelfTest 像素內容 gate（防黑屏假 PASS 再犯）；`Invoke-CheckedTool` EAP=Continue（javac Note 假失敗）；`Ensure-HostWindowVisible` exited-process 防禦。
+- **60fps 誠實現況**：與 AAA 遊戲同跑：gl60 量測窗內連續 150s 60.0fps（min 59.5/dup 0）、互動 scroll eff 49.1/dup 0（gpu-direct、無 fallback）；嚴格 gate（min≥57 全窗）被遊戲負載尖峰打穿屬預期。空機 strict PASS＝Session 89/99（render path 本輪未動）；空機時重跑 `verify-true-1080p60.ps1` + `verify-interactive-ui.ps1 -Mode Fast -GuestVulkan -SyntheticScroll` 即可重確認。
+- **驗證彙整**：build PASS ×3；ctest 23/23 ×3；SelfTest PASS ×2（修復前後）；互動 verifier 完整跑完（`fast-ui-visible-not-60`＝遊戲共存下的誠實結果）；每輪 0 residual。
+- **量測紀律教訓**（詳 lessons.md）：量測崩潰先查使用者是否在用電腦/跑什麼；全域輸入 API 必 focus-gate；sidecar 凍結瞬間取證勝過盲跑；dup=0 低 fps=producer 上限。
+
+---
+
 ## 2026-07-01 Session 99 — /goal 修復所有問題：sibling-grep 補洞（harness 全域 kill）
 
 ### Context

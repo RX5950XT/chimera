@@ -26,7 +26,10 @@ ApplicationWindow {
     property int currentRotation: 0
     property string lastActionStatus: ""
     readonly property bool isFullscreen: visibility === Window.FullScreen
-    readonly property bool guestReady: nativeDisplay.attached || guestDisplay.hasFrame
+    // hasFrame alone is not "ready": with -no-boot-anim the capture path delivers
+    // black frames during boot, so also wait for AndroidControls.bootReady (true by
+    // default in modes without the emulator boot poller).
+    readonly property bool guestReady: nativeDisplay.attached || (guestDisplay.hasFrame && AndroidControls.bootReady)
     readonly property bool isRecording: ScreenRecorder.recording || nativeDisplay.recording
     readonly property real effectiveFps: Math.max(
         0,

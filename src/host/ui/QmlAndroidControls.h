@@ -23,6 +23,11 @@ class QmlAndroidControls : public QObject {
     Q_PROPERTY(bool        proxyEnabled       READ proxyEnabled       NOTIFY proxyChanged)
     Q_PROPERTY(QString     proxyHost          READ proxyHost          NOTIFY proxyChanged)
     Q_PROPERTY(int         proxyPort          READ proxyPort          NOTIFY proxyChanged)
+    // False while the v1 emulator boot poller is still waiting for Android; the
+    // QML loading placeholder stays up until this turns true. Defaults to true so
+    // modes without the boot poller (--no-emulator, HCS/QEMU backends) keep the
+    // first-frame behaviour.
+    Q_PROPERTY(bool        bootReady          READ bootReady          NOTIFY bootReadyChanged)
 
 public:
     explicit QmlAndroidControls(QObject *parent = nullptr);
@@ -135,6 +140,9 @@ public:
     // Wire Android Console input for sensor/battery commands
     void setConsoleInput(input::AndroidConsoleInput *consoleInput);
 
+    bool        bootReady()         const { return m_bootReady; }
+    void        setBootReady(bool ready);
+
     QString     installStatus()     const { return m_installStatus; }
     double      gpsLatitude()       const { return m_gpsLat; }
     double      gpsLongitude()      const { return m_gpsLon; }
@@ -146,6 +154,7 @@ public:
     int         proxyPort()         const { return m_proxyPort; }
 
 signals:
+    void bootReadyChanged();
     void installStatusChanged(const QString &status);
     void gpsChanged();
     void notificationRequested(const QString &title, const QString &message);
@@ -173,6 +182,7 @@ private:
     bool        m_proxyEnabled = false;
     QString     m_proxyHost;
     int         m_proxyPort = 0;
+    bool        m_bootReady = true;
 };
 
 } // namespace chimera

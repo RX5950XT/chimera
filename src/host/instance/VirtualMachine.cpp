@@ -420,18 +420,20 @@ std::vector<std::string> buildEmulatorArgsForConfig(const VirtualMachineConfig &
     args.push_back("-gpu");
     args.push_back(emulatorGpuMode(config.graphicsRenderer));
 
-    // Do not force "-systemui-renderer skiavk"; GL via gfxstream/ANGLE is the
-    // stable path on hosts with Vulkan overlays or software ICD fallback.
+    // Never pass "-systemui-renderer skiavk" and never try a runtime skiavk switch
+    // (probed 2026-07-02 on the google_apis_playstore user image):
+    //   - "-systemui-renderer skiavk" only reaches HWUI (init translates
+    //     ro.boot.debug.hwui.renderer but NOT ro.boot.debug.renderengine.backend),
+    //     so SurfaceFlinger stays on SkiaGL while apps render Vulkan — SF's
+    //     SwiftShader-ES compositor cannot sample host-NVIDIA Vulkan surfaces and
+    //     every app window turns blank (home/Settings screencaps uniform ~10KB).
+    //   - the runtime alternative (adb setprop + "stop"/"start") needs root; the
+    //     user build answers "Must be root", leaving the same half-applied blank.
     //
-    // Guest-Vulkan UI path (CHIMERA_GUEST_VULKAN=1, default off). Session 91: with
-    // "-feature Vulkan" the gfxstream backend routes guest Vulkan to the host NVIDIA GPU
-    // (confirmed "Selecting Vulkan device: NVIDIA GeForce RTX 3070 Ti"). After fixing
-    // three MSVCP140 std::future/promise crashes in the gfxstream host backend
-    // (device_op_tracker, sync_thread, WorkerThread), app HWUI on Vulkan
-    // (debug.hwui.renderer=skiavk) renders to "Skia (Vulkan)" without crashing. The
-    // skiavk RenderEngine/HWUI props are set at RUNTIME (adb setprop + framework restart,
-    // NOT emulator -prop which only sets androidboot.* not the runtime debug.* sysprop).
-    // We only enable the guest Vulkan feature here; the verifier/test injects the props.
+    // CHIMERA_GUEST_VULKAN=1 therefore only enables the guest Vulkan FEATURE so
+    // apps/games that use Vulkan directly reach the host NVIDIA GPU (Session 91:
+    // "Selecting Vulkan device: NVIDIA GeForce RTX 3070 Ti"; gl60 non-regression
+    // with the flag Session 94). It is not a UI renderer switch.
     if (truthyEnv("CHIMERA_GUEST_VULKAN")) {
         args.push_back("-feature");
         args.push_back("Vulkan");

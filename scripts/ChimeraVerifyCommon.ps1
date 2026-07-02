@@ -236,16 +236,31 @@ function Quote-CmdArgument {
 
 function Ensure-HostWindowVisible {
     param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process)
-    $Process.Refresh()
-    $hwnd = $Process.MainWindowHandle
+    # MainWindowHandle on an exited process throws; PowerShell's ETS surfaces that
+    # as $null, and a later [IntPtr]$null cast kills the verifier mid-run (seen when
+    # the user closed the chimera window). Treat every unreadable handle as Zero.
+    $hwnd = [IntPtr]::Zero
+    try {
+        $Process.Refresh()
+        if (-not $Process.HasExited) {
+            $h = $Process.MainWindowHandle
+            if ($null -ne $h) { $hwnd = $h }
+        }
+    } catch {}
     if ($hwnd -eq [IntPtr]::Zero) {
         # The verifier launches chimera-ui via cmd.exe with redirected output, so
         # the passed process usually has no window. Target the real chimera-ui Qt
         # window instead — otherwise foreground-keeping is a no-op and the Qt
         # render thread gets occlusion-throttled when another window steals focus.
         $ui = @(Get-Process -Name chimera-ui -ErrorAction SilentlyContinue |
-            Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero }) | Select-Object -First 1
-        if ($null -ne $ui) { $hwnd = $ui.MainWindowHandle }
+            Where-Object { try { -not $_.HasExited -and $_.MainWindowHandle -ne [IntPtr]::Zero } catch { $false } }) |
+            Select-Object -First 1
+        if ($null -ne $ui) {
+            try {
+                $h = $ui.MainWindowHandle
+                if ($null -ne $h) { $hwnd = $h }
+            } catch {}
+        }
     }
     if ($hwnd -eq [IntPtr]::Zero) { return }
     if (-not ([System.Management.Automation.PSTypeName]'ChimeraVerifier.NativeMethods').Type) {
@@ -364,7 +379,18 @@ function Assert-AndroidDisplayFloor {
 
 function Invoke-CheckedTool {
     param([Parameter(Mandatory = $true)][scriptblock]$Command)
-    & $Command
+    # Native tools legitimately write notes/warnings to stderr (e.g. javac's
+    # "deprecated API" note). Under $ErrorActionPreference = "Stop" with stderr
+    # redirected (detached verifier runs), Windows PowerShell turns those lines
+    # into terminating NativeCommandErrors. Success/failure is the exit code.
+    $oldErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Command
+    }
+    finally {
+        $ErrorActionPreference = $oldErrorActionPreference
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "Command failed with exit code $LASTEXITCODE"
     }

@@ -73,11 +73,12 @@ param(
     # general-UI path is visible-but-not-60.
     [switch]$AllowBaseline,
 
-    # Session 91 experiment: after boot, route the guest UI through Vulkan on the
-    # host NVIDIA GPU — SurfaceFlinger RenderEngine + app HWUI both skiavk (via runtime
-    # setprop + framework restart). Requires CHIMERA_GUEST_VULKAN=1 in the environment
-    # so chimera-ui launches the emulator with "-feature Vulkan". Measures whether
-    # hardware-Vulkan UI rendering beats the default skiagl->SwiftShader path.
+    # Launch the emulator with the guest Vulkan FEATURE enabled (CHIMERA_GUEST_VULKAN=1
+    # -> "-feature Vulkan"), matching start-chimera.ps1 -Fast. This is NOT a skiavk UI
+    # switch: on the google_apis_playstore user image the framework restart skiavk
+    # needs answers "Must be root", and a half-applied state (HWUI Vulkan, SF SkiaGL)
+    # blanks every app window (probed 2026-07-02). The old setprop+stop/start sequence
+    # here silently did nothing (or blanked fresh processes) and has been removed.
     [switch]$GuestVulkan,
 
     # Drive the sustained-scroll segment through the host's PRODUCTION input path
@@ -330,20 +331,14 @@ try {
     $env:CHIMERA_QUICK_BOOT = "0"
     $env:CHIMERA_LOG_PATH = $script:messageLog
     $env:CHIMERA_EMULATOR_CONSOLE_PORT = "$ConsolePort"
-    # This verifier owns the skiavk framework restart (it re-gates the home frame
-    # after, so it never measures mid-restart). Tell chimera-ui to skip its own
-    # host-side skiavk restart so the two don't race during boot.
     if ($GuestVulkan) {
-        # -feature Vulkan must be enabled at emulator launch or the later skiavk
-        # setprop silently falls back to GLES while getprop still echoes skiavk
-        # (invalid comparison). HOST_SETUP=0 because this verifier owns the restart.
         $env:CHIMERA_GUEST_VULKAN = "1"
-        $env:CHIMERA_GUEST_VULKAN_HOST_SETUP = "0"
     }
     else {
         Remove-Item Env:\CHIMERA_GUEST_VULKAN -ErrorAction SilentlyContinue
-        Remove-Item Env:\CHIMERA_GUEST_VULKAN_HOST_SETUP -ErrorAction SilentlyContinue
     }
+    # Legacy: chimera-ui no longer has a host-side skiavk setup to disable.
+    Remove-Item Env:\CHIMERA_GUEST_VULKAN_HOST_SETUP -ErrorAction SilentlyContinue
     if ($SyntheticScroll) {
         # Host-internal real-path scroll injector (no physical-mouse grab). The scroll
         # segment below then skips adb-swipe and lets chimera-ui drive the fling.
@@ -380,20 +375,10 @@ try {
         -Relaunch { Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "am", "start", "-n", "com.chimera.launcher/.MainActivity") -IgnoreExit | Out-Null }
 
     if ($GuestVulkan) {
-        Write-Host "guest_vulkan=1 — routing SurfaceFlinger + HWUI through Vulkan (skiavk) on NVIDIA"
-        Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "setprop", "debug.renderengine.backend", "skiavk") -IgnoreExit | Out-Null
-        Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "setprop", "debug.hwui.renderer", "skiavk") -IgnoreExit | Out-Null
-        # Full framework restart so SF picks up the Vulkan RenderEngine and every app's
-        # HWUI re-inits on Vulkan. boot_completed re-fires.
-        Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "stop") -IgnoreExit | Out-Null
-        Start-Sleep -Seconds 2
-        Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "start") -IgnoreExit | Out-Null
-        Wait-AndroidBoot -TimeoutSec $BootTimeoutSec -AppProcess $process
-        Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "am", "start", "-n", "com.chimera.launcher/.MainActivity") -IgnoreExit | Out-Null
-        Wait-VisiblePackageFrame -Name "home-vk" -PackageRegex "com\.chimera\.launcher" -TimeoutSec 30 `
-            -Relaunch { Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "am", "start", "-n", "com.chimera.launcher/.MainActivity") -IgnoreExit | Out-Null }
-        $hwuiProp = (Invoke-Adb -Arguments @("-s", $script:Serial, "shell", "getprop", "debug.hwui.renderer") | Out-String).Trim()
-        Write-Host "guest_vulkan_hwui_prop=$hwuiProp"
+        # Guest Vulkan FEATURE only (apps using Vulkan directly reach host NVIDIA).
+        # No skiavk setprop / framework restart: impossible on this user-build image
+        # and a half-applied state blanks app windows (see -GuestVulkan help).
+        Write-Host "guest_vulkan=1 — emulator launched with '-feature Vulkan' (no skiavk UI switch)"
     }
 
     if ($Observe) {
