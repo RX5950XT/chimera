@@ -307,6 +307,93 @@ namespace ChimeraVerifier {
     [ChimeraVerifier.NativeMethods]::SetForegroundWindow($hwnd) | Out-Null
 }
 
+function Get-HostWindowPixelStats {
+    # PrintWindow-captures the chimera-ui window and samples the CENTRAL guest
+    # display region (skips the always-lit side panel / top bar). This is the only
+    # gate that checks what the USER actually sees: guest-side ADB screencaps and
+    # host-side FPS counters both stayed green while the shared-texture window was
+    # black for 15 sessions (Vulkan OPAQUE_WIN32 import never aliased the D3D11
+    # texture, so sequences advanced over all-zero pixels).
+    param(
+        [string]$Name = "hostwindow",
+        [int]$GridX = 24,
+        [int]$GridY = 14
+    )
+
+    $ui = @(Get-Process -Name chimera-ui -ErrorAction SilentlyContinue |
+        Where-Object { try { -not $_.HasExited -and $_.MainWindowHandle -ne [IntPtr]::Zero } catch { $false } }) |
+        Select-Object -First 1
+    if ($null -eq $ui) { throw "host window capture failed: no chimera-ui window" }
+    $hwnd = $ui.MainWindowHandle
+
+    if (-not ([System.Management.Automation.PSTypeName]'ChimeraVerifier.CaptureMethods').Type) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+namespace ChimeraVerifier {
+  public static class CaptureMethods {
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+    [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdc, uint flags);
+  }
+}
+"@
+    }
+    try { Add-Type -AssemblyName System.Drawing -ErrorAction Stop } catch { throw "System.Drawing unavailable for host window capture: $($_.Exception.Message)" }
+
+    $rect = New-Object ChimeraVerifier.CaptureMethods+RECT
+    if (-not [ChimeraVerifier.CaptureMethods]::GetWindowRect([IntPtr]$hwnd, [ref]$rect)) {
+        throw "host window capture failed: GetWindowRect"
+    }
+    $w = $rect.R - $rect.L
+    $h = $rect.B - $rect.T
+    if ($w -le 0 -or $h -le 0) { throw "host window capture failed: empty rect ${w}x${h}" }
+
+    $safeName = $Name -replace '[^A-Za-z0-9_-]', '_'
+    $local = Join-Path $script:RepoRoot "tmp\chimera-${safeName}.png"
+    $bitmap = [System.Drawing.Bitmap]::new($w, $h)
+    try {
+        $gfx = [System.Drawing.Graphics]::FromImage($bitmap)
+        try {
+            $hdc = $gfx.GetHdc()
+            # PW_RENDERFULLCONTENT (2): captures D3D swapchain content, not just GDI.
+            $ok = [ChimeraVerifier.CaptureMethods]::PrintWindow([IntPtr]$hwnd, $hdc, 2)
+            $gfx.ReleaseHdc($hdc)
+            if (-not $ok) { throw "host window capture failed: PrintWindow" }
+        }
+        finally { $gfx.Dispose() }
+        $bitmap.Save($local, [System.Drawing.Imaging.ImageFormat]::Png)
+
+        # Sample only x 10-70% / y 20-80%: inside the guest display area of the
+        # default layout, clear of the right side panel and window chrome.
+        $nonBlack = 0
+        $sampleCount = 0
+        $minLum = 765
+        $maxLum = 0
+        for ($iy = 0; $iy -lt $GridY; $iy++) {
+            $y = [int]($h * (0.20 + 0.60 * ($iy + 0.5) / $GridY))
+            for ($ix = 0; $ix -lt $GridX; $ix++) {
+                $x = [int]($w * (0.10 + 0.60 * ($ix + 0.5) / $GridX))
+                $pixel = $bitmap.GetPixel($x, $y)
+                $lum = [int]$pixel.R + [int]$pixel.G + [int]$pixel.B
+                if ($lum -gt 30) { $nonBlack++ }
+                if ($lum -lt $minLum) { $minLum = $lum }
+                if ($lum -gt $maxLum) { $maxLum = $lum }
+                $sampleCount++
+            }
+        }
+        [pscustomobject]@{
+            Path = $local
+            Width = $w
+            Height = $h
+            Samples = $sampleCount
+            NonBlackPercent = if ($sampleCount -gt 0) { 100.0 * $nonBlack / $sampleCount } else { 0.0 }
+            LumaSpread = $maxLum - $minLum
+        }
+    }
+    finally { $bitmap.Dispose() }
+}
+
 function Get-PerfSamples {
     param([Parameter(Mandatory = $true)][string]$LogText)
     $machinePattern = 'CHIMERA_PERF guest=(?<guest>[0-9]+(?:\.[0-9]+)?) stream=(?<stream>[0-9]+(?:\.[0-9]+)?) render=(?<render>[0-9]+(?:\.[0-9]+)?) effective=(?<effective>[0-9]+(?:\.[0-9]+)?) dupPct=(?<dupPct>[0-9]+(?:\.[0-9]+)?).* total=(?<total>\d+)'

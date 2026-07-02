@@ -2,6 +2,37 @@
 
 ---
 
+## 2026-07-02 Session 101 — `-Fast` host 視窗黑屏（三層疊加根因）+ emulator idle 自殺
+
+### 根因（已實證，全部修復）
+
+- **Bug A（主，三層疊加——shared texture 從 Session 85 起發佈的一直是零幀）**:
+  1. **GL→VK 內容同步缺失（最深層）**: HWC compose 路徑由 host GL（CompositorGl）合成 target ColorBuffer，從不標 `mGlTexDirty`（`flushFromGl` 只在 `rcFlushWindowColorBuffer` 被呼叫）→ `invalidateForVk()` 恆 `exit=clean` no-op → `borrowForDisplay(kVk)` 借到的 VK sibling image **從未被寫入** → blit 複製全零。bridge 內 Vulkan readback 診斷實證：修前 `nonzero=0/120`、修後 `nonzero=120/120 center=245,245,245,255`。修法：headless post 分支 borrow 前 `colorBuffer->flushFromGl(); colorBuffer->invalidateForVk();`（VK-backed 內容仍 no-op、保 zero-copy）。
+  2. **Vulkan import 無 aliasing**: D3D11 NT shared handle 用 `OPAQUE_WIN32_BIT` 匯入（無 dedicated info）→ NVIDIA 回 VK_SUCCESS 但寫入不落到 D3D11 texture。獨立 vkinterop probe 實證：`OPAQUE` 匯入寫入丟失、`D3D11_TEXTURE_BIT`+`VkMemoryDedicatedAllocateInfo` 後 clear 內容可見。修法：bridge template 改正確 import。
+  3. **Consumer 缺 AcquireSync**: keyed-mutex texture（misc 0x900）跨 process 不 acquire 讀 = 零（texprobe 矩陣實證：no-acquire=0、acquired=內容）。Qt scene graph 無法跨 render pass 持鎖。修法：GuestDisplay 每個新 sequence `AcquireSync(0)` → `CopyResource` 到私有 texture → `ReleaseSync(0)`，QSG 取樣私有副本（注意 `WAIT_TIMEOUT (0x102)` 過得了 `SUCCEEDED()`，必須 `== S_OK`）。
+- **Bug B（次）**: `VirtualMachine.cpp` 傳 `-idle-grpc-timeout 300`。`-Fast` 顯示不走 gRPC，黑屏下使用者無輸入 → 300 秒零 gRPC 流量 → emulator 自殺（`IdleInterceptor.cpp`: `Idled to long, shutting down`）。使用者 10:18 開機、~10:22 死亡吻合；stock 路徑 getScreenshot 輪詢永不 idle、verifier 全程注入 input，所以從未踩到。修法：移除該旗標（Job Object kill-on-close 已負責 orphan 清理）+ regression test。
+- **Gate 漏洞**: 歷來所有 60fps/可見 gate 都驗 guest 端 ADB screencap + host 端計數器（sequence/FPS），兩者都不經過「shared texture 內容 → host 視窗」——所以三層 bug 潛伏 15 個 session。修法：SelfTest 新增 `Get-HostWindowPixelStats`（PrintWindow PW_RENDERFULLCONTENT + 中央區取樣）gate。
+
+### 修復項目
+- [x] Bug B: 移除 `-idle-grpc-timeout 300` + `grpcEnabledNeverRequestsIdleShutdown` test
+- [x] Bug A-2: bridge template 改 `D3D11_TEXTURE_BIT` import + `VkMemoryDedicatedAllocateInfo` + handle-props 診斷
+- [x] Bug A-1: frame_buffer headless 分支補 `flushFromGl()`+`invalidateForVk()`（tree + patch script 同步；發現 modern tree 的 headless 段 patch 是死碼、tree 為手改，已補 modern Replace-Text）
+- [x] Bug A-3: GuestDisplay keyed-mutex acquire + 私有副本
+- [x] 診斷留存: bridge `debugReadbackSharedImage`（每 240 幀 VK 端讀回）+ `invalidateForVk` exit-path log（每 600 次）——這類 bug 的直接偵測器
+- [x] Runtime 驗證: VK readback 非零 ✓、texprobe acquired 讀非零（avgLuma 125.7）✓、host 視窗 PrintWindow 非黑（nonblack 100%、可見 Settings+鍵盤、有效 FPS 43）✓
+- [x] SelfTest 增加 host 視窗像素 gate（`host_window_nonblack_pct>=5`）
+- [x] ctest non-integration 23/23 PASS
+- [x] 文件: CLAUDE.md / CONTEXT.md / tasks/lessons.md / memory
+- [x] SelfTest（-Fast）+ 對抗式審查
+
+### Review
+
+- 決定性工具是兩支獨立 probe：`texprobe.exe`（D3D11 端讀 shared texture 像素，有/無 AcquireSync）與 `vkinterop.exe`（隔離重現 Vulkan→D3D11 匯入/寫入/跨 process 矩陣）。沒有它們，三層 bug 會被互相遮蔽（修一層看不到效果，容易誤判修錯）。
+- 教訓核心寫入 lessons.md：counters 全綠（VK_SUCCESS/sequence/fence/FPS）不代表像素有到；跨 API/跨 process 共享的唯一有效驗證是從消費端 API 讀回像素；顯示鏈每一跳要有各自的像素證據。
+- gl60「60fps」歷史數字需重新定性：過去量的是零幀 blit 的節奏。修復後 GLES 內容每幀多付 GL readback+VK upload（SwiftShader CPU），實測互動 UI 有效 43 FPS（真實內容、真實可見）。
+
+---
+
 ## 2026-07-02 Session 100 — -Fast 啟動黑屏根因修復 + 載入加速 + 1080p60 驗證
 
 ### 根因（已實證，2026-07-02）

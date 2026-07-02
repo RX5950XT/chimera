@@ -494,8 +494,10 @@ std::vector<std::string> buildEmulatorArgsForConfig(const VirtualMachineConfig &
     if (config.enableGrpc && !classicRuntime) {
         args.push_back("-grpc");
         args.push_back(std::to_string(config.grpcPort));
-        args.push_back("-idle-grpc-timeout");
-        args.push_back("300");
+        // No -idle-grpc-timeout: the shared-texture display path generates zero
+        // steady gRPC traffic, so the emulator's IdleInterceptor would shut the
+        // VM down after 300s of user inactivity. Orphan protection is already
+        // handled by the kill-on-close Job Object in ProcessLauncher.
     }
 
     std::vector<std::string> qemuArgs;

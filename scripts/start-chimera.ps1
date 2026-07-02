@@ -259,6 +259,23 @@ try {
             throw "self-test FAILED: home frame looks blank/black (bytes=$($homeStats.Bytes) nonblack=$([math]::Round($homeStats.NonBlackPercent,1))% spread=$($homeStats.LumaSpread))"
         }
 
+        # HOST WINDOW gate: the ADB screencap above only proves the GUEST rendered.
+        # The shared-texture window stayed black for 15 sessions while every
+        # guest-side/counter gate passed — assert the pixels the user actually sees.
+        $hostStats = $null
+        $hostGateDeadline = (Get-Date).AddSeconds(30)
+        while ((Get-Date) -lt $hostGateDeadline) {
+            try { $hostStats = Get-HostWindowPixelStats -Name "selftest_hostwindow" } catch { $hostStats = $null }
+            if ($null -ne $hostStats -and $hostStats.NonBlackPercent -ge 5.0) { break }
+            Start-Sleep -Seconds 2
+        }
+        if ($null -eq $hostStats) { throw "self-test FAILED: could not capture host window" }
+        Write-Host ("host_window_nonblack_pct={0:N1}" -f $hostStats.NonBlackPercent)
+        Write-Host "host_window_luma_spread=$($hostStats.LumaSpread)"
+        if ($hostStats.NonBlackPercent -lt 5.0) {
+            throw "self-test FAILED: host window shows a black guest display (nonblack=$([math]::Round($hostStats.NonBlackPercent,1))% spread=$($hostStats.LumaSpread)); guest rendered but frames are not visible on the host"
+        }
+
         # Interactivity proof: launch Settings, confirm it reaches the foreground.
         for ($i = 0; $i -lt 5; $i++) {
             Invoke-AdbQuiet -Args @("-s", $Serial, "shell", "am", "start", "-n", "com.android.settings/.Settings") | Out-Null

@@ -36,6 +36,8 @@ class ChimeraGfxstreamVulkanSharedTextureBridge {
     bool isDirectVkReady() const;
     void postFrameDirectGpu(const BorrowedImageInfoVk& src, VkExtent2D extent);
     bool postFrameCpu(const void* pixels, uint32_t width, uint32_t height, uint32_t strideBytes);
+    // Diagnostic: Vulkan-side readback of the imported shared image (low frequency).
+    void debugReadbackSharedImage(const VulkanDispatch& vk, VkExtent2D extent, int frameIndex);
 
    private:
     ChimeraGfxstreamVulkanSharedTextureBridge();

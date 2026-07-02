@@ -916,10 +916,9 @@ bool FrameBuffer::Impl::postImplSync(HandleType p_colorbuffer, bool needLockAndB
         chimeraPublishFrameToShmem(colorBuffer.get(), m_framebufferWidth, m_framebufferHeight);
     }
 '@
-    # Current design: direct GPU bridge via bridge.postFrameDirectGpu (no DisplayVk/CompositorVk/MSVCP140).
-    # Try Vulkan kVk path first (enabled when VulkanNativeSwapchain/GuestVulkanOnly makes ColorBuffers Vulkan-backed);
-    # fall back to synchronous GL readback if kVk borrow fails (GLES-backed normal mode).
-    $frameBufferHeadlessVkReplacement = @'
+    # Previous replacement (pre GL->VK content sync); kept as a needle so an
+    # already-patched tree upgrades in place.
+    $frameBufferHeadlessVkNeedlePreGlSync = @'
     colorBuffer->touch();
     if (m_subWin) {
         Post postCmd;
@@ -952,8 +951,53 @@ bool FrameBuffer::Impl::postImplSync(HandleType p_colorbuffer, bool needLockAndB
         }
     }
 '@
+    # Current design: direct GPU bridge via bridge.postFrameDirectGpu (no DisplayVk/CompositorVk/MSVCP140).
+    # CRITICAL: GLES-composited frames (SwiftShader-ES SurfaceFlinger) live in the GL
+    # backing; the kVk sibling image is stale until invalidateForVk() syncs GL->VK.
+    # Without the sync the blit copies a never-written VK image and the shared
+    # texture publishes all-zero frames (host window permanently black while all
+    # sequence/FPS counters look healthy). invalidateForVk() is a no-op when the
+    # ColorBuffer is VK-backed (mGlTexDirty false) so real Vulkan content stays zero-copy.
+    $frameBufferHeadlessVkReplacement = @'
+    colorBuffer->touch();
+    if (m_subWin) {
+        Post postCmd;
+        postCmd.cmd = PostCmd::Post;
+        postCmd.cb = colorBuffer.get();
+        postCmd.cbHandle = p_colorbuffer;
+        postCmd.colorTransform = GetColorTransform();
+        postCmd.completionCallback = std::make_unique<Post::CompletionCallback>(callback);
+        sendPostWorkerCmd(std::move(postCmd));
+        ret = AsyncResult::OK_AND_CALLBACK_SCHEDULED;
+    } else {
+        // Headless: no sub-window. Try Vulkan GPU path (requires VulkanNativeSwapchain feature
+        // so ColorBuffers are Vulkan-backed); fall back to synchronous GL readback otherwise.
+        ret = AsyncResult::OK_AND_CALLBACK_NOT_SCHEDULED;
+        auto& bridge = vk::ChimeraGfxstreamVulkanSharedTextureBridge::get();
+        if (bridge.isEnabled() && bridge.isDirectVkReady()) {
+            // GLES-composited content lives in the GL backing; sync it into the kVk
+            // sibling before borrowing or the blit publishes a never-written image.
+            // No-op for VK-backed ColorBuffers (keeps the zero-copy path).
+            colorBuffer->invalidateForVk();
+            auto borrowedImg = colorBuffer->borrowForDisplay(ColorBuffer::UsedApi::kVk);
+            if (borrowedImg) {
+                const auto* vkInfo = static_cast<const vk::BorrowedImageInfoVk*>(borrowedImg.get());
+                const uint32_t srcW = vkInfo->imageCreateInfo.extent.width;
+                const uint32_t srcH = vkInfo->imageCreateInfo.extent.height;
+                const VkExtent2D extent = {std::max(1920u, srcW), std::max(1080u, srcH)};
+                bridge.postFrameDirectGpu(*vkInfo, extent);
+            } else {
+                // kVk borrow failed (GLES-backed): fall back to synchronous GL readback.
+                chimeraPublishFrameToD3D11Texture(colorBuffer.get(), m_framebufferWidth, m_framebufferHeight);
+            }
+        } else {
+            chimeraPublishFrameToD3D11Texture(colorBuffer.get(), m_framebufferWidth, m_framebufferHeight);
+        }
+    }
+'@
     Replace-FirstAvailable $frameBuffer `
-        @($frameBufferHeadlessVkNeedleOrig, $frameBufferHeadlessVkNeedleIntermediate,
+        @($frameBufferHeadlessVkNeedlePreGlSync,
+          $frameBufferHeadlessVkNeedleOrig, $frameBufferHeadlessVkNeedleIntermediate,
           $frameBufferHeadlessVkNeedleVkCompOld, $frameBufferHeadlessVkNeedleLegacyVkComp,
           $frameBufferHeadlessVkNeedleDisplayVkOld) `
         $frameBufferHeadlessVkReplacement `
@@ -3512,6 +3556,28 @@ $frameBufferBlockFiles = @(
     (Join-Path $hostDir "FrameBuffer.cpp")
 ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
 foreach ($frameBufferPath in $frameBufferBlockFiles) {
+    # GL->VK content sync before the kVk borrow in the headless direct-GPU post.
+    # GLES-composited frames live in the GL backing; without invalidateForVk()
+    # the blit publishes a never-written VK image (all-zero shared texture, host
+    # window black, healthy-looking counters). No-op for VK-backed ColorBuffers.
+    Replace-Text $frameBufferPath @'
+        if (bridge.isEnabled() && bridge.isDirectVkReady()) {
+            static std::atomic<int> sBorrowTimingFrame{0};
+'@ @'
+        if (bridge.isEnabled() && bridge.isDirectVkReady()) {
+            // GLES-composited content (SwiftShader-ES SurfaceFlinger) lives in the
+            // GL backing; the kVk sibling image is stale until this GL->VK sync.
+            // Without it the blit publishes a never-written image: the shared
+            // texture stays all-zero (host window black) while every sequence/FPS
+            // counter looks healthy. flushFromGl() is needed first because the
+            // HWC compose path writes the target through host GL (CompositorGl)
+            // without ever marking mGlTexDirty — invalidateForVk() alone exits
+            // "clean" and syncs nothing. Both are no-ops when GL/VK share memory.
+            colorBuffer->flushFromGl();
+            colorBuffer->invalidateForVk();
+            static std::atomic<int> sBorrowTimingFrame{0};
+'@ "frame_buffer headless kVk GL->VK content sync"
+
     Replace-FirstAvailable $frameBufferPath @(@'
     std::future<void> blockPostWorker(std::future<void> continueSignal);
 '@) @'
@@ -3692,6 +3758,74 @@ void PostWorker::block(gfxstream::base::WorkerWaitable scheduledSignal,
 }
 '@ "post_worker block WorkerWaitable implementation"
     }
+}
+
+# --- color_buffer.cpp: invalidateForVk exit-path diagnostics -------------------
+# Low-frequency log of which gate short-circuits the GL->VK content sync that
+# feeds the headless direct-GPU post. This is the sync whose silent no-op made
+# the shared texture publish all-zero frames for 15 sessions.
+$colorBufferPath = Join-Path $hostDir "color_buffer.cpp"
+if (Test-Path -LiteralPath $colorBufferPath -PathType Leaf) {
+    Replace-Text $colorBufferPath @'
+#include "color_buffer.h"
+'@ @'
+#include "color_buffer.h"
+
+#include <atomic>
+#include <cstdio>
+'@ "color_buffer diag includes"
+
+    Replace-Text $colorBufferPath @'
+bool ColorBuffer::Impl::invalidateForVk() {
+    if (!(mColorBufferGl && mColorBufferVk)) {
+        return true;
+    }
+
+    if (mGlAndVkAreSharingExternalMemory) {
+        return true;
+    }
+
+    if (!mGlTexDirty) {
+        return true;
+    }
+
+'@ @'
+bool ColorBuffer::Impl::invalidateForVk() {
+    // chimera-diag: low-frequency exit-path log (which gate short-circuits the
+    // GL->VK content sync feeding the headless direct-GPU post).
+    static std::atomic<int> sChimeraInvalidateLog{0};
+    const bool chimeraLog = (sChimeraInvalidateLog.fetch_add(1) % 600 == 0);
+    if (!(mColorBufferGl && mColorBufferVk)) {
+        if (chimeraLog) {
+            std::fprintf(stderr, "[chimera-diag] invalidateForVk cb=%u exit=no-pair gl=%d vk=%d\n",
+                         mHandle, mColorBufferGl ? 1 : 0, mColorBufferVk ? 1 : 0);
+            std::fflush(stderr);
+        }
+        return true;
+    }
+
+    if (mGlAndVkAreSharingExternalMemory) {
+        if (chimeraLog) {
+            std::fprintf(stderr, "[chimera-diag] invalidateForVk cb=%u exit=shared-extmem\n", mHandle);
+            std::fflush(stderr);
+        }
+        return true;
+    }
+
+    if (!mGlTexDirty) {
+        if (chimeraLog) {
+            std::fprintf(stderr, "[chimera-diag] invalidateForVk cb=%u exit=clean\n", mHandle);
+            std::fflush(stderr);
+        }
+        return true;
+    }
+
+    if (chimeraLog) {
+        std::fprintf(stderr, "[chimera-diag] invalidateForVk cb=%u syncing GL->VK\n", mHandle);
+        std::fflush(stderr);
+    }
+
+'@ "color_buffer invalidateForVk exit diagnostics"
 }
 
 Write-Host "Applied Chimera gfxstream shared texture patch to $root"

@@ -111,6 +111,22 @@ private slots:
         QVERIFY(!containsArg(unsafeVm.buildEmulatorArgs(), "-no-window"));
     }
 
+    void grpcEnabledNeverRequestsIdleShutdown() {
+        // The shared-texture display path produces zero steady gRPC traffic, so
+        // -idle-grpc-timeout would make the emulator's IdleInterceptor shut the
+        // VM down after 300s of user inactivity (Session 101 black-screen +
+        // silent-death report). Orphan cleanup is the Job Object's job.
+        VirtualMachineConfig cfg;
+        cfg.name = "UnitTest";
+        cfg.avdName = "chimera_dev";
+
+        const VirtualMachine vm(cfg);
+        const auto args = vm.buildEmulatorArgs();
+
+        QVERIFY(containsArg(args, "-grpc"));
+        QVERIFY(!containsArg(args, "-idle-grpc-timeout"));
+    }
+
     void classicEmuglRuntimeUsesCompatibleFlags() {
         VirtualMachineConfig cfg;
         cfg.name = "UnitTest";

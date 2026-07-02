@@ -53,10 +53,18 @@ public:
 struct GuestDisplay::NativeD3D11TextureState {
 #ifdef Q_OS_WIN
     Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+    // Producer texture is created with D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX; a
+    // cross-process reader that never does AcquireSync gets stale/zero content
+    // (verified: no-acquire read = zeros while acquired read shows the frame).
+    // Each new sequence is copied under the keyed mutex into this private
+    // texture, which is what the scene graph actually samples.
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> privateCopy;
+    Microsoft::WRL::ComPtr<IDXGIKeyedMutex> keyedMutex;
 #endif
     QString name;
     QSize size;
     quint64 sequence = 0;
+    quint64 copiedSequence = 0;
     bool hasAlpha = false;
     bool uploadTexture = false;
 };
@@ -300,6 +308,15 @@ QSGNode *GuestDisplay::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) 
                                  << "srvProbe" << QStringLiteral("0x%1")
                                                        .arg(static_cast<quint32>(srvHr), 8, 16, QLatin1Char('0'));
                         state->texture = texture;
+                        texture.As(&state->keyedMutex);
+                        D3D11_TEXTURE2D_DESC copyDesc = desc;
+                        copyDesc.MiscFlags = 0;
+                        copyDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                        copyDesc.Usage = D3D11_USAGE_DEFAULT;
+                        copyDesc.CPUAccessFlags = 0;
+                        if (FAILED(device->CreateTexture2D(&copyDesc, nullptr, &state->privateCopy))) {
+                            qWarning() << "Shared D3D11 private copy texture creation failed";
+                        }
                         m_nativeD3D11State = std::move(state);
                     } else {
                         qWarning() << "OpenSharedResourceByName failed for"
@@ -309,8 +326,31 @@ QSGNode *GuestDisplay::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) 
                     }
                 }
             }
-            if (m_nativeD3D11State && m_nativeD3D11State->texture) {
-                nativeTexture = m_nativeD3D11State->texture.Get();
+            if (m_nativeD3D11State && m_nativeD3D11State->texture && m_nativeD3D11State->privateCopy) {
+                // Sample a private copy, not the shared texture: reads without the
+                // keyed mutex return stale/zero content cross-process, and the scene
+                // graph cannot hold the mutex across its render pass.
+                if (m_nativeD3D11State->copiedSequence != m_nativeD3D11TextureSequence) {
+                    auto *renderer = quickWindow->rendererInterface();
+                    auto *context = static_cast<ID3D11DeviceContext *>(
+                        renderer->getResource(quickWindow, QSGRendererInterface::DeviceContextResource));
+                    if (context) {
+                        bool acquired = false;
+                        if (m_nativeD3D11State->keyedMutex) {
+                            // WAIT_TIMEOUT (0x102) passes SUCCEEDED(); only S_OK means held.
+                            acquired = (m_nativeD3D11State->keyedMutex->AcquireSync(0, 4) == S_OK);
+                        }
+                        if (acquired || !m_nativeD3D11State->keyedMutex) {
+                            context->CopyResource(m_nativeD3D11State->privateCopy.Get(),
+                                                  m_nativeD3D11State->texture.Get());
+                            m_nativeD3D11State->copiedSequence = m_nativeD3D11TextureSequence;
+                        }
+                        if (acquired) {
+                            m_nativeD3D11State->keyedMutex->ReleaseSync(0);
+                        }
+                    }
+                }
+                nativeTexture = m_nativeD3D11State->privateCopy.Get();
             }
         }
 #else

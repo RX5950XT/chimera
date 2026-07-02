@@ -412,10 +412,15 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::ensureInitialized(
         return false;
     }
 
+    // The NT handle comes from IDXGIResource1::CreateSharedHandle, so it MUST be
+    // imported as a D3D11 texture. Importing it as OPAQUE_WIN32 "succeeds" on
+    // NVIDIA but does not alias the D3D11 allocation: every blit lands in
+    // driver-private memory and the shared texture stays all-zero (host window
+    // permanently black while sequence counters keep advancing).
     VkExternalMemoryImageCreateInfo externalImageCi = {
         .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
         .pNext = nullptr,
-        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT,
     };
     VkImageCreateInfo imageCi = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -466,13 +471,20 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::ensureInitialized(
     VkImportMemoryWin32HandleInfoKHR importInfo = {
         .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR,
         .pNext = nullptr,
-        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT,
         .handle = sharedHandle,
         .name = nullptr,
     };
+    // D3D11_TEXTURE imports require a dedicated allocation bound to the image.
+    VkMemoryDedicatedAllocateInfo dedicatedInfo = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+        .pNext = &importInfo,
+        .image = mImage,
+        .buffer = VK_NULL_HANDLE,
+    };
     VkMemoryAllocateInfo allocInfo = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .pNext = &importInfo,
+        .pNext = &dedicatedInfo,
         .allocationSize = reqs.size,
         .memoryTypeIndex = memoryType,
     };
@@ -502,6 +514,17 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::ensureInitialized(
     mD3D11SharedHandle = sharedHandle;
     mD3D11Context = nullptr;
     *static_cast<SharedD3D11TextureHeader*>(mView) = {};
+    if (vk.vkGetMemoryWin32HandlePropertiesKHR) {
+        VkMemoryWin32HandlePropertiesKHR handleProps = {
+            VK_STRUCTURE_TYPE_MEMORY_WIN32_HANDLE_PROPERTIES_KHR};
+        const VkResult propsRes = vk.vkGetMemoryWin32HandlePropertiesKHR(
+            device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT, sharedHandle,
+            &handleProps);
+        std::fprintf(stderr,
+                     "[chimera-gfxstream] D3D11 handle props res=%d bits=0x%x reqsBits=0x%x chosen=%u\n",
+                     propsRes, propsRes == VK_SUCCESS ? handleProps.memoryTypeBits : 0,
+                     reqs.memoryTypeBits, memoryType);
+    }
     std::fprintf(stderr,
                  "[chimera-gfxstream] GPU-direct D3D11 import OK %ux%u memType=%u\n",
                  extent.width, extent.height, memoryType);
@@ -809,6 +832,99 @@ bool ChimeraGfxstreamVulkanSharedTextureBridge::isDirectVkReady() const {
     return mDirectVkReady;
 }
 
+// Diagnostic: read one middle row of the imported shared image back through
+// Vulkan. Distinguishes "the blit never wrote" (zeros here) from "the write
+// landed but D3D11 consumers cannot see it" (nonzero here, zero via D3D11).
+void ChimeraGfxstreamVulkanSharedTextureBridge::debugReadbackSharedImage(
+    const VulkanDispatch& vk, VkExtent2D extent, int frameIndex) {
+#ifdef _WIN32
+    if (mImage == VK_NULL_HANDLE || mDirectDevice == VK_NULL_HANDLE) return;
+    const VkDeviceSize rowBytes = static_cast<VkDeviceSize>(extent.width) * 4;
+    VkBufferCreateInfo bufCi = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = rowBytes,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VkBuffer buf = VK_NULL_HANDLE;
+    if (vk.vkCreateBuffer(mDirectDevice, &bufCi, nullptr, &buf) != VK_SUCCESS) return;
+    VkMemoryRequirements bufReqs = {};
+    vk.vkGetBufferMemoryRequirements(mDirectDevice, buf, &bufReqs);
+    VkPhysicalDeviceMemoryProperties memProps = {};
+    vk.vkGetPhysicalDeviceMemoryProperties(mDirectPhysDev, &memProps);
+    uint32_t hostType = UINT32_MAX;
+    constexpr VkMemoryPropertyFlags kHost =
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i) {
+        if ((bufReqs.memoryTypeBits & (1u << i)) &&
+            (memProps.memoryTypes[i].propertyFlags & kHost) == kHost) { hostType = i; break; }
+    }
+    VkDeviceMemory bufMem = VK_NULL_HANDLE;
+    VkMemoryAllocateInfo bufAi = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = bufReqs.size,
+        .memoryTypeIndex = hostType,
+    };
+    if (hostType == UINT32_MAX ||
+        vk.vkAllocateMemory(mDirectDevice, &bufAi, nullptr, &bufMem) != VK_SUCCESS) {
+        vk.vkDestroyBuffer(mDirectDevice, buf, nullptr);
+        return;
+    }
+    vk.vkBindBufferMemory(mDirectDevice, buf, bufMem, 0);
+
+    vk.vkResetFences(mDirectDevice, 1, &mDirectFence);
+    vk.vkResetCommandBuffer(mDirectCommandBuffer, 0);
+    VkCommandBufferBeginInfo begin = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    vk.vkBeginCommandBuffer(mDirectCommandBuffer, &begin);
+    VkBufferImageCopy region = {
+        .bufferOffset = 0,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .imageOffset = {0, static_cast<int32_t>(extent.height / 2), 0},
+        .imageExtent = {extent.width, 1, 1},
+    };
+    vk.vkCmdCopyImageToBuffer(mDirectCommandBuffer, mImage, VK_IMAGE_LAYOUT_GENERAL,
+                              buf, 1, &region);
+    vk.vkEndCommandBuffer(mDirectCommandBuffer);
+    VkSubmitInfo submit = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &mDirectCommandBuffer,
+    };
+    {
+        android::base::AutoLock lock(*mDirectQueueLock);
+        vk.vkQueueSubmit(mDirectQueue, 1, &submit, mDirectFence);
+    }
+    vk.vkWaitForFences(mDirectDevice, 1, &mDirectFence, VK_TRUE, UINT64_MAX);
+
+    void* mapped = nullptr;
+    uint32_t nonZero = 0;
+    uint8_t sample[8] = {};
+    if (vk.vkMapMemory(mDirectDevice, bufMem, 0, rowBytes, 0, &mapped) == VK_SUCCESS && mapped) {
+        const uint8_t* px = static_cast<const uint8_t*>(mapped);
+        for (uint32_t x = 0; x < extent.width; x += 16) {
+            const uint8_t* p = px + static_cast<size_t>(x) * 4;
+            if (p[0] | p[1] | p[2] | p[3]) ++nonZero;
+        }
+        std::memcpy(sample, px + (static_cast<size_t>(extent.width) / 2) * 4, 4);
+        vk.vkUnmapMemory(mDirectDevice, bufMem);
+    }
+    std::fprintf(stderr,
+                 "[chimera-diag] vkReadback frame=%d midrow nonzero=%u/%u center=%u,%u,%u,%u\n",
+                 frameIndex, nonZero, extent.width / 16, sample[0], sample[1], sample[2],
+                 sample[3]);
+    std::fflush(stderr);
+    vk.vkDestroyBuffer(mDirectDevice, buf, nullptr);
+    vk.vkFreeMemory(mDirectDevice, bufMem, nullptr);
+#else
+    (void)vk; (void)extent; (void)frameIndex;
+#endif
+}
+
 void ChimeraGfxstreamVulkanSharedTextureBridge::postFrameDirectGpu(
     const BorrowedImageInfoVk& src, VkExtent2D extent) {
 #ifndef _WIN32
@@ -885,6 +1001,9 @@ void ChimeraGfxstreamVulkanSharedTextureBridge::postFrameDirectGpu(
     if (copied) {
         vk.vkWaitForFences(mDirectDevice, 1, &mDirectFence, VK_TRUE, UINT64_MAX);
         const auto tFence = std::chrono::steady_clock::now();
+        if (frameIndex == 2 || frameIndex % 240 == 0) {
+            debugReadbackSharedImage(vk, extent, frameIndex);
+        }
         publishFrame(extent);
         const auto tPublish = std::chrono::steady_clock::now();
         if (logTiming) {

@@ -13,9 +13,9 @@
 start-chimera.cmd
 ```
 
-- **預設（雙擊 `start-chimera.cmd`）**：最快可用路徑，等同 `start-chimera.ps1 -Fast -InteractiveFirst`。使用自訂 gfxstream shared-texture runtime + GuestVulkan/skiavk + normal priority；一般 Android UI 可見可互動。連續渲染內容（遊戲）走 GPU-direct 已驗證 1080p/60；true GuestVulkan verifier 的 sustained scroll 實測約 `effFps=40.3 / guestFps=48.6 / dup=0`，general-UI 全程 60 仍是 R&D。
+- **預設（雙擊 `start-chimera.cmd`）**：最快可用路徑，等同 `start-chimera.ps1 -Fast -InteractiveFirst`。使用自訂 gfxstream shared-texture runtime + `-feature Vulkan`（Vulkan app 直達實體 GPU）+ normal priority；一般 Android UI 可見可互動，互動實測有效約 **43 FPS**（Session 101）。
 - **`-Stock`（fallback）**：SDK emulator + gRPC 顯示路徑。一般 Android 首頁 / app 正常渲染、輸入完整，但 FPS 較低（push-based 內容約 4–17），只作保守 fallback / 診斷。
-- **`-Fast`（custom 60fps runtime）**：自訂 gfxstream shared-texture runtime，連續渲染內容（遊戲）走 `postFrameDirectGpu`（guest VK image → GPU blit → D3D11 shared texture）已通過嚴格可見 **1920×1080 / 60 FPS / 120 秒**驗證；一般 Android UI 會自動啟用 GuestVulkan/skiavk 並重開動畫。
+- **`-Fast`（custom shared-texture runtime）**：`postFrameDirectGpu`（GL→VK 內容同步 → GPU blit → D3D11 shared texture）。**Session 101 更正**：更早版本的「1080p/60 嚴格可見 PASS」量的是零幀 blit 節奏（shared texture 實際發佈全零、host 視窗黑）；修復三層 bug（compose 不標 dirty / OPAQUE import 無 aliasing / consumer 缺 AcquireSync）後畫面真實可見，GLES 內容每幀付 GL readback 同步成本，連續渲染 60 需 guest Vulkan-backed 內容（zero-copy 路徑，尚未單獨基準）。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-chimera.ps1 -Fast
@@ -57,8 +57,9 @@ Chimera (Host Windows, 單一 Qt6/QML 視窗)
   Input    InputBridge → emulator gRPC sendTouch/sendKey（console/QMP/ADB fallback）
   Display  ┌─ stock：headless emulator + gRPC getScreenshot（1920×1080，可用，低 FPS）
            └─ custom gfxstream runtime：
-                continuous content → postFrameDirectGpu（guest VK image → GPU blit → D3D11 shared texture）→ 60 FPS
-                normal UI（SurfaceFlinger GLES 合成）→ SwiftShader ES compositor（可見 / 可互動）
+                postFrameDirectGpu：GLES 合成內容先 GL→VK 同步（flushFromGl+invalidateForVk）
+                → GPU blit → D3D11 shared texture（keyed mutex）→ host 以 AcquireSync+私有副本取樣
+                （互動 UI 實測 ~43 eff FPS；Vulkan-backed 內容走 zero-copy 直通）
   Audio    WASAPI shared-mode
   Engine   Android Emulator / gfxstream / QEMU + WHPX（headless，-no-window）
               └─ Android guest（x86_64 + libndk_translation ARM→x86）
@@ -103,15 +104,15 @@ Chimera (Host Windows, 單一 Qt6/QML 視窗)
 
 ---
 
-## 現況與邊界（誠實版）
+## 現況與邊界（誠實版，Session 101）
 
-- **日常可用**：`start-chimera.cmd` 現在預設最快可用路徑（custom gfxstream + GuestVulkan/skiavk + normal priority），不是舊 stock gRPC 慢路徑。`-Stock` 只作保守 fallback / 診斷。
-- **Fast custom runtime**：`-Fast` 會 boot 到可見一般 UI，host 會套 `debug.renderengine.backend=skiavk` / `debug.hwui.renderer=skiavk` 並 framework restart，讓 HWUI + SurfaceFlinger 走硬體 Vulkan；GuestVulkan 時會重開 Android animations。
-- **1080p/60（synthetic）**：custom runtime 對**連續渲染內容**已驗證 `min 59.8 / avg 60.0 / dup 0`（`scripts\verify-true-1080p60.ps1`）。push-based 的開機動畫 / idle Home 本來就是低 FPS，屬正常。
-- **日常互動（真實量測）**：`scripts\verify-interactive-ui.ps1 -Mode Fast -GuestVulkan` 已修正 standalone 量測契約（會真的設 `CHIMERA_GUEST_VULKAN=1`，讓 emulator 啟用 `-feature Vulkan`）。detached baseline：`guestFps=48.6 / streamFps=40.5 / renderFps=40.3 / effFps=40.3 / dup=0 / bottleneck=render`；先前約 20fps 的 GuestVulkan 結論是 verifier 沒真開 Vulkan 的污染數字。adb swipe 只代表測試注入路徑，不能外推成實際滑鼠手感；禁止再用會搶實體滑鼠的 host mouse-drag probe。後續若要量 host input，需新增不移動實體游標的 internal synthetic touch hook。
-- **背景音樂干擾**：雙擊 `start-chimera.cmd` 會用 `-InteractiveFirst`（normal priority，最順但可能較影響 host audio）。需要保護背景音樂時改用 `start-chimera.ps1 -Fast -AudioFirst`。
-- **一般 UI 合成**：只設 app HWUI skiavk 不夠；SurfaceFlinger 也必須 skiavk 並 framework restart，否則會只剩背景/空 UI。ANGLE/D3D11 硬體 compositor 已確認會在 SurfaceFlinger draw 觸發 ANGLE `libGLESv2.dll` AV，暫不作正式路徑。
-- 真實遊戲 flow 受益於 direct-VK 路徑，但尚未逐一重測。
+- **日常可用**：`start-chimera.cmd` 預設最快可用路徑（custom gfxstream shared texture + `-feature Vulkan` + normal priority）。host 視窗真實可見、可互動，互動實測有效約 **43 FPS**。`-Stock` 只作保守 fallback / 診斷（~4–17 FPS）。
+- **歷史 60fps 宣稱已更正（Session 101）**：S85–S99 的 GPU-direct「1080p/60 嚴格可見 PASS」量的是**零幀 blit 的節奏**——shared texture 實際發佈全零、host 視窗全黑；當時所有 gate 只驗 guest 端 ADB 截圖與 host 端計數器。三層 bug（HWC compose 不標 `mGlTexDirty`→kVk image 空、`OPAQUE_WIN32` 匯入無 aliasing、consumer 缺 keyed-mutex AcquireSync）已全修，SelfTest 新增 host 視窗像素 gate（`host_window_nonblack_pct`）防再犯。
+- **GLES 內容的 FPS 上限**：SurfaceFlinger 由 SwiftShader-ES（軟體）合成，每幀需 GL readback + VK upload 同步才有真內容；連續渲染 60 posts/s 會超出同步預算（gl60 嚴格 gate 目前不通過）。真 60 需 guest **Vulkan-backed** 內容（zero-copy 直通，不付同步成本；尚未單獨基準）或 GL-VK 共享記憶體（SwiftShader 不支援）。
+- **skiavk UI 切換不可行（Session 100 定案）**：此 playstore user image 無 root，framework restart 必失敗，半套用＝app 視窗全黑；`CHIMERA_GUEST_VULKAN=1` 只等於 `-feature Vulkan`（Vulkan app/遊戲直達實體 GPU）。
+- **emulator idle 自殺已修（Session 101）**：`-idle-grpc-timeout 300` 已移除——shared-texture 顯示不走 gRPC，掛機 5 分鐘 VM 不再靜默關機。
+- **背景音樂干擾**：雙擊預設 `-InteractiveFirst`（normal priority，最順但較影響 host audio）；要保護背景音樂改用 `start-chimera.ps1 -Fast -AudioFirst`。
+- **量測紀律**：任何「可見」宣稱必須含 host 視窗像素證據（`Get-HostWindowPixelStats`）；guest ADB 截圖與 FPS 計數器在顯示鏈斷裂時仍會全綠。
 
 ---
 
