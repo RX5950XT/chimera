@@ -104,9 +104,10 @@ Chimera (Host Windows, 單一 Qt6/QML 視窗)
 
 ---
 
-## 現況與邊界（誠實版，Session 102）
+## 現況與邊界（誠實版，Session 104）
 
-- **日常可用**：`start-chimera.cmd` 預設最快可用路徑（custom gfxstream shared texture + `-feature Vulkan` + normal priority）。host 視窗真實可見、可互動，互動實測有效約 **43 FPS**（idle gap 大半是內容不變、guest 正確不重繪）。`-Stock` 只作保守 fallback / 診斷（~4–17 FPS）。
+- **日常可用**：`start-chimera.cmd` 預設最快可用路徑（custom gfxstream shared texture + `-feature Vulkan` + normal priority）。host 視窗真實可見、可互動；一般 UI 於此配置實測**穩定 ~57–60 FPS**（`pass-gpu-direct-60`、effMin 54）。`-Stock` 只作保守 fallback / 診斷（~4–17 FPS）。
+- **穩定 60 定調（Session 104）**：逐幀實測否證「host present 是天花板」——normal priority 下 host 端 1:1 追 guest（consumer 恆 0.1ms、非 vsync 量化）。負載掃描（gl60 heavyIters 0/48/128/256）證 **frame pacing 對負載不變**：每級整條管線 lockstep（`guest==stream==render`）、零掉幀零重複——重 GLES 填充只乾淨降到穩定較低幀率（SwiftShader CPU-fill floor），**不造成抖動**；Vulkan 遊戲直達 GPU 繞過此牆。瓶頸＝GL→VK readback 架構 floor，rock-solid 60 需 guest VK-native 合成（skiavk blocked）。144Hz 螢幕上 60fps 本質 2.4× pulldown judder，顯示端最平滑＝改 **120Hz**。
 - **畫面糊已修（Session 102）**：1080p texture 縮小顯示時 `QSGSimpleTextureNode` node-level filtering 預設 Nearest（且覆寫 per-texture 設定，原三處 `setFiltering()` 全 no-op）→ 文字筆畫殘缺。改 node `setFiltering(Linear)` + letterbox rect snap 到 device-pixel 格。縮小本質損失細節，完全銳利需 ≥1:1 顯示。
 - **60fps 定案為 frame-pacing boundary（Session 102）**：全鏈逐段計時實證 **~57fps 是 vsync 邊緣的 frame-pacing boundary，非單一可修瓶頸**——host consumer（AcquireSync+CopyResource）恆 **0.1ms**（最佳、零空間）、guest **34% CPU**（非 compute-bound），瓶頸在每幀 post 付 glReadPixels(3–4ms)+2 次 VK submit+wait 偶超 16.7ms。A/B 換 CPU-direct post 使 guest production 升乾淨 60.0 但 effective 仍 ~57（瓶頸只**位移**到 host windowed-DWM present，非消失）。真 60 需 guest **Vulkan-backed** 內容（消 readback，尚未單獨基準）**且** host present pacing 對齊——兩者缺一都停在 boundary。
 - **歷史 60fps 宣稱已更正（Session 101）**：S85–S99 的 GPU-direct「1080p/60 嚴格可見 PASS」量的是**零幀 blit 的節奏**——shared texture 實際發佈全零、host 視窗全黑；當時所有 gate 只驗 guest 端 ADB 截圖與 host 端計數器。三層 bug（HWC compose 不標 `mGlTexDirty`→kVk image 空、`OPAQUE_WIN32` 匯入無 aliasing、consumer 缺 keyed-mutex AcquireSync）已全修，SelfTest 新增 host 視窗像素 gate（`host_window_nonblack_pct`）防再犯。

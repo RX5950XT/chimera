@@ -2,7 +2,7 @@
 
 > 目前狀態快照。歷程與根因記錄見 `CONTEXT.md`；架構決策與 feature flags 見 `CLAUDE.md`。
 
-**日期**：2026-07-03（Session 102）
+**日期**：2026-07-04（Session 104）
 **Build**：Release PASS（MSVC + Qt 6.8.3）
 **Tests**：`ctest -LE integration` 23/23 PASS；3 integration tests 需 emulator 運行中
 
@@ -15,7 +15,7 @@
 
 ## 顯示路徑（-Fast，Session 101 修復後）
 
-`postFrameDirectGpu`：GLES 合成內容 `flushFromGl()+invalidateForVk()` GL→VK 同步 → GPU `recordCopy` blit → D3D11 NT shared texture（Vulkan `D3D11_TEXTURE_BIT`+dedicated import、keyed mutex）→ host `GuestDisplay` `AcquireSync(0)==S_OK` → 私有副本取樣。互動 UI 實測有效 **~43 FPS**（host 視窗真實可見，PrintWindow 像素驗證）。
+`postFrameDirectGpu`：GLES 合成內容 `flushFromGl()+invalidateForVk()` GL→VK 同步 → GPU `recordCopy` blit → D3D11 NT shared texture（Vulkan `D3D11_TEXTURE_BIT`+dedicated import、keyed mutex）→ host `GuestDisplay` `AcquireSync(0)==S_OK` → 私有副本取樣。host 視窗真實可見（PrintWindow 像素驗證）；一般 UI 於使用者一鍵配置（normal priority）實測**穩定 ~57–60 FPS**（Session 104；S101 首量 43 FPS 是 verifier 預設 below_normal 假象，見下方穩定 60 列）。
 
 **Session 101 重大更正**：shared texture 從 Session 85 起發佈的一直是零幀（compose 不標 dirty / OPAQUE import 無 aliasing / consumer 缺 AcquireSync 三層疊加）；歷來 gate 只驗 guest ADB screencap + host counters，所以「1080p/60 嚴格 PASS」（S85/89/99）全是零幀 blit 節奏，**不可引用**。三層已修，SelfTest 新增 host 視窗像素 gate（`host_window_nonblack_pct`）。另修 emulator idle 自殺（`-idle-grpc-timeout 300` 已移除）。
 
@@ -23,8 +23,8 @@
 
 | 限制 | 說明 |
 |------|------|
-| 60fps 是 frame-pacing boundary（Session 102 定案） | ~57fps 是 vsync 邊緣的 frame-pacing boundary，非單一可修瓶頸。逐段計時：host consumer（AcquireSync+CopyResource）恆 0.1ms（最佳）、guest 34% CPU（非 compute-bound）、瓶頸＝每幀 glReadPixels(3–4ms)+2 VK submit+wait 偶超 16.7ms。A/B 換 CPU-direct post 使 guest 升 60 但 effective 不變（位移到 host windowed-DWM present） |
-| 真 60 待驗 | 需 guest **Vulkan-backed** 內容（消 readback，尚未單獨基準）**且** host present pacing 對齊；兩者缺一都停在 boundary |
+| 穩定 60（Session 104 實測更正） | 使用者一鍵配置（`-InteractiveFirst`=normal priority）**已穩定 ~57–60**（`pass-gpu-direct-60`、effMin 54）。逐幀否證 S102「host present 天花板」：normal 下 host 端 1:1 追 guest、consumer 0.1ms、非 vsync 量化。**負載掃描（gl60 heavyIters 0/48/128/256）證 frame pacing 對負載不變**：每級 `guest==stream==render` lockstep、dup/drop=0、effMin≈effAvg——重 GLES 填充只乾淨降穩定幀率（60→13→5.5，SwiftShader CPU-fill floor）不造成 jitter，極端 256 才熔毀停產；Vulkan 遊戲繞過。移除生產 post hot-path 每 4s 診斷 readback（`CHIMERA_GFXSTREAM_DIAG_READBACK` gate，預設 off） |
+| 真 rock-solid 60 待驗 | 瓶頸＝GL→VK readback 架構 floor（SwiftShader-CPU-GL↔NVIDIA-VK CPU round-trip）；需 guest **Vulkan-backed** 內容（消 readback，skiavk 牆擋）。144Hz 上 60fps 本質 2.4× pulldown judder，顯示端最平滑＝改 120Hz |
 | 畫面糊已修（Session 102） | `QSGSimpleTextureNode` node-level filtering 預設 Nearest（覆寫 per-texture）→ 縮小顯示文字殘缺；改 node `setFiltering(Linear)` + device-pixel rect snap。縮小本質損失細節，完全銳利需 ≥1:1 |
 | skiavk UI 切換不可行 | playstore user image 無 root；三路（root restart / boot-prop / `ctl.restart`）全 probe 實證死路，禁止再試（Session 100 定案） |
 | stock gRPC 路徑低 FPS | ~4–17 FPS 為 unary `getScreenshot` 本質；僅作 fallback/診斷 |
