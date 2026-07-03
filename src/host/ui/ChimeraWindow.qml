@@ -632,32 +632,63 @@ ApplicationWindow {
                         }
                     }
 
-                    // Loading placeholder shown until Android is ready
+                    // Custom Chimera loading screen shown until Android is ready.
+                    // Covers the display area while !guestReady so the guest's
+                    // default (Pixel) boot animation is never seen. Wordmark +
+                    // indeterminate progress bar instead of a center icon.
                     Column {
                         anchors.centerIn: parent
-                        spacing: 14
+                        spacing: 20
+                        width: Math.min(parent.width * 0.5, 320)
                         visible: !root.guestReady
                         opacity: visible ? 1 : 0
                         Behavior on opacity { NumberAnimation { duration: 300 } }
 
-                        Rectangle {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            width: 44; height: 44; radius: 12
-                            gradient: Gradient {
-                                GradientStop { position: 0.0; color: theme.accent }
-                                GradientStop { position: 1.0; color: theme.accent2 }
-                            }
-                            Label {
-                                anchors.centerIn: parent
-                                text: "C"
-                                color: "#06110d"
-                                font.pixelSize: 24
-                                font.weight: Font.Black
-                            }
-                        }
                         Label {
                             anchors.horizontalCenter: parent.horizontalCenter
-                            text: qsTr("等待 Android 啟動…")
+                            text: qsTr("CHIMERA")
+                            color: theme.text
+                            font.pixelSize: 26
+                            font.weight: Font.Black
+                            font.letterSpacing: 4
+                        }
+
+                        ProgressBar {
+                            id: bootProgress
+                            width: parent.width
+                            indeterminate: true
+
+                            background: Rectangle {
+                                implicitHeight: 5
+                                radius: 3
+                                color: "#1c2630"
+                            }
+                            contentItem: Item {
+                                implicitHeight: 5
+                                clip: true
+                                Rectangle {
+                                    id: bootProgressPip
+                                    width: bootProgress.width * 0.35
+                                    height: parent.height
+                                    radius: 3
+                                    gradient: Gradient {
+                                        orientation: Gradient.Horizontal
+                                        GradientStop { position: 0.0; color: theme.accent }
+                                        GradientStop { position: 1.0; color: theme.accent2 }
+                                    }
+                                    SequentialAnimation on x {
+                                        running: bootProgress.visible
+                                        loops: Animation.Infinite
+                                        NumberAnimation { from: 0; to: bootProgress.width * 0.65; duration: 1100; easing.type: Easing.InOutQuad }
+                                        NumberAnimation { from: bootProgress.width * 0.65; to: 0; duration: 1100; easing.type: Easing.InOutQuad }
+                                    }
+                                }
+                            }
+                        }
+
+                        Label {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: qsTr("正在啟動 Android…")
                             color: theme.muted
                             font.pixelSize: 13
                             font.weight: Font.Medium
