@@ -2,21 +2,38 @@
 
 ---
 
-## 2026-07-02 Session 102 — 畫面糊根因修復（Nearest 縮小取樣）
+## 2026-07-02 Session 102 — 畫面糊修復（Part A）+ 60fps 全鏈拆帳定案（Part B）
 
-### 根因（已實證）
+### Part A — 畫面糊根因（已實證，修復完成）
 
-使用者回報 S101 修復後「性能顯著改善但畫面糊，1080p 會這麼糊嗎」。producer texture 實證 1920×1080 正確（log `size 1920 1080`）；糊在 host 呈現端：預設視窗 1480×860 扣側欄後 item ~0.65×，縮小 filtering 是 Nearest（丟整行整列像素→文字殘缺）。`QSGSimpleTextureNode` material filtering 預設 Nearest 且 render 時覆寫 per-texture `setFiltering()`——原三處 `texture->setFiltering()` 全是 no-op。
+使用者回報 S101 修復後「性能顯著改善但畫面糊，1080p 會這麼糊嗎」。producer texture 實證 1920×1080 正確；糊在 host 呈現端：預設視窗扣側欄後 item ~0.65×，縮小 filtering 是 Nearest（丟整行整列像素→文字殘缺）。`QSGSimpleTextureNode` material filtering 預設 Nearest 且 render 時覆寫 per-texture `setFiltering()`——原三處全 no-op。
+- [x] node `setFiltering(QSGTexture::Linear)` + 三處 `setRect` 經 `snapRectToDevicePixels()`
+- [x] Build + ctest 23/23 + SelfTest PASS；commit `a80dcee`
+- 殘餘：縮小本質損失細節（Linear 是柔和非殘缺）；完全銳利需 ≥1:1 或 guest 解析度跟隨視窗。
 
-### 修復項目（全部完成）
-- [x] `GuestDisplay.cpp`：node 建立時 `setFiltering(QSGTexture::Linear)`；移除三處 no-op per-texture 設定
-- [x] 三處 `setRect` 經 `snapRectToDevicePixels()`（letterbox 小數座標對齊 device-pixel 格）
-- [x] Build + ctest 23/23 + `-Fast -SelfTest` PASS（1920×1080、host_window_nonblack 100%、interactivity ok、0 residual）；host 截圖對比修復前文字平滑完整
-- [x] 文件：CONTEXT.md / lessons.md / todo.md；commit `a80dcee`
+### Part B — 60fps 不穩：逐段計時拆帳（定案 frame-pacing boundary）
 
-### Review
-- 60fps 不穩＝已知 GLES 同步成本邊界（S101 定性，~43 eff FPS），非回歸，不在本輪範圍。
-- 殘餘：縮小顯示本質損失細節（Linear 是柔和非殘缺）；完全銳利需 ≥1:1 顯示或未來 guest 解析度跟隨視窗。
+新增全鏈計時逐段取證，推翻先前假設：
+- **host consumer 恆 0.1ms（acquire+copy）＝最佳零空間**；guest **34% CPU 非 compute-bound**。
+- 互動 scroll 的「stall」是假象：gap `acquire=0.1/copy=0.1`、`worker gap≈paint gap`＝frame 沒被 produce，且貼 720ms gesture cycle＝內容不變 guest 正確不重繪（Settings 太短無法連續 scroll，量測大半 idle gap，高估不穩）。
+- gl60 連續負載真相：純 clear 振盪 **53-60/avg 57/avgMs 16.1-17.8/maxMs 24-33（無秒級 stall）**。瓶頸＝每幀 glReadPixels(3-4ms)+2 VK submit+wait 偶超 16.7ms vsync→miss。
+- **A/B（`CHIMERA_GFXSTREAM_FORCE_CPU_POST`）**：CPU-direct post（`readToBytes` 3.8-4.6ms）使 guest production 升乾淨 60.0，但 **effective 仍 avg 57.3/min 45.5**——瓶頸位移到 host windowed present（`guest=60 render=55`）。且 CPU-path 無 keyed mutex→tearing race。
+- **定案**：~57fps 是 vsync frame-pacing boundary，換 post path 只位移「誰 miss vsync」。真 60 需 guest Vulkan 內容（消 readback，被 skiavk 牆擋）+ host present pacing。
+
+修復/保留項目：
+- [x] 全鏈計時：producer 每段 + host `CHIMERA_HOST_FRAME_TIMING`（paintNode acquire/copy/sincePaint、worker event gap）
+- [x] `invalidateForVk` 重用 8MB readback buffer（消每幀 zero-init jitter）
+- [x] `chimeraPublishFrameToD3D11Texture` 1:1 用 `readToBytes`（省 resizer blit）
+- [x] A/B 實測 CPU-direct post（readToBytesScaled 8.6ms → readToBytes 4ms；guest 60、effective 不變）
+- [x] patch script sync（readToBytes + 修 include 重複 bug）；`FORCE_CPU_POST`/host-timing 為 tree-only diagnostics
+- [x] default VK path `-Fast -SelfTest` PASS 無回歸（host_window_nonblack 100%、luma 716、0 residual）
+- [x] 文件：CONTEXT / CLAUDE / lessons / todo / memory
+
+### 後續候選（未指派）
+- [ ] guest Vulkan-backed 內容 zero-copy 直通（消 producer readback）——被 skiavk 牆擋，需 CompositorVk 或 root image
+- [ ] host present pacing 對齊（windowed DWM vsync miss；fullscreen exclusive 或 present pacing 研究）
+- [ ] patch script fresh-clone diff 驗證（本輪只驗 idempotent re-apply + default SelfTest；S101 lesson 要求 fresh clone 確認落地）
+- [ ] 空機重測 boot 時間（S102 boot 87-104s 含連續 boot 噪音）
 
 ---
 

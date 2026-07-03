@@ -1,6 +1,16 @@
 # Chimera Lessons
 
-## 2026-07-02 — Session 102：QSGSimpleTextureNode 的 filtering 要設在 node 上，texture 上的會被覆寫
+## 2026-07-02 — Session 102b：60fps 拆帳——逐段計時定位瓶頸，別假設；瓶頸會「位移」不會「消失」
+
+- **掉幀先分「production gap」vs「consumer stall」，用逐跳計時判別**：互動 scroll 量到 43 個 gap（含一個 2967ms），第一反應是「host 管線 stall」——錯。加 `CHIMERA_HOST_FRAME_TIMING`（GuestDisplay `updatePaintNode` 的 `acquire/copy/sincePaint` + capture worker event gap）實證：每個 gap `acquire=0.1ms copy=0.1ms`（consumer 從不卡），`worker event gap≈paintNode sincePaint`（frame 根本沒被 produce）。**gap 是 production 空檔不是 consumer stall**。**Rule**：顯示鏈掉幀，先在 consumer 端量「我這幀處理花多久」vs「距上一幀多久」——若處理快但間隔大＝上游沒送幀，往 producer/內容查；別在 consumer 端瞎修。
+- **synthetic scroll 於短清單大半是 idle gap，會高估不穩定度**：Settings 太短、injector 45-tick(720ms) gesture cycle，gap 緊貼 720ms＝內容不變期間 guest 正確不重繪（push-based）。**Rule**：連續負載 fps 用 gl60（純 clear，無 idle 可能、隔離 fill）量；UI scroll 的低數字先扣掉 idle gap 才是真 cadence。「內容不變＝0 幀」是正確行為不是 bug。
+- **counters 全綠 + producer 健康 ≠ 沒問題；但 producer per-frame 快 ≠ 能穩 60**：producer `postFrameDirectGpu` 0.3-2.8ms、`glToVkSync` 4-10ms，好視窗穩 60.0——但整體只 avg 57。因為每幀 total（compose+readback+2×VK submit+wait+present）偶爾超 16.7ms vsync deadline→miss→54。**Rule**：60fps 是 per-frame **budget** 問題（每幀必須 <16.7ms，含所有階段串接），不是「平均夠快」問題；量 avg 沒用，要量 **maxMs / p99** 和 vsync miss。
+- **瓶頸會位移不會消失（frame-pacing boundary）**：A/B 換 CPU-direct post（`readToBytes` 4ms vs VK 5-12ms）使 guest production 升乾淨 60.0，但 effective 仍 57——瓶頸從 guest-readback 側**位移**到 host windowed-DWM present 側（`guest=60 render=55`）。**Rule**：當系統多個階段都貼在同一 deadline（vsync 16.7ms）邊緣、各自偶爾 miss，優化單一階段只會把「誰 miss」換人，不改 effective。要嘛消除某階段（guest Vulkan 消 readback），要嘛對齊 pacing——單點優化無效。承認 boundary 比繼續單點優化誠實。
+- **A/B 用 env gate 一次 build 比兩次 build 省**：`CHIMERA_GFXSTREAM_FORCE_CPU_POST` 讓同一 runtime 切兩條 post path，一次 rebuild 量兩組。但**跨 API 共享資源改 sync 模型要連帶想 correctness**：CPU-path texture 無 keyed mutex→跨 device tearing race（VK path 的 mutex 正是防此）；「更快但可能撕裂」不是淨勝，不可設預設。
+- **`QSGSimpleTextureNode` 縮放品質看 node filtering**（見下條 102a）；readback 成本看用哪個 read：`readToBytesScaled` 恆做 resizer blit（+~5ms）即使 1:1，`readToBytes` 直讀 FBO——1:1 該用後者。
+- **多次 boot 後機器會累積 flakiness**：連續 6+ 次 boot/build 後出現 boot timeout（180s 不到 boot_completed）+ 中途 freeze（producer log 健康到突然雙側齊停＝guest hang 非 post deadlock）。**Rule**：這類「跑一半 freeze / boot 超時」先疑環境（清 AVD lock、隔一下重跑），別急著歸因程式回歸；判別：freeze 前 producer 是否還在健康 log（是＝guest/環境 hang，否＝post 側卡）。
+
+## 2026-07-02 — Session 102a：QSGSimpleTextureNode 的 filtering 要設在 node 上，texture 上的會被覆寫
 
 - **`texture->setFiltering()` 對 `QSGSimpleTextureNode` 是 no-op**：render 時 `QSGOpaqueTextureMaterial` 會把自己的 filtering 套回 texture，material 預設 **Nearest** → 三處 per-texture 設定全部無效，1080p texture 縮到 ~0.65× 顯示時整行整列丟像素、文字筆畫殘缺（使用者回報「畫面糊」）。**Rule**：用 `QSGSimpleTextureNode` 時 filtering 一律 `node->setFiltering(...)`；任何「設定看起來有寫但行為像預設值」先查框架是否在後面覆寫。
 - **縮放顯示的 texture 用 Linear**：1:1 對齊時 Linear 取樣 texel 中心＝Nearest（無損），縮放時遠優於 Nearest；letterbox 置中會產生小數座標，rect 要 snap 到 device-pixel 格避免 1:1 時半像素模糊。

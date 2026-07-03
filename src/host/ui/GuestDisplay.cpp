@@ -13,6 +13,7 @@
 #include <QtQuick/qsgtexture_platform.h>
 #include <QDebug>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include "InputBridge.h"
 
@@ -352,11 +353,21 @@ QSGNode *GuestDisplay::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) 
                     auto *context = static_cast<ID3D11DeviceContext *>(
                         renderer->getResource(quickWindow, QSGRendererInterface::DeviceContextResource));
                     if (context) {
+                        // Diagnostics: this runs on the render thread; in Qt's threaded
+                        // render loop the GUI thread is blocked in sync() meanwhile, so a
+                        // stall here shows up as BOTH guest and render FPS dropping. Time
+                        // the acquire and the copy to localize host-side hitches.
+                        static const bool kTiming = qEnvironmentVariableIsSet("CHIMERA_HOST_FRAME_TIMING");
+                        std::chrono::steady_clock::time_point tAcq0, tAcq1, tCopy1;
+                        if (kTiming) tAcq0 = std::chrono::steady_clock::now();
                         bool acquired = false;
+                        HRESULT acqHr = S_OK;
                         if (m_nativeD3D11State->keyedMutex) {
                             // WAIT_TIMEOUT (0x102) passes SUCCEEDED(); only S_OK means held.
-                            acquired = (m_nativeD3D11State->keyedMutex->AcquireSync(0, 4) == S_OK);
+                            acqHr = m_nativeD3D11State->keyedMutex->AcquireSync(0, 4);
+                            acquired = (acqHr == S_OK);
                         }
+                        if (kTiming) tAcq1 = std::chrono::steady_clock::now();
                         if (acquired || !m_nativeD3D11State->keyedMutex) {
                             context->CopyResource(m_nativeD3D11State->privateCopy.Get(),
                                                   m_nativeD3D11State->texture.Get());
@@ -364,6 +375,29 @@ QSGNode *GuestDisplay::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) 
                         }
                         if (acquired) {
                             m_nativeD3D11State->keyedMutex->ReleaseSync(0);
+                        }
+                        if (kTiming) {
+                            tCopy1 = std::chrono::steady_clock::now();
+                            const auto ms = [](auto a, auto b) {
+                                return std::chrono::duration<double, std::milli>(b - a).count();
+                            };
+                            static std::chrono::steady_clock::time_point sLastPaint;
+                            static bool sHavePaint = false;
+                            const double sincePaint = sHavePaint ? ms(sLastPaint, tCopy1) : 0.0;
+                            sLastPaint = tCopy1;
+                            sHavePaint = true;
+                            const double acqMs = ms(tAcq0, tAcq1);
+                            const double copyMs = ms(tAcq1, tCopy1);
+                            if (sincePaint > 60.0 || acqMs > 5.0 || copyMs > 5.0) {
+                                qWarning().noquote()
+                                    << QStringLiteral("[chimera-hosttiming] paintNode sincePaint=%1ms acquire=%2ms(hr=0x%3 got=%4) copy=%5ms seq=%6")
+                                           .arg(sincePaint, 0, 'f', 1)
+                                           .arg(acqMs, 0, 'f', 1)
+                                           .arg(static_cast<quint32>(acqHr), 0, 16)
+                                           .arg(acquired ? 1 : 0)
+                                           .arg(copyMs, 0, 'f', 1)
+                                           .arg(m_nativeD3D11TextureSequence);
+                            }
                         }
                     }
                 }

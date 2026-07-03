@@ -7,13 +7,30 @@
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 **引擎決策（最重要）**：生產引擎 = `emulator.exe`（Google QEMU+WHPX fork）；`--qemu-backend`（stock QEMU 11 + Cuttlefish）與 `--hcs-backend`（Hyper-V HCS）= legacy R&D，保留不刪。BlueStacks 輸入路徑更正：`BstkDrv.sys` 是 network/filter driver 非 input driver；BlueStacks 走 `HD-Bridge-Native.dll` → virtio-input，Chimera 等效路徑是 emulator gRPC + Console `event` protocol。
 
-## 2026-07-02 — Session 102 — 畫面糊根因修復（Nearest 縮小取樣）
+## 2026-07-02 — Session 102 — 畫面糊根因修復 + 60fps 不穩全鏈拆帳（frame-pacing boundary 定案）
+
+### Part A — 畫面糊根因修復（Nearest 縮小取樣）
 
 - **使用者回報**（S101 修復後）：性能顯著改善但不穩 60fps、畫面糊（「1080p 會這麼糊嗎」）。
 - **根因（糊）**：producer 端 texture 實證 1920×1080 無誤（log `size 1920 1080 format 28`）；糊在 host 呈現端——預設視窗 1480×860 扣側欄/工具列後 GuestDisplay item 只有約 0.65×，1080p texture 縮小顯示時 filtering 是 **Nearest**（整行整列丟像素→文字筆畫殘缺）。**陷阱**:`QSGSimpleTextureNode` 的 material filtering 預設 Nearest 且 render 時會覆寫 per-texture `setFiltering()`——原代碼三處 `texture->setFiltering()` 全是 no-op，必須設在 node 上。
 - **修復**（`GuestDisplay.cpp`，commit `a80dcee`）：node 建立時 `setFiltering(QSGTexture::Linear)`（1:1 對齊時 Linear 取樣 texel 中心＝Nearest，無損）；三處 `setRect` 改經 `snapRectToDevicePixels()`（letterbox 置中的小數座標對齊 device-pixel 格，消除 1:1 時半像素模糊）。
 - **驗證**：build + ctest 23/23 + `-Fast -InteractiveFirst -SelfTest` PASS（1920×1080、`host_window_nonblack_pct=100`、interactivity ok、0 residual）；host 視窗截圖對比修復前——文字/圖示邊緣平滑完整。
-- **殘餘限制（誠實）**：縮小顯示本質上會損失細節，Linear 只是把「殘缺」變「柔和」；要完全銳利需視窗 ≥1:1 顯示（全螢幕於 ≥1080p 內容區）或未來做 guest 解析度跟隨視窗。60fps 不穩＝已知 GLES 同步成本邊界（見 S101），非回歸。
+- **殘餘限制（誠實）**：縮小顯示本質上會損失細節，Linear 只是把「殘缺」變「柔和」；要完全銳利需視窗 ≥1:1 顯示（全螢幕於 ≥1080p 內容區）或未來做 guest 解析度跟隨視窗。
+
+### Part B — 60fps 不穩：全鏈逐段計時拆帳，定案為 frame-pacing boundary（非單一可修瓶頸）
+
+新增全鏈計時（producer 每段、host consumer paintNode `acquire/copy/sincePaint`、capture worker event gap；後兩者 `CHIMERA_HOST_FRAME_TIMING=1` gate）逐段取證，**推翻多個先前假設**：
+
+- **假設 1（producer post 太慢）→ 否**：`postFrameDirectGpu` total 0.3-2.8ms（max 126ms 單次）、`glToVkSync` 4-10ms（max 14.9ms）。好視窗穩 60.0（avgMs 16.1）。producer 每幀成本遠低於 16.7ms。
+- **假設 2（互動 scroll 有秒級 stall）→ 否，是量測假象**：synthetic Settings scroll 量到 43 個 gap（多數 300-750ms、一個 2967ms），但 host timing 顯示每個 gap `acquire=0.1ms copy=0.1ms`——**host consumer 從不卡**；gap 是 frame **production** 空檔（`worker event gap≈paintNode sincePaint`），且緊貼 720ms gesture cycle（injector 45 tick×16ms）。**內容不變＝guest 正確不重繪**（push-based），非管線 stall。Settings 太短無法連續 scroll，所以 synthetic 測量大半是 idle gap，**高估不穩定度**。
+- **host consumer 端證實最佳**：`AcquireSync + CopyResource` 恆 **0.1ms + 0.1ms**，零優化空間。
+- **guest 非 compute-bound**：`qemuCpuPctAvg=34.5 max=46.3`。
+- **gl60 連續負載真相（無 idle gap）**：純 `glClear` 連續渲染振盪 **53.4-60.3、avg ~57、avgMs 16.1-17.8、maxMs 24-33（無秒級 stall）**。根因＝每幀 post 付 glReadPixels(~3-4ms) + **2 次同步 VK submit+wait**（`invalidateForVk` staging→image、`postFrameDirectGpu` blit→shared），偶爾單幀超過 16.7ms vsync deadline→miss→掉到 54。
+- **A/B 實驗（CPU-direct post vs VK-blit post）**：因 SF 走 SwiftShader-ES GL 合成（skiavk 停用），post target 永遠 GL-backed，VK path「zero-copy」是假的。加 `CHIMERA_GFXSTREAM_FORCE_CPU_POST=1` 走 CPU 路徑（`readToBytes` GL readback→`postFrameCpu` D3D11 UpdateSubresource，無 VK wait）。lean `readToBytes` 每幀僅 **3.8-4.6ms**（vs `readToBytesScaled` 8.6ms〔resizer blit〕、vs VK 5-12ms），**guest production 升到乾淨 60.0**——但 **effective 仍 avg 57.3/min 45.5/max 60.3，與 VK 相同**：瓶頸只是**位移**到 host present（`guest=60.0 render=55`，windowed DWM vsync miss）。且 CPU-path texture 無 keyed mutex→跨 device tearing race（VK path 的 mutex 正是防此）。
+- **定案**：**~57fps 是 vsync 邊緣的 frame-pacing boundary，非單一可修瓶頸**——換 post path 只是位移「哪一側 miss vsync」（guest software readback 側 ↔ host windowed present 側）。要 rock-solid 60 需 guest **Vulkan-backed** 內容（無 readback，消除 producer 側 3-4ms）**且** host present pacing 對齊——前者被 skiavk 牆擋（S100 定案），後者屬 windowed DWM present 固有 jitter。
+- **本輪保留改動**（current runtime，SelfTest PASS 無回歸）：① `invalidateForVk` 重用 8MB readback buffer（消每幀 zero-init jitter）；② `chimeraPublishFrameToD3D11Texture` 1:1 用 `readToBytes`（省 resizer blit，改善 GLES fallback）；③ 全鏈計時 diagnostics（host 端 gate `CHIMERA_HOST_FRAME_TIMING`）。`CHIMERA_GFXSTREAM_FORCE_CPU_POST` 為 tree-only 實驗旗標（有 tearing 風險、非淨勝、未進 patch script；預設 off，default VK path 不受影響）。
+- **驗證**：default VK path `-Fast -SelfTest` PASS（`boot=104s` 環境噪音、`host_window_nonblack_pct=100`、`luma_spread=716`、interactivity ok、0 residual）。
+- **量測紀律新增**：synthetic scroll 於短清單（Settings）大半是 idle gap，不能當「不穩定」證據；連續負載用 gl60（純 clear，隔離 fill）；任何 fps 掉幀先分「production gap（內容不變/guest）」vs「consumer stall（host paintNode）」——用 `CHIMERA_HOST_FRAME_TIMING` 的 `sincePaint` vs `acquire/copy` 判別。
 
 ## 2026-07-02 — Session 101 — `-Fast` host 視窗黑屏三層根因全修 + emulator idle 自殺修復
 

@@ -121,6 +121,11 @@ void SharedD3D11TextureCapture::stop() {
 void SharedD3D11TextureCapture::workerLoop() {
 #ifdef _WIN32
     const DWORD timeoutMs = static_cast<DWORD>(qMax(1, m_intervalMs));
+    // Diagnostics: gap between successive event-driven frame deliveries. If this
+    // stays ~16ms while the host FPS drops, the producer is fine and the stall is
+    // downstream (GUI/render thread); if it grows, the producer SetEvent is late.
+    static const bool kTiming = qEnvironmentVariableIsSet("CHIMERA_HOST_FRAME_TIMING");
+    auto lastDeliver = std::chrono::steady_clock::now();
     while (!m_stopRequested.load(std::memory_order_acquire)) {
         if (m_frameEvent) {
             const DWORD wait = WaitForSingleObject(static_cast<HANDLE>(m_frameEvent), timeoutMs);
@@ -133,6 +138,14 @@ void SharedD3D11TextureCapture::workerLoop() {
             }
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(timeoutMs));
+        }
+        if (kTiming) {
+            const auto now = std::chrono::steady_clock::now();
+            const double gapMs = std::chrono::duration<double, std::milli>(now - lastDeliver).count();
+            lastDeliver = now;
+            if (gapMs > 60.0)
+                qWarning().noquote()
+                    << QStringLiteral("[chimera-hosttiming] worker event gap=%1ms").arg(gapMs, 0, 'f', 1);
         }
         readFrame();
     }

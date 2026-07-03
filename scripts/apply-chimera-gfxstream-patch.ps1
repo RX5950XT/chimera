@@ -770,10 +770,19 @@ static void chimeraPublishFrameToD3D11Texture(ColorBuffer* cb, int fbW, int fbH)
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&t0);
 
-    Rect fullRect = {{0, 0}, {static_cast<int>(width), static_cast<int>(height)}};
-    cb->readToBytesScaled(static_cast<int>(width), static_cast<int>(height), /*rotation=*/0,
-                           fullRect, GfxstreamFormat::R8G8B8A8_UNORM,
-                           s_pixels.data(), /*colorTransform=*/{});
+    // Prefer a plain readback when the ColorBuffer already matches the shared
+    // texture extent: readToBytesScaled() always runs a full-screen resize/rotate
+    // blit (m_resizer->update + a second FBO) even at 1:1, adding ~5ms of pure
+    // overhead per frame. readToBytes() reads the ColorBuffer's own FBO directly.
+    if (cb->getWidth() == width && cb->getHeight() == height) {
+        cb->readToBytes(0, 0, static_cast<int>(width), static_cast<int>(height),
+                        GfxstreamFormat::R8G8B8A8_UNORM, s_pixels.data(), bytes);
+    } else {
+        Rect fullRect = {{0, 0}, {static_cast<int>(width), static_cast<int>(height)}};
+        cb->readToBytesScaled(static_cast<int>(width), static_cast<int>(height), /*rotation=*/0,
+                              fullRect, GfxstreamFormat::R8G8B8A8_UNORM,
+                              s_pixels.data(), /*colorTransform=*/{});
+    }
     vk::ChimeraGfxstreamVulkanSharedTextureBridge::get().postFrameCpu(
         s_pixels.data(), width, height, width * 4u);
 
@@ -3772,6 +3781,7 @@ if (Test-Path -LiteralPath $colorBufferPath -PathType Leaf) {
 #include "color_buffer.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 '@ "color_buffer diag includes"
 
@@ -3826,6 +3836,154 @@ bool ColorBuffer::Impl::invalidateForVk() {
     }
 
 '@ "color_buffer invalidateForVk exit diagnostics"
+
+    Replace-Text $colorBufferPath @'
+    bool mGlAndVkAreSharingExternalMemory = false;
+    bool mGlTexDirty = false;
+};
+'@ @'
+    bool mGlAndVkAreSharingExternalMemory = false;
+    bool mGlTexDirty = false;
+    // Chimera: reused GL readback scratch for the headless GL->VK content sync;
+    // a fresh zero-initialized vector costs an extra 8MB memset per 1080p frame
+    // on the guest-blocking post path.
+    std::vector<uint8_t> mChimeraGlReadbackBuffer;
+};
+'@ "color_buffer reused readback buffer member"
+
+    Replace-Text $colorBufferPath @'
+#if GFXSTREAM_ENABLE_HOST_GLES
+    std::size_t contentsSize = 0;
+    if (!mColorBufferGl->readContents(&contentsSize, nullptr)) {
+        GFXSTREAM_ERROR("Failed to get GL contents size for ColorBuffer:%d", mHandle);
+        return false;
+    }
+
+    std::vector<uint8_t> contents(contentsSize, 0);
+
+    if (!mColorBufferGl->readContents(&contentsSize, contents.data())) {
+        GFXSTREAM_ERROR("Failed to get GL contents for ColorBuffer:%d", mHandle);
+        return false;
+    }
+
+    if (!mColorBufferVk->updateFromBytes(contents)) {
+        GFXSTREAM_ERROR("Failed to set VK contents for ColorBuffer:%d", mHandle);
+        return false;
+    }
+#endif
+    mGlTexDirty = false;
+    return true;
+}
+'@ @'
+#if GFXSTREAM_ENABLE_HOST_GLES
+    const auto tSync0 = std::chrono::steady_clock::now();
+    std::size_t contentsSize = 0;
+    if (!mColorBufferGl->readContents(&contentsSize, nullptr)) {
+        GFXSTREAM_ERROR("Failed to get GL contents size for ColorBuffer:%d", mHandle);
+        return false;
+    }
+
+    if (mChimeraGlReadbackBuffer.size() != contentsSize) {
+        mChimeraGlReadbackBuffer.resize(contentsSize);
+    }
+
+    if (!mColorBufferGl->readContents(&contentsSize, mChimeraGlReadbackBuffer.data())) {
+        GFXSTREAM_ERROR("Failed to get GL contents for ColorBuffer:%d", mHandle);
+        return false;
+    }
+    const auto tRead = std::chrono::steady_clock::now();
+
+    if (!mColorBufferVk->updateFromBytes(mChimeraGlReadbackBuffer)) {
+        GFXSTREAM_ERROR("Failed to set VK contents for ColorBuffer:%d", mHandle);
+        return false;
+    }
+
+    static std::atomic<int> sChimeraSyncTiming{0};
+    if (sChimeraSyncTiming.fetch_add(1) % 120 == 0) {
+        const auto tUpload = std::chrono::steady_clock::now();
+        const auto ms = [](auto a, auto b) {
+            return std::chrono::duration<double, std::milli>(b - a).count();
+        };
+        std::fprintf(stderr,
+                     "[chimera-timing] glToVkSync cb=%u read=%.1fms upload=%.1fms total=%.1fms\n",
+                     mHandle, ms(tSync0, tRead), ms(tRead, tUpload), ms(tSync0, tUpload));
+        std::fflush(stderr);
+    }
+#endif
+    mGlTexDirty = false;
+    return true;
+}
+'@ "color_buffer invalidateForVk reused buffer + timing"
+}
+
+# --- frame_buffer.cpp (modern): guest-blocking compose/post wall-time timing ---
+# The guest HWC present waits for compose (PostWorker) then runs the headless
+# publish inline; this split shows which side eats the frame budget.
+$modernFrameBufferTiming = Join-Path $hostDir "frame_buffer.cpp"
+if (Test-Path -LiteralPath $modernFrameBufferTiming -PathType Leaf) {
+    Replace-Text $modernFrameBufferTiming @'
+bool FrameBuffer::Impl::compose(uint32_t bufferSize, void* buffer, bool needPost) {
+    bool done = false;
+'@ @'
+bool FrameBuffer::Impl::compose(uint32_t bufferSize, void* buffer, bool needPost) {
+    const auto tComposeStart = std::chrono::steady_clock::now();
+    bool done = false;
+'@ "frame_buffer compose timing start"
+
+    Replace-Text $modernFrameBufferTiming @'
+    if (composeRes.CallbackScheduledOrFired()) {
+        gfxstream::base::AutoLock lk(doneLock);
+        doneCv.wait(&lk, [&] { return done; });
+    }
+
+#ifdef CONFIG_AEMU
+'@ @'
+    if (composeRes.CallbackScheduledOrFired()) {
+        gfxstream::base::AutoLock lk(doneLock);
+        doneCv.wait(&lk, [&] { return done; });
+    }
+    const auto tComposeDone = std::chrono::steady_clock::now();
+
+#ifdef CONFIG_AEMU
+'@ "frame_buffer compose timing mid"
+
+    Replace-Text $modernFrameBufferTiming @'
+            default: {
+                return false;
+            }
+        }
+    }
+#endif
+
+    return true;
+}
+
+AsyncResult FrameBuffer::Impl::composeWithCallback(uint32_t bufferSize, void* buffer,
+'@ @'
+            default: {
+                return false;
+            }
+        }
+    }
+#endif
+
+    static std::atomic<int> sChimeraComposeTiming{0};
+    if (sChimeraComposeTiming.fetch_add(1) % 120 == 0) {
+        const auto tEnd = std::chrono::steady_clock::now();
+        const auto ms = [](auto a, auto b) {
+            return std::chrono::duration<double, std::milli>(b - a).count();
+        };
+        std::fprintf(stderr,
+                     "[chimera-timing] guestCompose: compose=%.1fms post=%.1fms total=%.1fms\n",
+                     ms(tComposeStart, tComposeDone), ms(tComposeDone, tEnd),
+                     ms(tComposeStart, tEnd));
+        std::fflush(stderr);
+    }
+    return true;
+}
+
+AsyncResult FrameBuffer::Impl::composeWithCallback(uint32_t bufferSize, void* buffer,
+'@ "frame_buffer compose timing log"
 }
 
 Write-Host "Applied Chimera gfxstream shared texture patch to $root"
