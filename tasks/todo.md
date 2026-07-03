@@ -10,19 +10,21 @@
 - [x] ChimeraWindow.qml：載入 placeholder 拿掉中間漸層「C」圖標，改 CHIMERA 字標 + 客製 indeterminate 進度條（綠色漸層 pip 掃動）+「正在啟動 Android…」。placeholder 全程覆蓋顯示區＝看不到 guest 預設 Pixel 開機動畫。
 - [x] 驗證：`chimera-ui --no-emulator`（guestReady 恆 false→placeholder 持續顯示）PrintWindow 截圖確認進度條、無中間圖標。
 
-### Fix 1 — 手勢列閃爍：初始假設被自己的取證否證，改定調 host present-timing
-- 初始假設（錯）：開機強制 `policy_control immersive.navigation=*` 讓 SystemUI 隱藏/顯示互鬥製造 relayout 閃爍。
-- 否證（guest 側完全靜態，兩個程式化測試）：
-  - [x] guest ADB screencap ×7 + host PrintWindow ×14（HOME+Settings）手勢列區域全 byte-identical（spread=0）。
-  - [x] `dumpsys SurfaceFlinger --latency "NavigationBar0#N"` 三階段（FIXED / 強制 immersive / REFIXED）幀數皆 **0/3s**＝layer 從不重繪，強制 immersive 零效果 → `policy_control` 在此 image 已無作用（沒隱藏也沒閃爍）。
-- 定調：閃爍不在 guest、也不在 Qt 算好的 frame（PrintWindow byte-identical）＝**純 host present/掃描時序 artifact**（= S102 ~57fps windowed-DWM frame-pacing boundary，落在細白橫條）。內容截圖工具本質抓不到。
-- [x] main.cpp：移除 dead 的 `put policy_control immersive.navigation=*`（no-op）+ `delete global policy_control` 清舊 AVD 殘值 ＝ **清理非閃爍修復**。
-- [ ] **使用者驗證桿**：全螢幕（F11，繞過 windowed DWM 合成）閃爍是否停 → 停＝確認 present-timing、收斂到 windowed present-pacing 修法（S102 hard open item）；仍閃＝往 monitor refresh beat / Qt swapchain present 模式查。
+### Fix 1 — 手勢列閃爍：定調 host present pulldown（144Hz），修轉場觸發點（動畫關）
+- 初始假設（錯，已否證）：`policy_control immersive.navigation` relayout 閃爍。兩測試證 guest 側完全靜態：
+  - [x] guest ADB screencap ×7 + host PrintWindow ×14 + post-DWM 螢幕擷取 手勢列區域全 byte-identical。
+  - [x] `dumpsys SurfaceFlinger --latency "NavigationBar0#N"` 三階段幀數皆 **0/3s**、強制 immersive 零效果 → `policy_control` 在此 image 無作用。
+- 定調：使用者螢幕 **144Hz**（`Win32_VideoController.CurrentRefreshRate=144`）；guest ~57-60fps 內容於 144Hz＝2.4× 不規則 pulldown judder，細白橫條最明顯。內容截圖抓不到（讀合成幀非掃描時序）。
+- 使用者回答：閃爍「主要在切換 app／回主畫面時」＝視窗轉場動畫。根因＝`-Fast`（GuestVulkan）把動畫 scale 從 0 開回 1（S99 理由已失效）。
+- [x] **修法 main.cpp：移除 GuestVulkan 動畫 re-enable，動畫維持關**（轉場即時、無動畫運動＝無 judder；減少 idle 重繪）。
+- [x] 實證（新 build 副螢幕 -Fast）：animation scale ×3 皆 0、HOME→Settings 轉場 distinct-frame=3（即時）、host 視窗 nonblack 100% 無回歸。
+- [x] 另計清理：移除 dead `policy_control` 設定。
+- [ ] **使用者目視確認**「切換 app／回主畫面」不再閃（present artifact 無法截圖自證）。殘留 idle pulldown＝S102 host-present boundary（全螢幕/present-pacing）。
 
 ### Build/驗證
-- [x] `cmake --build build --config Release --target chimera-ui` PASS（QML 編進 qrc 無錯）。
-- [x] 真 boot ×2（-Fast）：app 開機、guest boot_completed、HOME/Settings 於 host 視窗正常渲染（有截圖）＝無回歸。
-- [x] 文件：CLAUDE/CONTEXT/lessons/todo（本檔）誠實化。commit（push 待確認）。
+- [x] `cmake --build build --config Release --target chimera-ui` PASS（含動畫關改動）。
+- [x] 真 boot（-Fast，副螢幕 DISPLAY2 @ -2560）：boot_completed、動畫 scale 0、轉場即時、host 視窗渲染 nonblack 100%＝無回歸。
+- [x] 文件：CLAUDE/CONTEXT/lessons/todo（本檔）。commit（push 待使用者確認閃爍）。
 
 ---
 

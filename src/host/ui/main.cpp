@@ -689,19 +689,18 @@ static void applyGuestPerformanceSettings() {
     }, 5000);
     qDebug() << "Guest performance settings applied";
 
-    // Fast path keeps normal Android animations: the Session 99 general-UI 60
-    // evidence (threaded render loop + present-timer fix) was measured with these
-    // on. CHIMERA_GUEST_VULKAN only means "-feature Vulkan" (guest Vulkan available
-    // to apps); it is NOT a skiavk UI switch — see the note above main()'s boot
-    // poller for why skiavk cannot work on this image.
-    if (isTruthyEnv("CHIMERA_GUEST_VULKAN")) {
-        runAdbShell({
-            "settings", "put", "global", "window_animation_scale", "1", ";",
-            "settings", "put", "global", "transition_animation_scale", "1", ";",
-            "settings", "put", "global", "animator_duration_scale", "1",
-        }, 4000);
-        qDebug() << "Guest animations re-enabled (GuestVulkan smooth UI)";
-    }
+    // Window/transition animations stay OFF (scales = 0 above). The old code
+    // re-enabled them under CHIMERA_GUEST_VULKAN for "smooth UI", justified by the
+    // Session 99 "general-UI 60" evidence — but S101/S102 re-characterised that as
+    // the ~57fps windowed-DWM frame-pacing boundary, not a true 60. On a high-refresh
+    // host (e.g. 144Hz) the guest's ~57-60fps animation frames land on an irregular
+    // 2-3-refresh pulldown, so app-switch / home-return transitions judder, and the
+    // judder reads as a flicker on the thin bright gesture handle (user report:
+    // flicker "mainly when switching apps / returning home"). Instant transitions
+    // remove the animated motion entirely, so there is nothing to judder. The guest
+    // handle content is static regardless (proven: 0 SF NavigationBar frames), so the
+    // residual idle pulldown is a host-present concern (fullscreen / present-pacing),
+    // not an animation one. CHIMERA_GUEST_VULKAN still only means "-feature Vulkan".
 }
 
 // Skip Android setup wizard and suppress first-boot prompts.

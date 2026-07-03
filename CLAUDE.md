@@ -4,7 +4,7 @@
 
 ## 當前狀態（2026-07-03 / Session 103）
 
-- **Session 103（本次）**：① 載入畫面拿掉中間「C」圖標，改 CHIMERA 字標 + 客製 indeterminate 進度條（`--no-emulator` 截圖驗證，✅ 完成）。② 底部手勢 home handle 閃爍——**guest 側已用兩個程式化測試排除**：ADB screencap ×7 與 host PrintWindow ×14 手勢列區域皆 byte-identical；`dumpsys SurfaceFlinger --latency` 量 NavigationBar layer 三階段（含強制 `immersive.navigation`）幀數皆 **0/3s**＝layer 從不重繪。結論：手勢列在 guest 端完全靜態，`policy_control immersive.navigation` 在此 image（gesture-nav / 疑 Android 12+）**毫無作用**（沒隱藏也沒閃爍）。閃爍是 **host present/掃描時序 artifact**（S102 ~57fps windowed-DWM frame-pacing boundary）落在細白橫條上，內容截圖工具本質抓不到。程式改動只有「移除那條 dead no-op 設定」＝清理，**非閃爍修復**。使用者驗證桿：全螢幕（F11，繞過 windowed DWM 合成）若閃爍停＝確認 present-timing 成因、指向 windowed present-pacing 修法。
+- **Session 103（本次）**：① 載入畫面拿掉中間「C」圖標，改 CHIMERA 字標 + 客製 indeterminate 進度條（`--no-emulator` 截圖驗證，✅ 完成）。② 底部手勢 home handle 閃爍——**guest 內容側已用兩個程式化測試排除**（ADB screencap ×7 + host PrintWindow ×14 byte-identical；`dumpsys SurfaceFlinger --latency` NavigationBar 幀數 0/3s）→ 是 **host present pulldown artifact**：guest ~57-60fps 內容在**使用者的 144Hz 螢幕**上呈現＝2.4× 不規則 pulldown 抖動，細白橫條最明顯。使用者證實**主要在切換 app／回主畫面時**＝視窗轉場動畫的時刻。根因：`-Fast`（`CHIMERA_GUEST_VULKAN`）把 window/transition 動畫 scale 開回 1（base 是 0）→ 60fps 動畫在 144Hz 上 judder。**修法：main.cpp 移除該 re-enable，動畫維持關**（轉場即時、無動畫運動＝無 pulldown 抖動；也減少 idle 無謂重繪）。實證：新 build 開機後 3 個 animation scale 皆 0、HOME→Settings 轉場 distinct frames=3（即時）、host 視窗 nonblack 100%。殘留 idle pulldown（若有）＝S102 host-present boundary，桿子＝全螢幕(F11)/present-pacing。移除的 dead `policy_control` 設定另計為清理。
 
 - **完成度**：BlueStacks Parity Roadmap v3 P0–P4e + 補強 COMPLETE；核心功能同等級（見下方功能清單）。
 - **生產引擎**：`emulator.exe`（Google QEMU+WHPX fork）。`--qemu-backend` / `--hcs-backend` / `--cuttlefish` 為 legacy R&D，保留不刪。
@@ -105,7 +105,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-quick-boot.
 
 | 問題 | 狀態 |
 |------|------|
-| 底部手勢 home handle 閃爍 | OPEN（guest 側已排除）— Session 103：兩程式化測試證手勢列 guest 端完全靜態（ADB screencap/host PrintWindow byte-identical；`dumpsys SurfaceFlinger --latency` NavigationBar 幀數 0/3s；強制 `immersive.navigation` 零效果）。閃爍＝**host present/掃描時序 artifact**（= S102 ~57fps windowed-DWM frame-pacing boundary，落在細白橫條）；內容截圖抓不到。已移除 dead no-op `policy_control` 設定（清理非修復）。驗證桿：全螢幕(F11)若停＝確認並指向 windowed present-pacing |
+| 底部手勢 home handle 閃爍 | 轉場 case FIX APPLIED（待目視）— Session 103：guest 內容側排除（screencap/PrintWindow byte-identical、SF NavigationBar 幀數 0/3s）＝**host present pulldown**（60fps guest 於 144Hz 螢幕 2.4× judder，細白橫條最明顯）。使用者證實主要在切換 app／回主畫面＝轉場動畫；根因＝`-Fast` 把動畫 scale 開回 1。**修法：移除該 re-enable（動畫維持關）**——動畫 scale 皆 0、轉場即時（distinct frames=3）、無回歸實證。殘留 idle pulldown＝S102 host-present boundary（全螢幕/present-pacing） |
 | 畫面糊（1080p texture 縮小顯示文字殘缺） | RESOLVED — Session 102：`QSGSimpleTextureNode` material filtering 預設 Nearest 且 render 時覆寫 per-texture 設定（原 `texture->setFiltering()` 全 no-op）；改 node `setFiltering(Linear)` + letterbox rect snap 到 device-pixel 格。縮小顯示本質損失細節，完全銳利需 ≥1:1 顯示 |
 | `-Fast` host 視窗零幀黑屏（S85 起潛伏） | RESOLVED — Session 101 三層修復（`flushFromGl+invalidateForVk` 前置同步、`D3D11_TEXTURE_BIT`+dedicated import、GuestDisplay keyed-mutex acquire+私有副本〔`WAIT_TIMEOUT` 過得了 `SUCCEEDED()`，須 `==S_OK`〕）；SelfTest 新增 host 視窗像素 gate |
 | emulator idle 自殺（黑屏「等多久都黑」第二半） | RESOLVED — Session 101 移除 `-idle-grpc-timeout 300` + regression test；orphan 由 Job Object 管 |
@@ -160,4 +160,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-quick-boot.
 **禁止 commit**: BlueStacks binaries (Binaries/, Client/, Engine/, Dumps/)、root 層 ISO/QCOW2/installer、QEMU/debug logs、R&D throwaway scripts、runtime output dirs。
 
 ---
-*Updated: 2026-07-03 — Session 103：客製化載入畫面（拿掉中間圖標、改進度條，✅）+ 手勢列閃爍 guest 側排除（2 程式化測試證 guest 靜態、`policy_control` 無效；閃爍＝host present-timing artifact＝S102 frame-pacing boundary，驗證桿全螢幕；移除 dead 設定為清理）。前一輪 Session 102：畫面糊修復 + 60fps 定案 frame-pacing boundary。詳細歷程見 `CONTEXT.md`。*
+*Updated: 2026-07-03 — Session 103：客製化載入畫面（拿掉中間圖標、改進度條，✅）+ 手勢列閃爍定調 host present pulldown（60fps guest 於使用者 144Hz 螢幕；guest 內容側 2 測試排除）＋轉場 case 修復（-Fast 動畫 scale 開回 1 是 juddery 觸發，移除 re-enable＝動畫關、轉場即時、實證 scale 0 / distinct=3 / 無回歸；殘留 idle＝S102 host-present boundary）。前一輪 Session 102：畫面糊修復 + 60fps frame-pacing boundary。詳見 `CONTEXT.md`。*
