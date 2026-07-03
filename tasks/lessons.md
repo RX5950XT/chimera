@@ -1,5 +1,13 @@
 # Chimera Lessons
 
+## 2026-07-04 — Session 104：量測前先問「量的是不是使用者的配置」；vsync 量化假設用逐幀 avgMs 當場否證；聚合 FPS 被 idle gap 汙染；診斷碼別留在生產 hot path
+
+- **「不穩」的基線要用使用者實際的啟動配置量，別用 verifier 預設**：我用 `verify-interactive-ui.ps1`（**預設 priority=below_normal**）量到 avgMs 16.2–17.9/maxMs 48＝抖，差點歸因成 pipeline 問題。但使用者一鍵 `start-chimera.cmd = -Fast -InteractiveFirst` **已設 `CHIMERA_INTERACTIVE_PRIORITY=normal`**，normal 下收緊到 avgMs 16.1–17.0/maxMs 34＝穩定 60（通過 gpu-direct-60 gate）。**抖動是 verifier 預設造成的假象，不是使用者體驗**。**Rule**：優化「使用者感覺不穩」前，先確認量測配置＝使用者實際跑的（priority/flags/一鍵腳本帶什麼），否則會修一個使用者根本沒遇到的問題。measured lever（priority）使用者可能已經在用。
+- **host 有沒有 vsync 量化，看 avgMs 是不是 refresh 週期的整數倍**：假設「144Hz vsync-block 把 60fps 量化成 ~57」——逐幀 `CHIMERA_PERF` 當場否證：`guest==stream==render` 每 sample 相等、avgMs 出現 **16.2ms(=61.7fps)**。若真被 144Hz(6.94ms) vsync 鎖，avgMs 會量化成 6.94 倍數（13.9/20.8ms），不會是 16.2。→ host present 事件驅動 1:1 追 guest，非量化，`setSwapInterval(0)` 不套用。**Rule**：疑 vsync 量化，算 `avgMs mod (1000/refresh)`；非整數倍＝不是 vsync-locked，是內容 cadence 驅動。假設在動手前用既有逐幀資料就能否證，別急著改 swapchain。
+- **聚合 FPS（streamFps/effFps 平均）會被 idle gap 嚴重汙染，用 per-sample + effMin 才誠實**：同一 build，兩次 run 聚合 streamFps 10.8 vs 57.8——差別不是修改，是 synthetic-scroll 的 fling-settle idle gap 分佈不同（settle 期 guest 正確 0 幀被平均進去）。**Rule**：互動負載報 fps 用 per-sample 分佈 + `effMin`（最差窗）+ 只取 active（guest≥40）樣本算 avgMs/maxMs；別引用單一聚合平均下結論，尤其 A/B。
+- **診斷用的昂貴 GPU readback 別留在生產 post hot path**：`postFrameDirectGpu` 裡 `debugReadbackSharedImage`（S101 零幀診斷）以 `frameIndex%240==0` **無條件**每 ~4s 跑一次完整 buffer alloc+submit+等 fence+map+free。改 `envTruthy("CHIMERA_GFXSTREAM_DIAG_READBACK")`（預設 off）gate。**Rule**：hot path 裡任何 `%N==0` 的「診斷/驗證」要 env-gate 預設 off；它只增不減 post thread 工作。**但誠實**：gate 後 `maxMs` 未明顯降＝它不是 maxMs spike 主因（主因是 GL→VK/SwiftShader 合成變異＝架構 floor）；移除它是正確衛生，不可宣稱成「修好了卡頓」。
+- **guest post 各階段成本要逐項量，別籠統說「2 次 VK submit+wait 是瓶頸」**：實測 `postFrameDirectGpu total=0.5–1.3ms`（fence 等待僅 0.1–0.4ms）、真正大塊是 `glToVkSync（GL→VK readback）3.5–8.8ms`（SwiftShader CPU-GL ↔ NVIDIA VK 不同 device＝必經 CPU round-trip）。**Rule**：報「瓶頸在 X」前把 X 拆成有計時的子階段；先前 S102 的「2 次 submit+wait」其實 submit+fence 才 ~1ms，瓶頸是 readback——籠統歸因會導向錯的優化目標。
+
 ## 2026-07-03 — Session 103：用「該元件的 SF layer 幀數」分辨 guest 重繪 vs host 呈現時序；present-timing artifact 對內容截圖隱形；假設要被自己的取證否證就別留成「fix」
 
 - **「畫面在閃」但 guest ADB screencap 與 host PrintWindow 都 byte-identical → 呈現/掃描時序 artifact，兩種內容截圖本質抓不到**。手勢列閃爍：guest screencap ×7、host PrintWindow ×14（HOME+Settings）全 spread=0。`adb screencap` 讀 SurfaceFlinger 回讀、`PrintWindow PW_RENDERFULLCONTENT` 讀 Qt scene-graph 目前 node——**都是「已合成一幀內容」不是螢幕掃出時序**；present beat / tearing / refresh 對它們隱形。**Rule**：內容截圖 spread=0 只證「合成內容穩定」，不證「使用者沒看到閃爍」；present-timing 的 oracle 是眼睛 / Desktop Duplication（讀 DWM 合成後畫面）/ GPU present trace，不是 PrintWindow/screencap。截不到 ≠ 沒問題。

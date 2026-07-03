@@ -7,6 +7,21 @@
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 **引擎決策（最重要）**：生產引擎 = `emulator.exe`（Google QEMU+WHPX fork）；`--qemu-backend`（stock QEMU 11 + Cuttlefish）與 `--hcs-backend`（Hyper-V HCS）= legacy R&D，保留不刪。BlueStacks 輸入路徑更正：`BstkDrv.sys` 是 network/filter driver 非 input driver；BlueStacks 走 `HD-Bridge-Native.dll` → virtio-input，Chimera 等效路徑是 emulator gRPC + Console `event` protocol。
 
+## 2026-07-04 — Session 104 — 穩定 60fps：全鏈實測定調（使用者配置已穩定）+ 移除生產 post hot-path 診斷 readback
+
+- **使用者 /goal**：「性能已大幅改善，持續優化讓它更穩定在 60fps」。
+- **初始假設被自己的量測否證**：先猜 host Qt swapchain vsync-block 在 144Hz 量化 60fps→~57，準備 `setSwapInterval(0)`。但逐幀 `CHIMERA_PERF`（Fast + `CHIMERA_HOST_FRAME_TIMING`，副螢幕）顯示：每 sample **`guest==stream==render`**（59.2/59.2/59.2…）、`dupPct=0`、host consumer `acquire+copy` 恆 **0.1ms**、且 avgMs 出現 **16.2ms(=61.7fps)**——若被 144Hz(6.94ms) vsync 鎖會量化成 6.94 倍數，並沒有。→ **host present 事件驅動 1:1 追上 guest，不是 vsync 量化；swapInterval-0 不套用**（量測擋下一個無效改動）。
+- **實測拆帳（誠實）**：
+  - Producer 逐幀：`postFrameDirectGpu total=0.5–1.3ms`（`vkWaitForFences` 只 0.1–0.4ms，**非**先前 S102 籠統說的「2 次 submit+wait 瓶頸」）；每幀最大塊是 `glToVkSync（GL→VK readback）=3.5–8.8ms`——SwiftShader(CPU-GL) 合成的 SurfaceFlinger 內容要進 NVIDIA-VK 共享 image，兩者不同 device＝必經 CPU round-trip（read glReadPixels + upload）。guest post 共 ~5–10ms，能撐 60；架構 floor。
+  - **priority 是唯一可量測的穩定度槓桿**：below_normal（verifier 預設）avgMs 16.2–17.9/maxMs≤48（抖）；normal avgMs 16.1–17.0/maxMs≤34（穩，`result=pass-gpu-direct-60`、effMin=54）。**使用者一鍵 `start-chimera.cmd = -Fast -InteractiveFirst` 已設 `CHIMERA_INTERACTIVE_PRIORITY=normal`＝實際就在穩定側**——我最初量到的「抖動」是 verifier 預設 below_normal 的假象，非使用者體驗。→ 不改 code 預設（使用者已被覆蓋；改預設投機且犧牲長期 audio 值）。
+  - synthetic-scroll 的 ~370ms 週期凍結＝fling→lift→動量遞減→列表 settle idle（guest 正確不重繪），**測試假象**非 stall（S102 已警告）；聚合 streamFps（10.8 vs 57.8 兩 run）被 idle gap 分佈汙染，只看 per-sample active 樣本 + effMin 才誠實。
+- **修改（hot-path 衛生，已 build+驗證）**（`src/host/runtime/gfxstream_bridge_templates/vulkan/ChimeraGfxstreamVulkanSharedTextureBridge.cpp`）：`postFrameDirectGpu` 裡 `debugReadbackSharedImage`（S101 零幀診斷）原以 `frameIndex%240==0` **無條件**每 ~4s 跑一次完整 buffer alloc+submit+等 fence+map+free。改用 `CHIMERA_GFXSTREAM_DIAG_READBACK`（預設 off）gate。重建 custom runtime（增量，`vkReadback=0` 確認 gate 生效，仍 `pass-gpu-direct-60`/effMin=54）。**誠實邊界：gate 後 `maxMs` 未明顯降＝它非 maxMs spike 主因**（主因是 GL→VK/SwiftShader 合成變異＝架構 floor）；移除它是正確衛生（生產 post thread 不再每 4s 付一次昂貴 GPU round-trip），不宣稱成「修好卡頓」。
+- **定調 + 使用者側最大平滑度來源**：
+  - 使用者實際配置（normal priority）**已穩定 ~57–60fps**（render 1:1 追 guest、host consumer 0.1ms）。**S102「host present ceiling ~57」在 normal + 動畫關（S103）下不再觀察到**。
+  - 殘留 sub-60 與 maxMs 27–34 單幀 hitch＝GL→VK readback + SwiftShader 合成變異（架構 floor）；rock-solid 60 需 guest VK-native 合成（skiavk 牆擋，blocked）。
+  - **144Hz 螢幕上 60fps 本質 2.4× pulldown judder（S103）**；顯示端最大平滑度改善＝若螢幕支援 **120Hz**（2×60＝完美 2:1 pulldown、零 judder）——屬使用者 Windows 顯示設定，非 Chimera code，故建議而非代改。
+- **教訓**（詳 `tasks/lessons.md` S104）：優化「使用者感覺不穩」前先確認量測配置＝使用者實際跑的（一鍵腳本帶的 priority/flags）；疑 vsync 量化算 avgMs 是否 refresh 週期整數倍；聚合 fps 被 idle gap 汙染用 effMin/per-sample；診斷用昂貴 GPU readback 別留生產 hot path。
+
 ## 2026-07-03 — Session 103 — 客製化載入畫面（進度條）+ 手勢列閃爍 guest 側排除（定調 host present-timing）
 
 - **使用者回報**（S102 修復後）：「性能改善非常多」，但 (1) 手機最底下滑動回主畫面的手勢橫條不斷閃爍；(2) 載入畫面中間 Pixel 圖標想換成進度條、要能客製化。

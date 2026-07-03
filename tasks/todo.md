@@ -2,6 +2,33 @@
 
 ---
 
+## 2026-07-04 Session 104 — 穩定 60fps：全鏈實測定調 + post hot-path 診斷 readback gate
+
+目標（使用者 /goal）：「性能已大幅改善，持續優化讓它更穩定在 60fps」。
+
+### 初始假設（錯，已被自己的量測否證）
+- 猜 host Qt swapchain vsync-block 在 144Hz 量化 60fps → effective ~57。
+- [x] 量基線（Fast + `CHIMERA_HOST_FRAME_TIMING`，副螢幕）**否證**：每 sample `guest==stream==render`（59.2/59.2/59.2…）、`dupPct=0`、host consumer acquire+copy 恆 0.1ms、avgMs 出現 16.2ms(=61.7fps)——**若被 144Hz vsync 鎖會量化成 6.94ms 倍數，並沒有**。→ host present 1:1 追上 guest，**不是 vsync 量化**。swapInterval-0 不套用。量測救了我，未做無效改動。
+
+### 實測定調（誠實）
+- [x] Producer 逐幀：`postFrameDirectGpu total=0.5–1.3ms`（fence 等待僅 0.1–0.4ms，非瓶頸）、`glToVkSync（GL→VK readback）=3.5–8.8ms`（每幀最大塊，SwiftShader(CPU-GL)↔NVIDIA(VK) 不同 device＝必經 CPU round-trip，架構 floor）。guest post 共 ~5–10ms，能撐 60。
+- [x] **priority 是唯一可量測的穩定度槓桿**：below_normal（verifier 預設）avgMs 16.2–17.9/maxMs≤48（抖）；normal avgMs 16.1–17.0/maxMs≤34（穩，通過 gpu-direct-60）。**使用者 `start-chimera.cmd` = `-Fast -InteractiveFirst` 已設 `CHIMERA_INTERACTIVE_PRIORITY=normal`＝實際就在穩定側**；我最初的「抖動」是 verifier 預設 below_normal 造成的假象，非使用者體驗。→ 不改 code 預設（使用者已被 `-InteractiveFirst` 覆蓋；改預設是投機且犧牲 audio 值）。
+- [x] synthetic-scroll 的 ~370ms 週期凍結＝fling→lift→動量遞減→列表靜止的 **settle idle**（guest 正確不重繪），**測試假象**，非 stall（S102 早已警告）。
+
+### 修改（hot-path 衛生，已 build+驗證）
+- [x] `postFrameDirectGpu` 裡 `debugReadbackSharedImage` **每 240 幀(~4s)無條件跑昂貴 GPU readback**（buffer alloc+submit+等 fence+map+free）——S101 零幀診斷遺留在生產 post thread。改用 `CHIMERA_GFXSTREAM_DIAG_READBACK`（預設 off）gate。重建 custom runtime、驗 `vkReadback=0`、仍 `result=pass-gpu-direct-60`（effMin=54）。**誠實：這是正確衛生（移除週期性診斷 GPU round-trip），但 maxMs 未明顯下降＝非 maxMs spike 主因**（主因是 GL→VK/SwiftShader 合成變異＝架構 floor）。
+
+### 定調 + 使用者可行動的最大平滑度來源
+- 使用者實際配置（normal priority）**已穩定 ~57–60fps**（render 1:1 追 guest、host consumer 0.1ms）。S102「host present ceiling ~57」在 normal + 動畫關下**不再觀察到**。
+- 殘留 sub-60 與 maxMs 27–34 單幀 hitch＝GL→VK readback + SwiftShader 合成變異（架構 floor）；真正 rock-solid 60 需 guest VK-native 合成（skiavk 牆擋，blocked）。
+- **144Hz 螢幕上 60fps 本質 2.4× pulldown judder（S103）**；顯示端最大平滑度改善＝若螢幕支援 **120Hz**（2×60＝完美 2:1 pulldown、零 judder）——屬使用者系統設定，非 Chimera code。
+- [x] 文件：todo（本檔）/lessons/CONTEXT/CLAUDE。commit（push 待使用者確認）。
+
+### Review
+量測 > 假設：一個 vsync 量化假設被逐幀資料當場否證，省下一個會誤導的改動。淨產出＝(1) 移除生產 post hot-path 的週期性診斷 readback（衛生），(2) 全鏈實測定調（使用者配置已穩定 60、瓶頸是 GL→VK 架構 floor 非 host present），(3) 指出 120Hz 顯示模式是使用者側最大平滑度來源。未做投機的 priority 預設變更。
+
+---
+
 ## 2026-07-03 Session 103 — 客製化載入畫面（進度條）+ 手勢列閃爍 guest 側排除
 
 使用者回報（S102 修復後）：「性能改善非常多」，但 (1) 底部滑動回主畫面的手勢橫條不斷閃爍，(2) 載入畫面中間 Pixel 圖標想換成進度條、要能客製化。
