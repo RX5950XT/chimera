@@ -104,11 +104,12 @@ Chimera (Host Windows, 單一 Qt6/QML 視窗)
 
 ---
 
-## 現況與邊界（誠實版，Session 101）
+## 現況與邊界（誠實版，Session 102）
 
-- **日常可用**：`start-chimera.cmd` 預設最快可用路徑（custom gfxstream shared texture + `-feature Vulkan` + normal priority）。host 視窗真實可見、可互動，互動實測有效約 **43 FPS**。`-Stock` 只作保守 fallback / 診斷（~4–17 FPS）。
+- **日常可用**：`start-chimera.cmd` 預設最快可用路徑（custom gfxstream shared texture + `-feature Vulkan` + normal priority）。host 視窗真實可見、可互動，互動實測有效約 **43 FPS**（idle gap 大半是內容不變、guest 正確不重繪）。`-Stock` 只作保守 fallback / 診斷（~4–17 FPS）。
+- **畫面糊已修（Session 102）**：1080p texture 縮小顯示時 `QSGSimpleTextureNode` node-level filtering 預設 Nearest（且覆寫 per-texture 設定，原三處 `setFiltering()` 全 no-op）→ 文字筆畫殘缺。改 node `setFiltering(Linear)` + letterbox rect snap 到 device-pixel 格。縮小本質損失細節，完全銳利需 ≥1:1 顯示。
+- **60fps 定案為 frame-pacing boundary（Session 102）**：全鏈逐段計時實證 **~57fps 是 vsync 邊緣的 frame-pacing boundary，非單一可修瓶頸**——host consumer（AcquireSync+CopyResource）恆 **0.1ms**（最佳、零空間）、guest **34% CPU**（非 compute-bound），瓶頸在每幀 post 付 glReadPixels(3–4ms)+2 次 VK submit+wait 偶超 16.7ms。A/B 換 CPU-direct post 使 guest production 升乾淨 60.0 但 effective 仍 ~57（瓶頸只**位移**到 host windowed-DWM present，非消失）。真 60 需 guest **Vulkan-backed** 內容（消 readback，尚未單獨基準）**且** host present pacing 對齊——兩者缺一都停在 boundary。
 - **歷史 60fps 宣稱已更正（Session 101）**：S85–S99 的 GPU-direct「1080p/60 嚴格可見 PASS」量的是**零幀 blit 的節奏**——shared texture 實際發佈全零、host 視窗全黑；當時所有 gate 只驗 guest 端 ADB 截圖與 host 端計數器。三層 bug（HWC compose 不標 `mGlTexDirty`→kVk image 空、`OPAQUE_WIN32` 匯入無 aliasing、consumer 缺 keyed-mutex AcquireSync）已全修，SelfTest 新增 host 視窗像素 gate（`host_window_nonblack_pct`）防再犯。
-- **GLES 內容的 FPS 上限**：SurfaceFlinger 由 SwiftShader-ES（軟體）合成，每幀需 GL readback + VK upload 同步才有真內容；連續渲染 60 posts/s 會超出同步預算（gl60 嚴格 gate 目前不通過）。真 60 需 guest **Vulkan-backed** 內容（zero-copy 直通，不付同步成本；尚未單獨基準）或 GL-VK 共享記憶體（SwiftShader 不支援）。
 - **skiavk UI 切換不可行（Session 100 定案）**：此 playstore user image 無 root，framework restart 必失敗，半套用＝app 視窗全黑；`CHIMERA_GUEST_VULKAN=1` 只等於 `-feature Vulkan`（Vulkan app/遊戲直達實體 GPU）。
 - **emulator idle 自殺已修（Session 101）**：`-idle-grpc-timeout 300` 已移除——shared-texture 顯示不走 gRPC，掛機 5 分鐘 VM 不再靜默關機。
 - **背景音樂干擾**：雙擊預設 `-InteractiveFirst`（normal priority，最順但較影響 host audio）；要保護背景音樂改用 `start-chimera.ps1 -Fast -AudioFirst`。

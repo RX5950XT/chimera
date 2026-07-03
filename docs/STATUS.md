@@ -2,7 +2,7 @@
 
 > 目前狀態快照。歷程與根因記錄見 `CONTEXT.md`；架構決策與 feature flags 見 `CLAUDE.md`。
 
-**日期**：2026-07-02（Session 101）
+**日期**：2026-07-03（Session 102）
 **Build**：Release PASS（MSVC + Qt 6.8.3）
 **Tests**：`ctest -LE integration` 23/23 PASS；3 integration tests 需 emulator 運行中
 
@@ -23,8 +23,9 @@
 
 | 限制 | 說明 |
 |------|------|
-| GLES 內容連續渲染不到 60 | SurfaceFlinger 由 SwiftShader-ES（軟體）合成，每幀付 GL readback + VK upload 同步成本；gl60 嚴格 gate 目前不通過 |
-| 真 60 待驗 | 需 guest **Vulkan-backed** 內容（zero-copy 直通，不付同步成本），尚未單獨基準 |
+| 60fps 是 frame-pacing boundary（Session 102 定案） | ~57fps 是 vsync 邊緣的 frame-pacing boundary，非單一可修瓶頸。逐段計時：host consumer（AcquireSync+CopyResource）恆 0.1ms（最佳）、guest 34% CPU（非 compute-bound）、瓶頸＝每幀 glReadPixels(3–4ms)+2 VK submit+wait 偶超 16.7ms。A/B 換 CPU-direct post 使 guest 升 60 但 effective 不變（位移到 host windowed-DWM present） |
+| 真 60 待驗 | 需 guest **Vulkan-backed** 內容（消 readback，尚未單獨基準）**且** host present pacing 對齊；兩者缺一都停在 boundary |
+| 畫面糊已修（Session 102） | `QSGSimpleTextureNode` node-level filtering 預設 Nearest（覆寫 per-texture）→ 縮小顯示文字殘缺；改 node `setFiltering(Linear)` + device-pixel rect snap。縮小本質損失細節，完全銳利需 ≥1:1 |
 | skiavk UI 切換不可行 | playstore user image 無 root；三路（root restart / boot-prop / `ctl.restart`）全 probe 實證死路，禁止再試（Session 100 定案） |
 | stock gRPC 路徑低 FPS | ~4–17 FPS 為 unary `getScreenshot` 本質；僅作 fallback/診斷 |
 | host audio 競爭 | PARTIAL — `CHIMERA_INTERACTIVE_PRIORITY` 可調（idle=audio-first / normal=interactive-first）；startup 前 30s Idle |

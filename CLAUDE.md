@@ -2,7 +2,7 @@
 
 > AI 工作階段快速參考。每次重大變更後更新。開發歷程與 per-session 詳細記錄一律在 `CONTEXT.md`，本檔不重複保留。
 
-## 當前狀態（2026-07-02 / Session 102）
+## 當前狀態（2026-07-03 / Session 102）
 
 - **完成度**：BlueStacks Parity Roadmap v3 P0–P4e + 補強 COMPLETE；核心功能同等級（見下方功能清單）。
 - **生產引擎**：`emulator.exe`（Google QEMU+WHPX fork）。`--qemu-backend` / `--hcs-backend` / `--cuttlefish` 為 legacy R&D，保留不刪。
@@ -157,4 +157,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-quick-boot.
 **禁止 commit**: BlueStacks binaries (Binaries/, Client/, Engine/, Dumps/)、root 層 ISO/QCOW2/installer、QEMU/debug logs、R&D throwaway scripts、runtime output dirs。
 
 ---
-*Updated: 2026-07-02 — Session 102：畫面糊根因修復（QSG node filtering Nearest→Linear + device-pixel rect snap）+ 60fps 全鏈逐段拆帳定案為 vsync frame-pacing boundary（host consumer 0.1ms 最佳、guest 34% CPU、CPU-direct post A/B 證瓶頸只位移不消失）。詳細歷程見 `CONTEXT.md`。*
+*Updated: 2026-07-03 — Session 102：畫面糊根因修復（QSG node filtering Nearest→Linear + device-pixel rect snap）+ 60fps 全鏈逐段拆帳定案為 vsync frame-pacing boundary（host consumer 0.1ms 最佳、guest 34% CPU、CPU-direct post A/B 證瓶頸只位移不消失）。詳細歷程見 `CONTEXT.md`。*
