@@ -7,6 +7,18 @@
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 **引擎決策（最重要）**：生產引擎 = `emulator.exe`（Google QEMU+WHPX fork）；`--qemu-backend`（stock QEMU 11 + Cuttlefish）與 `--hcs-backend`（Hyper-V HCS）= legacy R&D，保留不刪。BlueStacks 輸入路徑更正：`BstkDrv.sys` 是 network/filter driver 非 input driver；BlueStacks 走 `HD-Bridge-Native.dll` → virtio-input，Chimera 等效路徑是 emulator gRPC + Console `event` protocol。
 
+## 2026-07-03 — Session 103 — 客製化載入畫面（進度條）+ 手勢列閃爍 guest 側排除（定調 host present-timing）
+
+- **使用者回報**（S102 修復後）：「性能改善非常多」，但 (1) 手機最底下滑動回主畫面的手勢橫條不斷閃爍；(2) 載入畫面中間 Pixel 圖標想換成進度條、要能客製化。
+- **Fix 2（載入畫面）✅ 完成**（`ChimeraWindow.qml`）：載入 placeholder 拿掉中間漸層「C」圖標，改 CHIMERA 字標 + 客製 indeterminate 進度條（`ProgressBar` 自訂 contentItem，綠色漸層 pip 左右掃動）+「正在啟動 Android…」。placeholder 全程 `visible: !guestReady` 覆蓋顯示區＝使用者看不到 guest 預設 Pixel 開機動畫。驗證：`chimera-ui --no-emulator`（guestReady 恆 false）PrintWindow 截圖確認進度條、中間圖標已移除。
+- **Fix 1（閃爍）— 初始假設被自己的取證否證，改定調**：
+  - **初始假設（錯）**：`applyGuestPerformanceSettings()` 開機強制 `policy_control immersive.navigation=*`，在手勢導覽上讓 SystemUI 隱藏/顯示互鬥製造 relayout 閃爍。
+  - **兩個程式化測試否證（guest 側完全靜態）**：① guest ADB screencap ×7 + host PrintWindow ×14（HOME+Settings）手勢列區域全 byte-identical（spread=0）；② **`dumpsys SurfaceFlinger --latency "NavigationBar0#N"` 三階段（FIXED / 強制 immersive / REFIXED）幀數皆 0/3s**＝NavigationBar layer 從不重繪，且強制 `immersive.navigation` **零效果**（consistent with `policy_control` 在此 gesture-nav/疑 Android 12+ image 已無作用——既沒隱藏 bar 也沒閃爍）。
+  - **定調**：手勢列在 guest 端與 Qt 算好的 frame 都完全靜態（0 layer 重繪、PrintWindow byte-identical）。閃爍是**純 host present/掃描時序 artifact**——= S102 已定案的 ~57fps windowed-DWM present frame-pacing boundary，落在最敏感的細高對比橫條上（其他靜態內容較不明顯，所以使用者只注意到那條）。內容截圖工具（讀「合成好一幀」不讀掃描時序）本質抓不到。
+  - **程式改動＝清理非修復**（`main.cpp`）：移除 dead 的 `put policy_control immersive.navigation=*`（此 image 上是 no-op）+ 主動 `settings delete global policy_control` 清舊 AVD 殘值。不改變手勢列可見性，也不宣稱修好閃爍。
+  - **使用者驗證桿**：全螢幕（F11）走 fullscreen-exclusive flip present、繞過 windowed DWM 合成——若閃爍在全螢幕下停止＝確認 present-timing 成因，並把修法收斂到「windowed present-pacing」（vsync/present 間隔對齊；屬 S102 hard open item）。若全螢幕仍閃，則要往別處（monitor 更新率 beat、Qt swapchain present 模式）查。
+- **教訓**（詳 `tasks/lessons.md` S103）：內容截圖 spread=0 只證「合成內容穩定」，不能證「螢幕沒閃」——present-timing 問題 oracle 是眼睛/desktop-duplication/GPU present trace，不是 PrintWindow/screencap；用「該顯示元件的 SF layer 幀數（`--latency`）」量 guest 端有沒有在重繪，一次分清「guest 重繪」vs「host 呈現時序」。
+
 ## 2026-07-02 — Session 102 — 畫面糊根因修復 + 60fps 不穩全鏈拆帳（frame-pacing boundary 定案）
 
 ### Part A — 畫面糊根因修復（Nearest 縮小取樣）

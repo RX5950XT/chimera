@@ -677,8 +677,15 @@ static void applyGuestPerformanceSettings() {
         "settings", "put", "global", "transition_animation_scale", "0", ";",
         "settings", "put", "global", "animator_duration_scale", "0", ";",
         "cmd", "power", "set-fixed-performance-mode-enabled", "true", ";",
-        // Hide Android navigation bar so the host right-panel controls are used instead
-        "settings", "put", "global", "policy_control", "immersive.navigation=*",
+        // Drop the old `put policy_control immersive.navigation=*`: it is a no-op on
+        // this (gesture-nav, Android 12+) image — measured, forcing it produced zero
+        // SurfaceFlinger NavigationBar frames and left the handle byte-identical, so
+        // it never hid the bar. It is also NOT the cause of the reported home-handle
+        // flicker: the handle is fully static guest-side (0 layer redraws), so that
+        // flicker is a host present-timing artifact (S102 windowed-DWM frame-pacing
+        // boundary) on the thin bright handle, not a guest setting. Clear any value
+        // persisted by older builds so the dead command leaves nothing behind.
+        "settings", "delete", "global", "policy_control",
     }, 5000);
     qDebug() << "Guest performance settings applied";
 

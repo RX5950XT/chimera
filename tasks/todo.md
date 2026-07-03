@@ -2,6 +2,30 @@
 
 ---
 
+## 2026-07-03 Session 103 — 客製化載入畫面（進度條）+ 手勢列閃爍 guest 側排除
+
+使用者回報（S102 修復後）：「性能改善非常多」，但 (1) 底部滑動回主畫面的手勢橫條不斷閃爍，(2) 載入畫面中間 Pixel 圖標想換成進度條、要能客製化。
+
+### Fix 2 — 客製化載入畫面（進度條）✅ 完成
+- [x] ChimeraWindow.qml：載入 placeholder 拿掉中間漸層「C」圖標，改 CHIMERA 字標 + 客製 indeterminate 進度條（綠色漸層 pip 掃動）+「正在啟動 Android…」。placeholder 全程覆蓋顯示區＝看不到 guest 預設 Pixel 開機動畫。
+- [x] 驗證：`chimera-ui --no-emulator`（guestReady 恆 false→placeholder 持續顯示）PrintWindow 截圖確認進度條、無中間圖標。
+
+### Fix 1 — 手勢列閃爍：初始假設被自己的取證否證，改定調 host present-timing
+- 初始假設（錯）：開機強制 `policy_control immersive.navigation=*` 讓 SystemUI 隱藏/顯示互鬥製造 relayout 閃爍。
+- 否證（guest 側完全靜態，兩個程式化測試）：
+  - [x] guest ADB screencap ×7 + host PrintWindow ×14（HOME+Settings）手勢列區域全 byte-identical（spread=0）。
+  - [x] `dumpsys SurfaceFlinger --latency "NavigationBar0#N"` 三階段（FIXED / 強制 immersive / REFIXED）幀數皆 **0/3s**＝layer 從不重繪，強制 immersive 零效果 → `policy_control` 在此 image 已無作用（沒隱藏也沒閃爍）。
+- 定調：閃爍不在 guest、也不在 Qt 算好的 frame（PrintWindow byte-identical）＝**純 host present/掃描時序 artifact**（= S102 ~57fps windowed-DWM frame-pacing boundary，落在細白橫條）。內容截圖工具本質抓不到。
+- [x] main.cpp：移除 dead 的 `put policy_control immersive.navigation=*`（no-op）+ `delete global policy_control` 清舊 AVD 殘值 ＝ **清理非閃爍修復**。
+- [ ] **使用者驗證桿**：全螢幕（F11，繞過 windowed DWM 合成）閃爍是否停 → 停＝確認 present-timing、收斂到 windowed present-pacing 修法（S102 hard open item）；仍閃＝往 monitor refresh beat / Qt swapchain present 模式查。
+
+### Build/驗證
+- [x] `cmake --build build --config Release --target chimera-ui` PASS（QML 編進 qrc 無錯）。
+- [x] 真 boot ×2（-Fast）：app 開機、guest boot_completed、HOME/Settings 於 host 視窗正常渲染（有截圖）＝無回歸。
+- [x] 文件：CLAUDE/CONTEXT/lessons/todo（本檔）誠實化。commit（push 待確認）。
+
+---
+
 ## 2026-07-02 Session 102 — 畫面糊修復（Part A）+ 60fps 全鏈拆帳定案（Part B）
 
 ### Part A — 畫面糊根因（已實證，修復完成）

@@ -1,5 +1,12 @@
 # Chimera Lessons
 
+## 2026-07-03 — Session 103：用「該元件的 SF layer 幀數」分辨 guest 重繪 vs host 呈現時序；present-timing artifact 對內容截圖隱形；假設要被自己的取證否證就別留成「fix」
+
+- **「畫面在閃」但 guest ADB screencap 與 host PrintWindow 都 byte-identical → 呈現/掃描時序 artifact，兩種內容截圖本質抓不到**。手勢列閃爍：guest screencap ×7、host PrintWindow ×14（HOME+Settings）全 spread=0。`adb screencap` 讀 SurfaceFlinger 回讀、`PrintWindow PW_RENDERFULLCONTENT` 讀 Qt scene-graph 目前 node——**都是「已合成一幀內容」不是螢幕掃出時序**；present beat / tearing / refresh 對它們隱形。**Rule**：內容截圖 spread=0 只證「合成內容穩定」，不證「使用者沒看到閃爍」；present-timing 的 oracle 是眼睛 / Desktop Duplication（讀 DWM 合成後畫面）/ GPU present trace，不是 PrintWindow/screencap。截不到 ≠ 沒問題。
+- **分「guest 有沒有在重繪」用該元件的 SF layer 幀數：`dumpsys SurfaceFlinger --latency-clear` → 等 N 秒 → `--latency "<LayerName#id>"` 數非零 actual-present 列**。手勢列閃爍量 `NavigationBar0#N` 三階段（含強制 `immersive.navigation`）幀數皆 **0/3s**＝guest 端 layer 從不重繪 → 閃爍 100% 在 host 呈現側。**Rule**：懷疑某 UI 元件在閃/動，先量它的 SF layer 幀數；0 幀＝guest 靜態、往 host present 查，別在 guest 端瞎改設定。layer 名用 `--list` 撈（取 `Name#id` 那條，非 `animation-leash`/`Surface(name=` 前綴那些）。
+- **假設被自己的取證否證，就不能留成「fix」commit**：我先假設 `policy_control immersive.navigation`（開機強制）是閃爍成因、改成 delete 並 commit「fix: flicker」；隨後兩個程式化測試（screencap byte-identical + SF layer 0 幀、強制 immersive 零效果）**證明它 guest 側完全靜態、該設定在此 image（gesture-nav / 疑 Android 12+，`policy_control` 已無作用）根本 no-op**。**Rule**：commit 前先讓「決定性測試」跑完再定 commit type/訊息；已 disproven 的假設，把 commit 改回誠實（此處＝`chore` 清理 dead no-op 設定，非 flicker 修復），別讓下個 agent 讀到假的「已修」。呼應 memory `completion-claims-must-match-evidence`。
+- **`policy_control immersive` 在近代 Android（12+）已移除/無作用**：強制它幀數 0、screencap 不變＝既沒隱藏 nav bar 也沒任何效果。要在無 root user image 隱藏 gesture handle 沒有可靠 settings 途徑；閃爍的真桿是 host present-pacing（S102 boundary）或全螢幕（繞過 windowed DWM 合成）。
+
 ## 2026-07-02 — Session 102b：60fps 拆帳——逐段計時定位瓶頸，別假設；瓶頸會「位移」不會「消失」
 
 - **掉幀先分「production gap」vs「consumer stall」，用逐跳計時判別**：互動 scroll 量到 43 個 gap（含一個 2967ms），第一反應是「host 管線 stall」——錯。加 `CHIMERA_HOST_FRAME_TIMING`（GuestDisplay `updatePaintNode` 的 `acquire/copy/sincePaint` + capture worker event gap）實證：每個 gap `acquire=0.1ms copy=0.1ms`（consumer 從不卡），`worker event gap≈paintNode sincePaint`（frame 根本沒被 produce）。**gap 是 production 空檔不是 consumer stall**。**Rule**：顯示鏈掉幀，先在 consumer 端量「我這幀處理花多久」vs「距上一幀多久」——若處理快但間隔大＝上游沒送幀，往 producer/內容查；別在 consumer 端瞎修。

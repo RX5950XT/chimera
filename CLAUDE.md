@@ -2,7 +2,9 @@
 
 > AI 工作階段快速參考。每次重大變更後更新。開發歷程與 per-session 詳細記錄一律在 `CONTEXT.md`，本檔不重複保留。
 
-## 當前狀態（2026-07-03 / Session 102）
+## 當前狀態（2026-07-03 / Session 103）
+
+- **Session 103（本次）**：① 載入畫面拿掉中間「C」圖標，改 CHIMERA 字標 + 客製 indeterminate 進度條（`--no-emulator` 截圖驗證，✅ 完成）。② 底部手勢 home handle 閃爍——**guest 側已用兩個程式化測試排除**：ADB screencap ×7 與 host PrintWindow ×14 手勢列區域皆 byte-identical；`dumpsys SurfaceFlinger --latency` 量 NavigationBar layer 三階段（含強制 `immersive.navigation`）幀數皆 **0/3s**＝layer 從不重繪。結論：手勢列在 guest 端完全靜態，`policy_control immersive.navigation` 在此 image（gesture-nav / 疑 Android 12+）**毫無作用**（沒隱藏也沒閃爍）。閃爍是 **host present/掃描時序 artifact**（S102 ~57fps windowed-DWM frame-pacing boundary）落在細白橫條上，內容截圖工具本質抓不到。程式改動只有「移除那條 dead no-op 設定」＝清理，**非閃爍修復**。使用者驗證桿：全螢幕（F11，繞過 windowed DWM 合成）若閃爍停＝確認 present-timing 成因、指向 windowed present-pacing 修法。
 
 - **完成度**：BlueStacks Parity Roadmap v3 P0–P4e + 補強 COMPLETE；核心功能同等級（見下方功能清單）。
 - **生產引擎**：`emulator.exe`（Google QEMU+WHPX fork）。`--qemu-backend` / `--hcs-backend` / `--cuttlefish` 為 legacy R&D，保留不刪。
@@ -103,6 +105,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-quick-boot.
 
 | 問題 | 狀態 |
 |------|------|
+| 底部手勢 home handle 閃爍 | OPEN（guest 側已排除）— Session 103：兩程式化測試證手勢列 guest 端完全靜態（ADB screencap/host PrintWindow byte-identical；`dumpsys SurfaceFlinger --latency` NavigationBar 幀數 0/3s；強制 `immersive.navigation` 零效果）。閃爍＝**host present/掃描時序 artifact**（= S102 ~57fps windowed-DWM frame-pacing boundary，落在細白橫條）；內容截圖抓不到。已移除 dead no-op `policy_control` 設定（清理非修復）。驗證桿：全螢幕(F11)若停＝確認並指向 windowed present-pacing |
 | 畫面糊（1080p texture 縮小顯示文字殘缺） | RESOLVED — Session 102：`QSGSimpleTextureNode` material filtering 預設 Nearest 且 render 時覆寫 per-texture 設定（原 `texture->setFiltering()` 全 no-op）；改 node `setFiltering(Linear)` + letterbox rect snap 到 device-pixel 格。縮小顯示本質損失細節，完全銳利需 ≥1:1 顯示 |
 | `-Fast` host 視窗零幀黑屏（S85 起潛伏） | RESOLVED — Session 101 三層修復（`flushFromGl+invalidateForVk` 前置同步、`D3D11_TEXTURE_BIT`+dedicated import、GuestDisplay keyed-mutex acquire+私有副本〔`WAIT_TIMEOUT` 過得了 `SUCCEEDED()`，須 `==S_OK`〕）；SelfTest 新增 host 視窗像素 gate |
 | emulator idle 自殺（黑屏「等多久都黑」第二半） | RESOLVED — Session 101 移除 `-idle-grpc-timeout 300` + regression test；orphan 由 Job Object 管 |
@@ -157,4 +160,4 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-quick-boot.
 **禁止 commit**: BlueStacks binaries (Binaries/, Client/, Engine/, Dumps/)、root 層 ISO/QCOW2/installer、QEMU/debug logs、R&D throwaway scripts、runtime output dirs。
 
 ---
-*Updated: 2026-07-03 — Session 102：畫面糊根因修復（QSG node filtering Nearest→Linear + device-pixel rect snap）+ 60fps 全鏈逐段拆帳定案為 vsync frame-pacing boundary（host consumer 0.1ms 最佳、guest 34% CPU、CPU-direct post A/B 證瓶頸只位移不消失）。詳細歷程見 `CONTEXT.md`。*
+*Updated: 2026-07-03 — Session 103：客製化載入畫面（拿掉中間圖標、改進度條，✅）+ 手勢列閃爍 guest 側排除（2 程式化測試證 guest 靜態、`policy_control` 無效；閃爍＝host present-timing artifact＝S102 frame-pacing boundary，驗證桿全螢幕；移除 dead 設定為清理）。前一輪 Session 102：畫面糊修復 + 60fps 定案 frame-pacing boundary。詳細歷程見 `CONTEXT.md`。*
