@@ -1001,7 +1001,14 @@ void ChimeraGfxstreamVulkanSharedTextureBridge::postFrameDirectGpu(
     if (copied) {
         vk.vkWaitForFences(mDirectDevice, 1, &mDirectFence, VK_TRUE, UINT64_MAX);
         const auto tFence = std::chrono::steady_clock::now();
-        if (frameIndex == 2 || frameIndex % 240 == 0) {
+        // The shared-image readback is an expensive GPU round-trip (buffer alloc +
+        // submit + fence wait + map + free) executed synchronously on the post
+        // thread. Left unconditional it fired every 240 frames (~4s) and added a
+        // periodic single-frame hitch (maxMs ~28-31ms) to an otherwise steady 60.
+        // It was only ever the Session 101 zero-frame diagnostic, so gate it behind
+        // an explicit opt-in and keep the steady-state post path clean.
+        static const bool kDiagReadback = envTruthy("CHIMERA_GFXSTREAM_DIAG_READBACK");
+        if (kDiagReadback && (frameIndex == 2 || frameIndex % 240 == 0)) {
             debugReadbackSharedImage(vk, extent, frameIndex);
         }
         publishFrame(extent);
