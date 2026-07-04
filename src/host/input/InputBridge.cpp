@@ -582,13 +582,24 @@ void InputBridge::injectEvent(const Event &ev) {
         const int endX = std::clamp(centerX + dx * 28, 0, maxX);
         const int endY = std::clamp(centerY + dy * 28, 0, maxY);
         if (m_grpcInput) {
+            // A 0ms swipe sends press->end->release back-to-back, so Android's
+            // VelocityTracker sees the whole distance in ~0ms = maxed-out fling
+            // ("one notch flies to the bottom"), and with no intermediate move it
+            // can even register as a tap. A finite duration interpolates move
+            // events and holds the last point before lift, giving a bounded
+            // velocity = a controlled scroll, not a fling. ponytail: kWheelSwipeMs
+            // is the feel knob; throttle must exceed it so consecutive notches
+            // don't overlap on the shared kWheelTouchId.
+            constexpr int kWheelSwipeMs = 80;
+            constexpr auto kWheelThrottle = std::chrono::milliseconds(90);
             const auto now = std::chrono::steady_clock::now();
             if (m_lastGrpcWheel.time_since_epoch().count() != 0 &&
-                now - m_lastGrpcWheel < std::chrono::milliseconds(16)) {
+                now - m_lastGrpcWheel < kWheelThrottle) {
                 break;
             }
             m_lastGrpcWheel = now;
-            m_grpcInput->sendTouchSwipe(kWheelTouchId, centerX, centerY, endX, endY, 0);
+            m_grpcInput->sendTouchSwipe(kWheelTouchId, centerX, centerY, endX, endY,
+                                        kWheelSwipeMs);
         } else if (!m_adbPath.empty()) {
             enqueueAdbCommand("input swipe " +
                               std::to_string(centerX) + " " + std::to_string(centerY) + " " +

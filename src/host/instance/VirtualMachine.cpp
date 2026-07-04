@@ -439,6 +439,13 @@ std::vector<std::string> buildEmulatorArgsForConfig(const VirtualMachineConfig &
         args.push_back("Vulkan");
     }
 
+    // System locale is NOT set here: on the non-root google_apis_playstore image,
+    // "-prop persist.sys.locale=..." is silently dropped by the qemu-props service
+    // (SELinux denies setting persist.* from that context — verified S105, prop
+    // stays empty). The guest locale (zh-TW) is instead set once via Settings and
+    // persists in userdata (/data survives cold boot). See scripts/debloat-guest.ps1
+    // notes and docs; no launch flag can seed it on this image.
+
     args.push_back("-memory");
     args.push_back(std::to_string(config.ramMB));
 
