@@ -2,6 +2,21 @@
 
 ---
 
+## 2026-07-06 Session 106 — 修「有畫面但完全無法點擊」（gRPC 輸入埠被搶）
+
+使用者回報：啟動後有畫面但完全無法點擊、沒反應。
+
+- [x] **系統化除錯逐邊界拆帳**
+  - [x] guest 邊界：headless 直開同一 /data，`input swipe` 下拉 shade + screencap md5 前後比對 + `mCurrentFocus` 變化＝**guest 觸控 dispatch 正常**（0 ANR、focus 在 chimera launcher、locale 存活）。
+  - [x] host 靜態分析：`EmulatorGrpcInput` fire-and-forget POST 到 `127.0.0.1:8554`；`m_grpcInput` 恆非 null＝ADB fallback 死碼；顯示走 shared texture 獨立於 gRPC＝埠錯則畫面在點擊全丟。
+- [x] **實機重現根因**：占用 8554→emulator 仍回報 gRPC 成功、Windows 具體位址（舊 listener）勝 wildcard→POST 誤路由；兩真 emulator 同埠則第二個 `WSA 10048` bind fail。
+- [x] **修法（非破壞、免重編）**：`ChimeraVerifyCommon.ps1` 挑埠加驗衍生 gRPC 埠（`Get-EmulatorGrpcPort`）；`start-chimera.ps1` 正常啟動也自動挑空埠（去 `-SelfTest` 限制）。
+- [x] **端到端驗證**：占用 8554→修後自挑 console 5580→gRPC 8580、`sharedTexture=yes`、synthetic scroll `guestFps=60.0 effFps=58.6 dup=0% result=pass-gpu-direct-60`。收尾無 orphan。
+
+**Review**：根因是**輸入通道（gRPC 埠）被搶**而非顯示 bug——顯示/輸入是兩條獨立管道，「畫面會動」不代表輸入通。固定 5554→8554 + 恆非 null 的 `m_grpcInput`（ADB fallback 死碼）+ orphan 卡 8554＝觸控 POST 靜默全丟。修在**所有 caller 匯流的挑埠邏輯**一次（ponytail）：每次啟動挑一組驗證過空閒的埠（含 gRPC 埠），碰撞結構性消失且順帶乾淨多開。未做＝app 端（直開 exe）的 gRPC 健康檢查/ADB 回退（YAGNI，使用者只走 `start-chimera.cmd`）。腳本改動免 C++ 重編，ctest 不受影響。
+
+---
+
 ## 2026-07-04 Session 105 — 使用者 8 項體驗/穩定度清單
 
 使用者一次列 8 項（做完再回答 #5/#8）：

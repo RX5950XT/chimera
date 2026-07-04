@@ -1,5 +1,13 @@
 # Chimera Lessons
 
+## 2026-07-06 — Session 106：「有畫面但無法點擊」＝輸入通道（gRPC 埠）被搶，不是顯示問題；固定埠假設 + fire-and-forget POST + 死碼 fallback＝靜默全丟輸入
+
+- **「有畫面但完全無法點擊」先分「顯示邊界」與「輸入邊界」——它們是兩條獨立管道**。Chimera 顯示走 shared texture、輸入走 gRPC；顯示正常**不代表**輸入正常。除錯順序：① 先證 guest 觸控本身活著（headless 直開同一 /data，`input swipe` 下拉 shade + screencap md5 前後比對 + `mCurrentFocus` 變化＝guest dispatch OK），把問題夾到 host→guest 路徑；② 再查 host 輸入路徑。**Rule**：別因為「畫面會動」就假設輸入該通、也別一頭鑽顯示碼；逐邊界注入 + 程式化 oracle（md5/焦點/dumpsys）拆帳。
+- **`m_grpcInput` 一旦 `setGrpcInput` 就恆非 null → `InputBridge` 的 `else if(ADB)` fallback 成死碼**。gRPC 是 fire-and-forget POST 到 `127.0.0.1:8554`，**沒有健康檢查、失敗不回退**：埠打錯＝每次點擊靜默丟。**Rule**：凡「主通道 + fallback」設計，fallback 分支必須真的可達（主通道健康檢查失敗才用），否則就是騙自己的死碼；fire-and-forget 對「時間敏感、可丟」的訊號 OK，但當它是**唯一**輸入通道時要有 liveness 驗證。
+- **固定埠假設在有 orphan/多實例時會靜默中毒**：正常啟動用固定 5554→8554，`emulator -grpc 8554` 遇埠被占**不保證失敗**——Windows 允許具體位址（`127.0.0.1:8554` 舊 listener）與 wildcard（`0.0.0.0:8554` 新 emulator）並存，且 **連 127.0.0.1 命中較具體的舊 listener**→emulator log 照印「Started GRPC server」但 chimera 的 loopback POST 打到殭屍。兩個真 emulator 同埠則第二個 `WSA 10048 bind fail`。**Rule**：host↔emulator 的每條連線（capture/input/console/gRPC）都要對「自己啟動的那個 emulator」有把握；最穩健是**每次啟動挑一組驗證過空閒的埠**（含衍生 gRPC 埠，不只 console+adb），而非硬寫常數。挑埠檢查漏掉 gRPC 埠＝等於沒檢查（輸入就是走它）。
+- **腳本直開 emulator（無 kill-on-close Job Object）會留 orphan＝下一輪的地雷**：診斷用 `emulator.exe … &` 直開的行程不受 chimera-ui 的 Job Object 管，session 結束若沒殺就卡住埠。**Rule**：診斷直開 emulator 後務必自己 teardown（`adb emu kill` + taskkill + `adb kill-server` + netstat 確認埠釋放）；把「挑空埠」當防線讓殘留 orphan 不再能毒害正常啟動。
+- **修使用者實際路徑優先於「理論最完整」**：使用者只走 `start-chimera.cmd`＝腳本挑埠即根治；直開 `chimera-ui.exe` 的 app 端 gRPC 健康檢查/ADB 回退是更完整的 defense-in-depth，但需 C++＋重編且沒人走那條路＝YAGNI，記著待需要再做。**Rule**：ponytail——在所有相關 caller 匯流的地方修一次（此處＝挑埠邏輯），別為沒人走的路徑先蓋 scaffolding。
+
 ## 2026-07-05 — Session 105：非 root user image 的 guest 設定邊界（locale/debloat）；app crash-loop 根因＝持久 job 累積；停用系統整合元件會觸發 system_server ANR
 
 - **非 root google_apis_playstore 沒有 CLI 改「系統 locale」——`-prop persist.sys.locale` 與 `adb shell setprop persist.*` 都被 SELinux 擋（實測 prop 恆空、setprop 回 `Failed to set property`）**。`cmd locale` 只有 `set-app-locales`（per-app）無系統 locale。唯一可靠路：**Settings UI（新增 繁體中文（台灣）→ 移除 English）**，它以系統權限寫 `persist.sys.locale` 到 /data，冷開機留存。**Rule**：要改非 root guest 的系統 locale，別寫 launch flag（會是 dead code），走 Settings 一次性設定 + 靠 /data 持久；程式碼裡若已加 `-prop persist.sys.locale` 要回退（無效）。

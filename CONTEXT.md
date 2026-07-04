@@ -7,6 +7,26 @@
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 **引擎決策（最重要）**：生產引擎 = `emulator.exe`（Google QEMU+WHPX fork）；`--qemu-backend`（stock QEMU 11 + Cuttlefish）與 `--hcs-backend`（Hyper-V HCS）= legacy R&D，保留不刪。BlueStacks 輸入路徑更正：`BstkDrv.sys` 是 network/filter driver 非 input driver；BlueStacks 走 `HD-Bridge-Native.dll` → virtio-input，Chimera 等效路徑是 emulator gRPC + Console `event` protocol。
 
+## 2026-07-06 — Session 106 — 「有畫面但完全無法點擊」＝gRPC 輸入埠被搶（固定埠假設）
+
+使用者回報：啟動後**有畫面但完全無法點擊、沒反應**。用系統化除錯逐邊界拆帳，實機重現根因後以最小非破壞改動修復並端到端驗證。
+
+**Phase 1 — guest 邊界（排除 guest 掛掉）**：headless 直開 stock emulator（同一 AVD /data）→ `boot_completed=1`、`bootanim=stopped`；`dumpsys window mCurrentFocus`＝`com.chimera.launcher/.MainActivity`（焦點正常非崩潰 app）、logcat 0 ANR/FATAL、`persist.sys.locale=zh-Hant-TW` 存活、virtio multi-touch 裝置在。**觸控注入測試**：`screencap` md5 baseline→`input swipe`（下拉 NotificationShade）→md5 變、`mCurrentFocus=NotificationShade`→`input keyevent 4`（BACK）→md5 還原成 baseline。**結論：guest 觸控 dispatch 完全正常**，問題在 host→guest 輸入路徑。
+
+**Phase 2 — host 輸入路徑靜態分析**：`GuestDisplay` 三個 mouse handler + touchEvent 全走 `m_mapper.mapToGuest()`（座標 letterbox 數學正確、mapper 幾何由 geometryChange/setGuestSize 餵、item `setAcceptedMouseButtons(AllButtons)`＝可收滑鼠）；tap 用 `kPrimaryTouchId`、wheel 用 `kWheelTouchId=9`（S105 wheel 改動與 tap 無交集）。關鍵：`EmulatorGrpcInput::post` 對 `127.0.0.1:grpcPort` **fire-and-forget HTTP/2 POST**；`main.cpp` 一接上就 `setGrpcInput`＝`m_grpcInput` **恆非 null**→`InputBridge` 觸控/滑鼠分支永遠走 gRPC、**`else if(!m_adbPath.empty())` ADB fallback 是死碼**。顯示走 gfxstream shared texture（獨立於 gRPC）。⇒ **gRPC 埠打錯＝畫面照常、點擊靜默全丟、無回退**。
+
+**Phase 3 — 埠推導 + 啟動流程**：`main.cpp` `consolePort` 預設 **5554**（除非 `CHIMERA_EMULATOR_CONSOLE_PORT`）→`grpcPort=8554+((c-5554)/2)*2`；`VirtualMachine` 以 `-ports console,adb -grpc grpcPort` 啟動；三者一致**前提是 emulator 真的 bind 到 8554**。`start-chimera.cmd`→`start-chimera.ps1 -Fast -InteractiveFirst` 正常路徑用**固定 5554**（只有 `-SelfTest` 才 `Resolve-EmulatorConsolePort 0` 挑空埠）；`Get-FreeEmulatorConsolePort` 只驗 console+adb **沒驗 gRPC 埠**。emulator 是 chimera-ui 子行程掛 kill-on-close Job Object＝正常退出無 orphan；**但 S105 多次直開 emulator（無 Job Object）留下的 orphan 會卡住 8554**。
+
+**Phase 4 — 實機重現（決定性）**：① 占用 `127.0.0.1:8554`（dummy listener）後開 emulator `-grpc 8554`→emulator log 仍印「Started GRPC server at [::]:8554」**回報成功**，netstat 同時有 `0.0.0.0:8554`(emulator)＋`127.0.0.1:8554`(dummy)＝Windows 允許具體位址與 wildcard 並存、**連 127.0.0.1 命中較具體的 dummy**→chimera 觸控 POST 打到 dummy＝點擊全失（＝使用者症狀）。② 兩個真 emulator 都 `-grpc 8554`→第二個 `WSA error 10048 bind [::]:8554`「Failed to start grpc service, even though it was explicitly requested」「Failed to setup emulator in a timely fashion」。**兩種碰撞都讓可見 guest 的 gRPC 輸入失效。**
+
+**根因**：pointer 輸入對「固定 8554 由自己 emulator 服務」的**未驗證硬依賴** + 正常啟動路徑不挑空埠 + ADB fallback 死碼。
+
+**修法（非破壞、免重編 C++）**：
+- `scripts/ChimeraVerifyCommon.ps1`：新增 `Get-EmulatorGrpcPort`（與 main.cpp 同式），`Get-FreeEmulatorConsolePort` 挑埠時**多驗衍生 gRPC 埠**空閒（原只驗 console+adb）。
+- `scripts/start-chimera.ps1`：正常啟動改成 `-not $explicitConsolePort` 就自動挑空埠（原只 `-SelfTest`）＝每次啟動免碰撞、順帶乾淨支援多開（第二實例自挑另一組埠而非靜默丟輸入）。
+
+**驗證**：parse-check 兩腳本 OK；故意占用 8554→`verify-interactive-ui.ps1 -Mode Fast -SyntheticScroll`（共用改好的挑埠）自挑 console **5580→gRPC 8580**、`CHIMERA_DISPLAY sharedTexture=yes`、`seg=sustained-scroll guestFps=60.0 effFps=58.6 effMin=57.2 dup=0% result=pass-gpu-direct-60`＝synthetic scroll 走**真實 gRPC 路徑**確實驅動 guest 捲動（修前同狀態全丟）。收尾清乾淨無 orphan/監聽。**誠實邊界**：修的是使用者實際路徑（腳本挑埠）；直開 `chimera-ui.exe`（無腳本）仍走固定埠＝app 端 gRPC 健康檢查 / ADB 觸控回退屬**未實作的 defense-in-depth**（需 C++＋重編，使用者不走此路＝YAGNI，記於 lessons 待需要時做）。
+
 ## 2026-07-05 — Session 105 — 使用者 8 項體驗清單：滾輪、系統繁中、app 崩潰、資料持久、debloat、清理
 
 使用者一次列 8 項（做完再答 #5/#8）。全部完成並在單次 headless boot（stock emulator + adb，`emulator-5554`）+ 冷重開實測驗證。
