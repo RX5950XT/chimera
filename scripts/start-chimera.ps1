@@ -85,7 +85,13 @@ $AvdDir   = Join-Path $RepoRoot "third_party\android-avd\$AvdName.avd"
 . (Join-Path $PSScriptRoot "ChimeraVerifyCommon.ps1")
 
 $explicitConsolePort = $PSBoundParameters.ContainsKey('ConsolePort')
-if ($SelfTest -and -not $explicitConsolePort) {
+if (-not $explicitConsolePort) {
+    # Auto-pick a verified-free console/ADB/gRPC port set. The old fixed 5554/8554
+    # default let a leftover emulator still holding gRPC 8554 hijack the input
+    # channel: the new instance rendered a live picture via the shared texture, but
+    # every touch POST to 127.0.0.1:8554 hit the stale listener, so nothing was
+    # clickable. Selecting a free set makes launches collision-proof (and lets a
+    # second instance start cleanly instead of silently losing input).
     $ConsolePort = Resolve-EmulatorConsolePort -ConsolePort 0
 } else {
     $ConsolePort = Resolve-EmulatorConsolePort -ConsolePort $ConsolePort

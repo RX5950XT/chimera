@@ -26,15 +26,29 @@ function Test-TcpPortAvailable {
     return $listeners.Count -eq 0
 }
 
+# Emulator gRPC control port the host will target, derived from the console port
+# EXACTLY as chimera-ui does (main.cpp): 8554 + ((console - 5554) / 2) * 2.
+# Input (touch/key) is POSTed here; if it is not free, a stale/other emulator
+# answers 127.0.0.1:<grpc> instead and every click is silently dropped while the
+# shared-texture display still works ("picture but nothing is clickable").
+function Get-EmulatorGrpcPort {
+    param([Parameter(Mandatory = $true)][int]$ConsolePort)
+    return 8554 + [int](([math]::Floor(($ConsolePort - 5554) / 2)) * 2)
+}
+
 function Get-FreeEmulatorConsolePort {
     # Android Emulator reserves an even console port and the following odd ADB port.
     # Some local services (for example VPN clients) bind 5555/5561, so pick a free pair.
+    # Also require the derived gRPC control port free: a leftover emulator holding it
+    # steals the input channel from the new instance (display works, clicks do not).
     foreach ($port in 5560, 5570, 5580, 5590, 5600, 5610, 5620, 5630, 5640, 5650, 5660, 5670) {
-        if ((Test-TcpPortAvailable -Port $port) -and (Test-TcpPortAvailable -Port ($port + 1))) {
+        if ((Test-TcpPortAvailable -Port $port) -and
+            (Test-TcpPortAvailable -Port ($port + 1)) -and
+            (Test-TcpPortAvailable -Port (Get-EmulatorGrpcPort -ConsolePort $port))) {
             return $port
         }
     }
-    throw "no free Android emulator console/ADB port pair found"
+    throw "no free Android emulator console/ADB/gRPC port set found"
 }
 
 function Resolve-EmulatorConsolePort {
