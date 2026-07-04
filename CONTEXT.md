@@ -7,7 +7,21 @@
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 **引擎決策（最重要）**：生產引擎 = `emulator.exe`（Google QEMU+WHPX fork）；`--qemu-backend`（stock QEMU 11 + Cuttlefish）與 `--hcs-backend`（Hyper-V HCS）= legacy R&D，保留不刪。BlueStacks 輸入路徑更正：`BstkDrv.sys` 是 network/filter driver 非 input driver；BlueStacks 走 `HD-Bridge-Native.dll` → virtio-input，Chimera 等效路徑是 emulator gRPC + Console `event` protocol。
 
-## 2026-07-06 — Session 106 — 「有畫面但完全無法點擊」＝gRPC 輸入埠被搶（固定埠假設）
+## 2026-07-04 — Session 107 — 「有畫面但無法點擊」真根因＝-Fast 顯示凍結（非輸入）；否證 S106；一鍵改 stock＋修音訊
+
+使用者回報「問題依然沒修好，有畫面但無法點擊」（S106 的挑埠修法沒解決），隨後又回報「開模擬器我的音樂會出現雜音」。系統化除錯（superpowers:systematic-debugging）從頭取證，**否證 S106 根因**，找到真根因＝顯示凍結。
+
+**Phase 1 — 否證 S106「埠被搶」**：現場 `netstat` 乾淨（無 orphan 占 8554）；照舊碼固定 5554→8554 本應可用卻仍不能點。給 `EmulatorGrpcInput::post` 加診斷日誌（`CHIMERA_GRPC_INPUT_DIAG`：記每個 POST 的 `netErr/http/grpc-status`，這本來就是該補的「fire-and-forget 靜默吞錯」缺陷）→ 重編 → synthetic scroll 驅動下 **3138 個 `POST sendTouch port 8560` 全 `OK http200 grpc-status0`，零失敗**。⇒ gRPC 傳輸完好、埠正確，S106 根因不成立。
+
+**Phase 2 — 證明輸入路徑端到端完好**：關鍵盲點＝synthetic scroll 直呼 `InputBridge::onTouchPoint`（繞過 GuestDisplay），從沒驗過真實滑鼠那段。用 Win32 `PostMessage(WM_MOUSEMOVE/LBUTTONDOWN/LBUTTONUP)` 打 chimera-ui HWND（不搶實體滑鼠）：一個點擊→**恰 2 個 sendTouch POST**（press+release）＝`GuestDisplay::mousePressEvent→mapToGuest→onMouseButton→sendTouch` 全通。再對 client(640,380) 點擊→**guest `mCurrentFocus` 由 launcher 變 `SearchActivity`**＝真實點擊確實開啟 guest UI（對照 adb tap 960,500 同效）。另 `WM_NCHITTEST=HTCLIENT`、`WindowFromPoint`=本視窗、主/副螢幕皆 96DPI＝排除 hit-test/DPI/前景/覆蓋。**輸入不是問題。**
+
+**Phase 3 — 真根因＝顯示凍結（決定性）**：權威螢幕 BitBlt liveness（`CopyFromScreen` 抓 DWM 實際合成＝使用者真正看到的）：guest `HOME→Settings`（`mCurrentFocus` 確變），但 **host 視窗螢幕像素兩次 byte-identical（凍結）**。乾淨啟動（完全不碰視窗）重現：`CHIMERA_PERF total` 卡在 ~140、`maxMs=8184ms`、**連續 20 次 adb swipe 也不動**。emulator 端 log：`postFrameDirectGpu`/「kVk GPU path」停在 ~frame100/seq240 後噴 **`ERROR Failed to find ColorBuffer 65/34`、`bad color buffer handle 67`（throttled）**＝**producer 引用的 ColorBuffer handle 失效後停止發佈新幀**。guest 續跑、輸入照進、但凍結畫面永不顯示反應＝「有畫面像死當」。（PrintWindow 對 D3D11 合成抓不到即時幀會誤判，故用螢幕 BitBlt 複驗。）
+
+**Phase 4 — 修法（使用者選「先切 stock＋接著修 -Fast」）**：實測 **stock gRPC 顯示 live**（HOME→Settings host 像素會變、`total` 持續爬、可正常點擊，~10-19fps）。① `start-chimera.cmd` 一鍵預設 **拿掉 `-Fast`→走 stock**（畫面持續更新、點擊立即有反應）。② 順手修使用者回報的**開模擬器音樂雜音**：一鍵 **拿掉 `-InteractiveFirst`**（=normal priority＝最傷 host audio thread；stock 慢路徑用 normal 幾乎沒 FPS 好處）→回 `below_normal`（`CHIMERA_INTERACTIVE_PRIORITY` 預設，`main.cpp:1124` 覆蓋 instances.json）。`-Fast`/`-InteractiveFirst`/`-AudioFirst` 仍可手動 opt-in。③ 還原 instances.json 殘留的 `processPriority: normal`（runtime 持久化的雜訊）回 below_normal。
+
+**待修（-Fast 平滑路徑）**：`frame_buffer.cpp` post 路徑的 ColorBuffer 生命週期——boot 穩定後 SurfaceFlinger 輪替/銷毀的 colorBuffer handle 讓 `postImpl`/`postFrameDirectGpu` 找不到目標而停止發佈。屬 deep gfxstream，需改 source + 重建 runtime（`build-chimera-gfxstream-runtime.ps1`）；這條路歷史上是地雷區（S101 零幀、多次假 60fps）。**教訓：FPS≠輸入送達≠畫面 liveness；任何「可見/可點」宣稱必須用 host 螢幕 BitBlt 對 guest 變化做 liveness 比對 + 行為 oracle，不能只看 FPS gate。**
+
+## 2026-07-06 — Session 106 — 「有畫面但完全無法點擊」＝gRPC 輸入埠被搶（固定埠假設）〔根因已被 S107 否證，挑埠強化保留〕
 
 使用者回報：啟動後**有畫面但完全無法點擊、沒反應**。用系統化除錯逐邊界拆帳，實機重現根因後以最小非破壞改動修復並端到端驗證。
 

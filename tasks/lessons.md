@@ -1,6 +1,13 @@
 # Chimera Lessons
 
-## 2026-07-06 — Session 106：「有畫面但無法點擊」＝輸入通道（gRPC 埠）被搶，不是顯示問題；固定埠假設 + fire-and-forget POST + 死碼 fallback＝靜默全丟輸入
+## 2026-07-04 — Session 107：「有畫面但無法點擊」真根因＝顯示凍結（非輸入）；FPS≠輸入送達≠畫面 liveness；別在前一輪未驗證的根因上疊修法
+
+- **「pass-gpu-direct-60」量的是 render 節奏，不證明「點擊有送達 guest」也不證明「host 畫面在更新」——這是 S106 修錯的根本原因**。S106 用 synthetic scroll 跑出 `guestFps=60 pass-gpu-direct-60` 就宣稱「點擊確實進 guest」，但那只是 FPS 計數；synthetic scroll 直接呼叫 `InputBridge::onTouchPoint`（繞過 GuestDisplay），且 60fps 可以是 guest 一邊渲染靜態畫面一邊把觸控全丟。**Rule**：驗「輸入有沒有進 guest」要有**行為 oracle**（`mCurrentFocus` 變化 / screencap md5 變 / dumpsys），不是 FPS；驗「畫面有沒有更新」要**對 host 視窗做螢幕 BitBlt（`CopyFromScreen`，抓 DWM 實際合成）在 guest 明確變化前後比對**——PrintWindow 對 D3D11/GPU 合成常抓不到即時幀會誤判。三件事（FPS／輸入送達／畫面 liveness）互相獨立，別用一個代另一個。
+- **前一輪的「根因」可能是錯的；接手先對現場重新取證再決定，別直接在它上面疊修法**。S106 結論「gRPC 埠 8554 被搶」——本輪現場 `netstat` 乾淨、`EmulatorGrpcInput` 加診斷日誌後 **3138 個 POST 全 `http200 grpc-status0`**＝根因不成立。真根因是 **-Fast 共享貼圖顯示凍結**（emulator `postFrameDirectGpu` 在 ~seq240 後噴 `Failed to find ColorBuffer` 停止發佈新幀；host `CHIMERA_PERF total` 卡死、螢幕像素 byte-identical）。**Rule**：`CLAUDE.md` 寫「RESOLVED」不等於真的解決；症狀復發時把舊根因當「待否證假設」，用逐邊界注入 + 程式化 oracle 重新拆帳，別因為它有 commit＋通過某 gate 就信。
+- **輸入路徑可用 Win32 `PostMessage(WM_LBUTTONDOWN/UP)` 到 chimera-ui HWND 端到端驗，不搶實體滑鼠**：PostMessage 直接塞訊息佇列（繞過 OS hit-test），配合 `EmulatorGrpcInput` 診斷日誌 + guest `mCurrentFocus` 變化，實證「真實滑鼠事件→GuestDisplay→mapToGuest→onMouseButton→sendTouch→guest 開 Activity」全通。要驗實體點擊會不會落到別的視窗，另用 `WM_NCHITTEST`(=HTCLIENT)＋`WindowFromPoint`(=本視窗)＋monitor DPI 比對排除 hit-test/DPI/覆蓋。**Rule**：不能動使用者實體滑鼠時，PostMessage + 行為 oracle 是輸入路徑的合法端到端測法；區分「軟體路徑通不通」與「OS 有沒有把實體點擊路由進來」用不同 API。
+- **一鍵預設要對使用者實際痛點負責：不可用的「smooth」不如可用的「slow」**。-Fast 顯示會凍結＝畫面死當；stock gRPC 顯示實測 live、可正常點擊（~10-19fps）。使用者選「先切 stock＋再修 -Fast」＝`start-chimera.cmd` 拿掉 `-Fast`。同時拿掉 `-InteractiveFirst`（normal priority＝最傷 host audio、stock 慢路徑用它幾乎沒 FPS 好處）順手修「開模擬器音樂雜音」。**Rule**：一鍵預設選「當下實測可用且不傷使用者其他體驗（音訊）」的組合，實驗性 smooth 路徑留成 opt-in flag，待其根因修好再考慮改回預設。
+
+## 2026-07-06 — Session 106（根因已被 S107 否證，挑埠強化保留）：「有畫面但無法點擊」誤判為輸入通道（gRPC 埠）被搶
 
 - **「有畫面但完全無法點擊」先分「顯示邊界」與「輸入邊界」——它們是兩條獨立管道**。Chimera 顯示走 shared texture、輸入走 gRPC；顯示正常**不代表**輸入正常。除錯順序：① 先證 guest 觸控本身活著（headless 直開同一 /data，`input swipe` 下拉 shade + screencap md5 前後比對 + `mCurrentFocus` 變化＝guest dispatch OK），把問題夾到 host→guest 路徑；② 再查 host 輸入路徑。**Rule**：別因為「畫面會動」就假設輸入該通、也別一頭鑽顯示碼；逐邊界注入 + 程式化 oracle（md5/焦點/dumpsys）拆帳。
 - **`m_grpcInput` 一旦 `setGrpcInput` 就恆非 null → `InputBridge` 的 `else if(ADB)` fallback 成死碼**。gRPC 是 fire-and-forget POST 到 `127.0.0.1:8554`，**沒有健康檢查、失敗不回退**：埠打錯＝每次點擊靜默丟。**Rule**：凡「主通道 + fallback」設計，fallback 分支必須真的可達（主通道健康檢查失敗才用），否則就是騙自己的死碼；fire-and-forget 對「時間敏感、可丟」的訊號 OK，但當它是**唯一**輸入通道時要有 liveness 驗證。
