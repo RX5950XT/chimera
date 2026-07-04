@@ -79,6 +79,10 @@ void EmulatorGrpcInput::sendText(const QString &utf8text) {
 
 void EmulatorGrpcInput::sendTouch(int identifier, int x, int y, int pressure) {
     if (identifier < 0) return;
+    if (qEnvironmentVariableIsSet("CHIMERA_GRPC_INPUT_DIAG")) {
+        qInfo().noquote() << "[EmulatorGrpcInput] sendTouch id=" << identifier
+                          << "guest=(" << x << "," << y << ") pressure=" << pressure;
+    }
     QByteArray touch;
     appendVarintField(&touch, 1, static_cast<quint64>(std::max(0, x)));
     appendVarintField(&touch, 2, static_cast<quint64>(std::max(0, y)));
@@ -134,7 +138,34 @@ void EmulatorGrpcInput::post(const QString &rpcName, const QByteArray &payload) 
     QNetworkReply *reply = m_net.post(request, grpcFrame(payload));
     if (reply) {
         // Fire-and-forget: keystrokes are time-sensitive, the reply is empty.
-        QObject::connect(reply, &QNetworkReply::finished, reply, &QObject::deleteLater);
+        // The input path is otherwise a black hole — a wrong port, an HTTP/2
+        // negotiation failure, or a non-OK gRPC status vanishes silently and the
+        // guest simply never receives the touch. Surface failures so "picture but
+        // no clicks" is diagnosable instead of invisible. Set CHIMERA_GRPC_INPUT_DIAG
+        // to also log successful posts (transport health check).
+        const QString rpc = rpcName;
+        const int port = m_port;
+        QObject::connect(reply, &QNetworkReply::finished, reply, [reply, rpc, port]() {
+            const auto netErr = reply->error();
+            const QVariant httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
+            const QByteArray grpcStatus = reply->rawHeader("grpc-status");
+            const bool grpcOk = grpcStatus.isEmpty() || grpcStatus == "0";
+            const bool diag = qEnvironmentVariableIsSet("CHIMERA_GRPC_INPUT_DIAG");
+            if (netErr != QNetworkReply::NoError || !grpcOk) {
+                qWarning().noquote()
+                    << "[EmulatorGrpcInput] POST" << rpc << "port" << port
+                    << "FAILED netErr=" << int(netErr) << reply->errorString()
+                    << "http=" << (httpStatus.isValid() ? httpStatus.toInt() : -1)
+                    << "grpc-status=" << (grpcStatus.isEmpty() ? QByteArray("<none>") : grpcStatus)
+                    << "grpc-message=" << reply->rawHeader("grpc-message");
+            } else if (diag) {
+                qInfo().noquote()
+                    << "[EmulatorGrpcInput] POST" << rpc << "port" << port
+                    << "OK http=" << (httpStatus.isValid() ? httpStatus.toInt() : -1)
+                    << "grpc-status=" << (grpcStatus.isEmpty() ? QByteArray("<none>") : grpcStatus);
+            }
+            reply->deleteLater();
+        });
     }
 }
 
