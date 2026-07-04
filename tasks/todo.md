@@ -2,6 +2,36 @@
 
 ---
 
+## 2026-07-04 Session 105 — 使用者 8 項體驗/穩定度清單
+
+使用者一次列 8 項（做完再回答 #5/#8）：
+
+1. **滾輪體驗**（滾一格飛到底／被判點擊）
+   - [x] 根因＝gRPC wheel `sendTouchSwipe(...,durationMs=0)`＝爆速 fling（ADB fallback 反用 100ms）。修 `InputBridge.cpp`：`kWheelSwipeMs=80`（速度有界）+ throttle `16→90ms`（防同 `kWheelTouchId` 重疊）。build+ctest 23/23。
+2. **系統語言全繁中**
+   - [x] 非 root 無 CLI 改系統 locale（`-prop`/`setprop persist.*` SELinux 擋、`cmd locale` 僅 per-app）→ Settings UI 自動化設 繁體中文（台灣）；`persist.sys.locale=zh-Hant-TW` 寫入 /data，`am get-config=b+zh+Hant+TW`、UI+launcher 全中文。VirtualMachine.cpp `-prop` 回退（無效 dead code）。
+3. **App 時常停止運作**
+   - [x] dropbox 找出 Google 相簿 crash-loop＝`Apps may not schedule more than 150 distinct jobs`（持久 job 累積撞上限）。debloat 停用即取消其 job＝根因修復；冷重開 crash buffer 0 FATAL。
+4. **個人資料持久化（每次全新）**
+   - [x] 實測 marker+locale+停用清單全部跨 `adb reboot` 存活＝/data 本來就持久（config.ini `<temp>` 只是模板佔位符）。「全新」感＝Google 帳號未持久，非資料被清。
+5. **新 app 出現在首頁？**（問題）
+   - [x] 程式碼確認 YES：`onResume→loadApps` 每次重查 launchable+user-installed。HOME 截圖 GL60 佐證。
+6. **精簡不必要 app／後台省記憶體**
+   - [x] `pm disable-user` 停 20 個純 bloat（MemFree 153→697MB）；系統整合類（`as`/`settings.intelligence`）留著（執行中停觸發 system_server ANR）。codify `scripts/debloat-guest.ps1`（`-Restore`）。
+7. **持續優化性能／刪垃圾**
+   - [x] host：刪 stale `tmp/aosp*`/`gfxstream-{build,src,build-system}` 回收 **3.21GB**（保留 active pair）；修 AGENTS.md stale 路徑。guest debloat 同 #6。
+8. **儲存硬限還是動態？**（問題，全做完再答）
+   - [x] 答＝qcow2 稀疏動態成長只佔實際用量、封頂＝`disk.dataPartition.size`；「只增不減」是 qcow2 特性（與上限無關，離線 `qemu-img convert` 才縮）。
+   - [x] 使用者追加：壓縮（8.95→6.0GB、丟 stale snapshot）＋上限 6→128GB。加密 fs（dm-default-key）無法原地擴→`-wipe-data` 重格 128G（確認無帳號/個人 app）→df 126G，重設 launcher/繁中/debloat、冷重開全留存；刪 .bak、新 qcow2 4.07GB。
+
+### Review
+- 一次 headless boot（stock emulator + adb）+ 一次冷重開跑完 8 項，全部程式化取證（dropbox trace / `am get-config` / marker 存活 / HOME 截圖 / MemFree delta），非憑感覺。
+- 兩個「以為要寫 code 其實不該」的省事：locale 的 `-prop` 實測無效→回退（非 root 唯一路徑是 Settings UI + /data 持久）；task 4「每次全新」實測否證＝資料本來就持久（不是 bug，是帳號態）。
+- 一個 mid-course 修正：aggressive debloat 停到系統整合元件觸發 system_server ANR→點 Wait+re-enable 那兩個，保守化只停純使用者 bloat。教訓入 lessons。
+- 淨產出：1 個 host code 修（滾輪根因）、guest 端 locale+debloat（持久 /data）、1 個可還原腳本、3.21GB 清理、文件全對齊。push 待使用者確認。
+
+---
+
 ## 2026-07-04 Session 104 — 穩定 60fps：全鏈實測定調 + post hot-path 診斷 readback gate
 
 目標（使用者 /goal）：「性能已大幅改善，持續優化讓它更穩定在 60fps」。
