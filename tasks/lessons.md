@@ -1,6 +1,13 @@
 # Chimera Lessons
 
-## 2026-07-04 — Session 107：「有畫面但無法點擊」真根因＝顯示凍結（非輸入）；FPS≠輸入送達≠畫面 liveness；別在前一輪未驗證的根因上疊修法
+## 2026-07-05 — Session 108：否證 S107「-Fast 凍結」；單張 byte-identical ≠ 凍結；接手「待修」先驗證其前提
+
+- **單張（或兩張）byte-identical 螢幕截圖不能證明「顯示凍結」——idle-static 是常態不是病**。guest 內容不變（fling settle、靜止頁面）→ 正確不重繪 → host 像素當然 identical。S107 就這樣把健康的 -Fast 判成「凍結」切去 stock；本次我自己的偵測器同樣誤標 2 次「DIVERGENCE」，下一 tick 就自行追上。**Rule**：判凍結必須是**時間序列上的三指標背離**——(1) producer 幀計數（emulator stderr `kVk GPU path (frame N)`）持續爬、(2) host `CHIMERA_PERF total` 卻長期不動、(3) 螢幕 BitBlt hash 在**主動驅動 guest 變化下**持續 identical，三者同時成立且跨多個觀測窗才算。任一指標恢復＝不是凍結。
+- **接手前一輪的「待修」項，先花 10 分鐘驗證其前提，再決定要不要開工**。S107 留下「-Fast ColorBuffer 凍結，需 deep gfxstream 重建 runtime」——但逐一讀 `Failed to find ColorBuffer` 全部 call site 就會發現它們全是 log+`return false` 跳過單次 invalidate（有 throttle），**沒有任何路徑停 producer**＝敘事在 code 上就站不住；150s 出貨組態實測（producer 1→4800、host total ~1:1、螢幕 hash 30 distinct）徹底否證。省下一次盲目的 gfxstream 重建。**Rule**：CLAUDE.md 的「待修＋根因描述」是假設不是事實；動大刀（重建 runtime/改 hot path）前先用 code 檢視 + 一次受控重現驗證前提。這已是連續第三個被否證的根因（S106 埠、S107 producer freeze）——本專案「無法點擊」症狀至今 0 次受控重現，任何新根因宣稱都要附重現步驟。
+- **throttled ERROR log ≠ 故障訊號**。`Failed to find ColorBuffer`（throttled count 到 5400）在 150s 完全健康的 run 裡照樣出現＝guest 對已銷毀 handle 的 invalidate/flush 噪音。**Rule**：把某條 ERROR 當根因前，先讀它的 call site 確認後果（fatal？skip？retry？）＋在健康 baseline run 裡看它出不出現；「錯誤訊息在凍結時出現過」不等於「它造成凍結」（相關≠因果）。
+- **診斷腳本樣板**（scratchpad `diag-fast-freeze.ps1`）：MaxFrame（regex emulator stderr 幀標記）＋ HostTotal（`CHIMERA_PERF total`）＋ ScreenHash（`CopyFromScreen` 中央取樣 md5）三函式隨時間對照；emulator stderr 用 `cmd /c "exe 1>out 2>err"` 包起來就拿得到（gfxstream fprintf 都在 stderr）。下次「畫面/輸入死當」直接套。
+
+## 2026-07-04 — Session 107：「有畫面但無法點擊」真根因＝顯示凍結（非輸入）〔凍結診斷已被 S108 否證；輸入取證方法仍有效〕；FPS≠輸入送達≠畫面 liveness；別在前一輪未驗證的根因上疊修法
 
 - **「pass-gpu-direct-60」量的是 render 節奏，不證明「點擊有送達 guest」也不證明「host 畫面在更新」——這是 S106 修錯的根本原因**。S106 用 synthetic scroll 跑出 `guestFps=60 pass-gpu-direct-60` 就宣稱「點擊確實進 guest」，但那只是 FPS 計數；synthetic scroll 直接呼叫 `InputBridge::onTouchPoint`（繞過 GuestDisplay），且 60fps 可以是 guest 一邊渲染靜態畫面一邊把觸控全丟。**Rule**：驗「輸入有沒有進 guest」要有**行為 oracle**（`mCurrentFocus` 變化 / screencap md5 變 / dumpsys），不是 FPS；驗「畫面有沒有更新」要**對 host 視窗做螢幕 BitBlt（`CopyFromScreen`，抓 DWM 實際合成）在 guest 明確變化前後比對**——PrintWindow 對 D3D11/GPU 合成常抓不到即時幀會誤判。三件事（FPS／輸入送達／畫面 liveness）互相獨立，別用一個代另一個。
 - **前一輪的「根因」可能是錯的；接手先對現場重新取證再決定，別直接在它上面疊修法**。S106 結論「gRPC 埠 8554 被搶」——本輪現場 `netstat` 乾淨、`EmulatorGrpcInput` 加診斷日誌後 **3138 個 POST 全 `http200 grpc-status0`**＝根因不成立。真根因是 **-Fast 共享貼圖顯示凍結**（emulator `postFrameDirectGpu` 在 ~seq240 後噴 `Failed to find ColorBuffer` 停止發佈新幀；host `CHIMERA_PERF total` 卡死、螢幕像素 byte-identical）。**Rule**：`CLAUDE.md` 寫「RESOLVED」不等於真的解決；症狀復發時把舊根因當「待否證假設」，用逐邊界注入 + 程式化 oracle 重新拆帳，別因為它有 commit＋通過某 gate 就信。

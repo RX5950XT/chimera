@@ -7,7 +7,26 @@
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 **引擎決策（最重要）**：生產引擎 = `emulator.exe`（Google QEMU+WHPX fork）；`--qemu-backend`（stock QEMU 11 + Cuttlefish）與 `--hcs-backend`（Hyper-V HCS）= legacy R&D，保留不刪。BlueStacks 輸入路徑更正：`BstkDrv.sys` 是 network/filter driver 非 input driver；BlueStacks 走 `HD-Bridge-Native.dll` → virtio-input，Chimera 等效路徑是 emulator gRPC + Console `event` protocol。
 
-## 2026-07-04 — Session 107 — 「有畫面但無法點擊」真根因＝-Fast 顯示凍結（非輸入）；否證 S106；一鍵改 stock＋修音訊
+## 2026-07-05 — Session 108 — 否證 S107「-Fast 顯示凍結」；一鍵改回 -Fast＋保留 below_normal
+
+使用者回報切 stock 後「性能不穩有夠卡」（stock gRPC ~10-19fps 本質）。重啟 S107 留下的「-Fast ColorBuffer 凍結」修復工作，但先驗證前提——結果**前提是錯的**。
+
+**Phase 1 — code 檢視「凍結」機制**：逐一讀 `Failed to find ColorBuffer` / `bad color buffer handle` 全部 call site（`frame_buffer.cpp` 4382/4394/4412/4605/5168/5180、`vk_common_operations.cpp` 4882）——全是 guest 對已銷毀 handle 叫 invalidate/flush 時 **log + `return false` 跳過該次呼叫**，有 throttle（1/60/每600 才印）。**沒有任何路徑會因此停掉 post/producer。** S107「producer 在 ColorBuffer 失效後停止發佈」在 code 上就站不住。
+
+**Phase 2 — 實測否證（決定性，兩輪）**：
+- 60s adb 驅動（Settings 滾動+HOME 切換）：producer `kVk GPU path` frame 1→500 穩定爬升、`postFrameDirectGpu` 每幀 0.2-1.5ms、**零 ColorBuffer 錯誤**、零 device-lost。
+- **150s 出貨組態**（-Fast + below_normal + `CHIMERA_SYNTHETIC_SCROLL`=真實 gRPC 輸入路徑 + 定期 HOME/Settings 轉場）：producer 1→**4800**；host `CHIMERA_PERF total` 110→**4593（~1:1 緊跟）**；螢幕 BitBlt hash（CopyFromScreen，DWM 合成＝使用者所見）**30 distinct/58 樣本、nonblack 100%**。此輪 ColorBuffer 錯誤有出現（throttled 到 count 5400）但三指標全程健康＝**確認是無害背景噪音**，與凍結無關。
+- 我自己的背離偵測器也誤標了 2 次「DIVERGENCE」——下一 tick host total 就追上、hash 隨即再變＝**fling-settle 靜止幀**。這正是 S107 誤判的機制：guest 內容不變→正確不重繪→單張 byte-identical 被讀成「凍結」。S107 當時的 `total卡140/maxMs 8184` 極可能是量測窗剛好落在 idle 段+單張快照的組合誤讀（原始環境已不可考，受控重現 0 次）。
+
+**Phase 3 — 修法**：`start-chimera.cmd` 一鍵預設**改回 `-Fast`**（順暢共享貼圖顯示），**保留 S107 正確的音訊修法**（不加 `-InteractiveFirst`＝below_normal；150s 實測證明 -Fast 配 below_normal 顯示完全健康，不需 normal priority）。`-Stock`/`-AudioFirst`/`-InteractiveFirst` 仍可手動。
+
+**Phase 4 — 端到端驗證**：`start-chimera.ps1 -Fast -SelfTest` **全過**——boot 35s、visible_home 48s、guest screenshot nonblack 100%/spread 716、**host 視窗 nonblack 100%**、Settings 互動 ok、residual 0。
+
+**狀態整理**：「有畫面但無法點擊」歷經 S106（埠被搶）→S107（顯示凍結）**兩個根因皆否證**，受控測試無法重現原始症狀；輸入路徑（S107 端到端證明）與顯示路徑（本次 150s liveness）都健康。若再發生：`CHIMERA_GRPC_INPUT_DIAG` + 三指標 liveness 法（producer `kVk` frameN vs host `CHIMERA_PERF total` vs 螢幕 BitBlt hash **隨時間對照看背離**）當場拆帳。診斷腳本樣板在 session scratchpad（`diag-fast-freeze.ps1`，核心：MaxFrame/HostTotal/ScreenHash 三函式）。
+
+**教訓**：①「liveness」必須是**時間序列上的三指標背離**，單張 byte-identical 截圖不能證凍結（idle-static 陷阱，S107 栽在這、本次偵測器也誤標 2 次）。② 接手「待修」項先驗證其前提——S107 的凍結敘事 code 檢視 10 分鐘就能否證，比直接動 gfxstream 省一次重建 runtime。**改動檔**：僅 `start-chimera.cmd`（+docs）。
+
+## 2026-07-04 — Session 107 — 「有畫面但無法點擊」真根因＝-Fast 顯示凍結（非輸入）；否證 S106；一鍵改 stock＋修音訊〔凍結診斷已被 S108 否證；輸入證明/音訊修法/診斷工具仍有效〕
 
 使用者回報「問題依然沒修好，有畫面但無法點擊」（S106 的挑埠修法沒解決），隨後又回報「開模擬器我的音樂會出現雜音」。系統化除錯（superpowers:systematic-debugging）從頭取證，**否證 S106 根因**，找到真根因＝顯示凍結。
 

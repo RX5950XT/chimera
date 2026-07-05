@@ -2,6 +2,31 @@
 
 ---
 
+## 2026-07-05 Session 108 — 否證 S107「-Fast 凍結」；一鍵改回 -Fast＋保留 below_normal（修「性能不穩有夠卡」）
+
+使用者回報 stock 路徑「輪到性能不穩了有夠卡」（stock ~10-19fps 本質）。
+
+- [x] **驗證 S107「-Fast ColorBuffer 凍結」前提**：code 檢視全部 `Failed to find ColorBuffer` call site＝非致命 skip（log+return false、有 throttle），不停 producer。
+- [x] **60s adb 驅動實測**：producer `kVk` 1→500 穩定、每幀 0.2-1.5ms、零 ColorBuffer 錯誤＝無凍結。
+- [x] **150s 出貨組態實測**（-Fast + below_normal + 真實 gRPC synthetic scroll）：producer 1→4800、host `total` ~1:1 緊跟 4593、螢幕 BitBlt hash 30 distinct/58、nonblack 100%；ColorBuffer 錯誤 throttled 出現但全程健康＝無害噪音。**S107 凍結診斷否證**。
+- [x] **修法**：`start-chimera.cmd` 一鍵改回 `-Fast`（順、可點），保留不加 `-InteractiveFirst`（below_normal 護 host audio＝S107 音訊修法留用）。
+- [x] **端到端驗證**：`-Fast -SelfTest` pass（boot 35s、visible_home 48s、host 視窗 nonblack 100%、Settings 互動 ok、residual 0）。
+- [x] docs 同步：CLAUDE.md／CONTEXT.md／lessons.md／todo.md。
+
+**Review**：S107 把 fling-settle 靜止幀（單張 byte-identical）誤讀成顯示凍結——本次自己的偵測器也誤標 2 次 DIVERGENCE、下一 tick 即自行追上＝同一陷阱的活示範。連三個根因被否證（S106 埠、S107 freeze），「無法點擊」原始症狀 0 次受控重現；留 `CHIMERA_GRPC_INPUT_DIAG`＋三指標 liveness 法（producer frameN／host total／螢幕 hash 隨時間對照）備查。改動極小（僅 start-chimera.cmd + docs），免重編。
+
+## 2026-07-04 Session 107 — 「有畫面但無法點擊」拆帳＋音訊雜音〔凍結診斷已被 S108 否證〕
+
+- [x] 否證 S106「埠被搶」：netstat 乾淨、gRPC POST 3138 全 200（`CHIMERA_GRPC_INPUT_DIAG` 新診斷）。
+- [x] 輸入路徑端到端證實完好：PostMessage WM_LBUTTONDOWN→GuestDisplay→sendTouch→guest 開 SearchActivity。
+- [x] `EmulatorGrpcInput::post` 補錯誤浮出（原 fire-and-forget 靜默吞錯）。
+- [x] 音訊雜音：一鍵拿掉 `-InteractiveFirst`→below_normal（S108 保留此修法）。
+- [~] ~~「真根因＝-Fast 顯示凍結」＋切 stock~~ → **S108 否證**：誤把 idle-static 當凍結；一鍵已改回 -Fast。
+
+**Review**：輸入取證方法（PostMessage＋行為 oracle）與音訊修法是本輪留下的真資產；凍結診斷是單張截圖陷阱的教訓，已入 lessons。
+
+---
+
 ## 2026-07-06 Session 106 — 修「有畫面但完全無法點擊」（gRPC 輸入埠被搶）
 
 使用者回報：啟動後有畫面但完全無法點擊、沒反應。
