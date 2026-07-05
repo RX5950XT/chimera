@@ -94,9 +94,7 @@ InputBridge &InputBridge::instance() {
     return inst;
 }
 
-InputBridge::InputBridge() : m_worker([this]() { workerLoop(); }) {
-    m_touchSlotIds.fill(-1);
-}
+InputBridge::InputBridge() : m_worker([this]() { workerLoop(); }) {}
 
 InputBridge::~InputBridge() {
     shutdown();
@@ -128,10 +126,6 @@ void InputBridge::setConsoleInput(AndroidConsoleInput *console) {
     m_consoleInput = console;
 }
 
-bool InputBridge::hasConsoleMouse() const {
-    return m_consoleInput != nullptr && m_consoleInput->isMouseReady();
-}
-
 bool InputBridge::hasConsoleKeyboard() const {
     return m_consoleInput != nullptr && m_consoleInput->isKeyboardReady();
 }
@@ -145,6 +139,10 @@ void InputBridge::setQmpInput(QmpInput *qmp) {
 
 bool InputBridge::hasQmp() const {
     return m_qmpInput != nullptr && m_qmpInput->isConnected();
+}
+
+bool InputBridge::grpcUsable() const {
+    return m_grpcInput != nullptr && m_grpcInput->isHealthy();
 }
 
 void InputBridge::setHvSocketTransport(HvSocketTransport *hvs) {
@@ -327,44 +325,34 @@ void InputBridge::onWheel(int deltaX, int deltaY, int x, int y) {
 
 void InputBridge::onTouchPoint(int pointId, int x, int y, bool pressed) {
     if (!m_forwarding) return;
-    if (m_grpcInput) {
+    if (grpcUsable()) {
         m_grpcInput->sendTouch(pointId, x, y, pressed ? kTouchPressure : 0);
         return;
     }
-    if (!m_consoleInput || !m_consoleInput->isMouseReady()) return;
-
-    if (pressed) {
-        int slot = -1;
-        auto it = m_touchPointSlots.find(pointId);
-        if (it != m_touchPointSlots.end()) {
-            slot = it->second;
-        } else {
-            for (int i = 0; i < static_cast<int>(m_touchSlotIds.size()); ++i) {
-                if (m_touchSlotIds[i] < 0) { slot = i; break; }
-            }
-            if (slot < 0) return;
-            m_touchPointSlots[pointId] = slot;
-            m_touchSlotIds[slot] = pointId;
-        }
-        m_consoleInput->sendMultiTouch({{slot, pointId, x, y}});
-    } else {
-        auto it = m_touchPointSlots.find(pointId);
-        if (it == m_touchPointSlots.end()) return;
-        const int slot = it->second;
-        m_touchPointSlots.erase(it);
-        m_touchSlotIds[slot] = -1;
-        m_consoleInput->sendMultiTouch({{slot, -1, 0, 0}});
+    // gRPC down. The console MT path that used to live here is a PHANTOM
+    // channel on the production emulator build: `event send`/`event mouse`
+    // return OK but inject nothing (guest getevent captures zero kernel
+    // events; scaled 0..32767 coords change nothing — Session 108 E2E). ADB
+    // `input tap` is the delivery-proven fallback. Degraded mode: taps only
+    // (fire on release), no multi-finger or drag — clicking stays alive,
+    // which is the whole point of the breaker.
+    if (!pressed && !m_adbPath.empty()) {
+        enqueueAdbCommand("input tap " + std::to_string(x) + " " + std::to_string(y));
     }
 }
 
 void InputBridge::onTextInput(const std::string &utf8text) {
     if (!m_forwarding || utf8text.empty()) return;
     // Prefer the emulator gRPC text path (real key events, IME-correct).
-    if (m_grpcInput) {
+    if (grpcUsable()) {
         m_grpcInput->sendText(QString::fromStdString(utf8text));
         return;
     }
-    if (m_consoleInput && m_consoleInput->isConnected()) {
+    // Console sendText = clipboard set + KEYCODE_PASTE keydown, so it needs a
+    // WORKING console keyboard channel — gate on the keyboard probe, not mere
+    // connectedness (on the production build `event keydown` is rejected, so
+    // an isConnected() gate would eat the text and paste nothing).
+    if (m_consoleInput && m_consoleInput->isKeyboardReady()) {
         m_consoleInput->sendText(utf8text);
         return;
     }
@@ -428,9 +416,7 @@ void InputBridge::onGamepadAxis(int deviceId, int axis, float value) {
     default: return;
     }
 
-    if (hasConsoleMouse()) {
-        m_consoleInput->sendMouseMove((m_displayWidth / 2) + dx, (m_displayHeight / 2) + dy);
-    } else if (hasQmp()) {
+    if (hasQmp()) {
         m_qmpInput->sendMouseMove((m_displayWidth / 2) + dx, (m_displayHeight / 2) + dy);
     } else {
         const int centerX = m_displayWidth / 2;
@@ -493,18 +479,17 @@ void InputBridge::injectEvent(const Event &ev) {
         return;
     }
 
-    // Per-input-type routing: Console > QMP > ADB
-    // Mouse uses Console if probe passed; keyboard uses Console only if keyboard probe passed.
+    // Per-input-type routing: gRPC (health-gated) > QMP > ADB
     switch (ev.type) {
     case Event::MouseButtonDown: {
-        // Qt button → Android Console bitmask (LeftButton=1, RightButton=2, MiddleButton=4)
-        const int consoleBtns = (ev.code == Qt::LeftButton) ? 1 :
-                                (ev.code == Qt::RightButton) ? 2 : 4;
-        if (m_grpcInput && ev.code == Qt::LeftButton) {
+        // Console is deliberately ABSENT from every pointer chain: on the
+        // production emulator build `event mouse`/`event send` return OK but
+        // inject nothing into the guest (zero getevent kernel events, scaled
+        // coords change nothing — Session 108 E2E). A phantom channel here
+        // traps clicks and starves the delivery-proven ADB fallback.
+        if (grpcUsable() && ev.code == Qt::LeftButton) {
             m_lastGrpcTouchMove = {};
             m_grpcInput->sendTouch(kPrimaryTouchId, ev.x, ev.y, kTouchPressure);
-        } else if (hasConsoleMouse()) {
-            m_consoleInput->sendMouseEvent(ev.x, ev.y, consoleBtns);
         } else if (hasQmp()) {
             m_qmpInput->sendMouseButton(qtMouseButtonToQmp(ev.code), true, ev.x, ev.y);
         } else if (!m_adbPath.empty()) {
@@ -513,11 +498,9 @@ void InputBridge::injectEvent(const Event &ev) {
         break;
     }
     case Event::MouseButtonUp: {
-        if (m_grpcInput && ev.code == Qt::LeftButton) {
+        if (grpcUsable() && ev.code == Qt::LeftButton) {
             m_grpcInput->sendTouch(kPrimaryTouchId, ev.x, ev.y, 0);
             m_lastGrpcTouchMove = {};
-        } else if (hasConsoleMouse()) {
-            m_consoleInput->sendMouseEvent(ev.x, ev.y, 0); // release all buttons
         } else if (hasQmp()) {
             m_qmpInput->sendMouseButton(qtMouseButtonToQmp(ev.code), false, ev.x, ev.y);
         }
@@ -526,7 +509,7 @@ void InputBridge::injectEvent(const Event &ev) {
     }
     case Event::MouseMove: {
         // ev.code carries held-button bitmask from onMouseButton; 0=hover, 1=left drag, etc.
-        if (m_grpcInput && (ev.code & 1) != 0) {
+        if (grpcUsable() && (ev.code & 1) != 0) {
             const auto now = std::chrono::steady_clock::now();
             if (m_lastGrpcTouchMove.time_since_epoch().count() != 0 &&
                 now - m_lastGrpcTouchMove < std::chrono::milliseconds(8)) {
@@ -534,8 +517,6 @@ void InputBridge::injectEvent(const Event &ev) {
             }
             m_lastGrpcTouchMove = now;
             m_grpcInput->sendTouch(kPrimaryTouchId, ev.x, ev.y, kTouchPressure);
-        } else if (hasConsoleMouse()) {
-            m_consoleInput->sendMouseEvent(ev.x, ev.y, ev.code);
         } else if (hasQmp()) {
             m_qmpInput->sendMouseMove(ev.x, ev.y);
         } else if (!m_adbPath.empty()) {
@@ -550,7 +531,7 @@ void InputBridge::injectEvent(const Event &ev) {
         // Keyboard priority: emulator gRPC sendKey (low latency) → QMP → ADB.
         // gRPC/QMP take a Linux evdev code; ADB needs an Android keycode.
         const int linuxKey = mapQtKeyToQemu(ev.code);
-        if (m_grpcInput && linuxKey > 0) {
+        if (grpcUsable() && linuxKey > 0) {
             m_grpcInput->sendKey(linuxKey, true);
         } else if (hasQmp() && linuxKey >= 0) {
             m_qmpInput->sendKey(linuxKey, true);
@@ -563,7 +544,7 @@ void InputBridge::injectEvent(const Event &ev) {
     }
     case Event::KeyUp: {
         const int linuxKey = mapQtKeyToQemu(ev.code);
-        if (m_grpcInput && linuxKey > 0) {
+        if (grpcUsable() && linuxKey > 0) {
             m_grpcInput->sendKey(linuxKey, false);
         } else if (hasQmp() && linuxKey >= 0) {
             m_qmpInput->sendKey(linuxKey, false);
@@ -581,7 +562,7 @@ void InputBridge::injectEvent(const Event &ev) {
         const int maxY = (m_displayHeight > 0) ? (m_displayHeight - 1) : 0;
         const int endX = std::clamp(centerX + dx * 28, 0, maxX);
         const int endY = std::clamp(centerY + dy * 28, 0, maxY);
-        if (m_grpcInput) {
+        if (grpcUsable()) {
             // A 0ms swipe sends press->end->release back-to-back, so Android's
             // VelocityTracker sees the whole distance in ~0ms = maxed-out fling
             // ("one notch flies to the bottom"), and with no intermediate move it

@@ -54,11 +54,53 @@ QByteArray grpcFrame(const QByteArray &payload) {
 
 constexpr int kCodeTypeEvdev = 1; // KeyboardEvent.KeyCodeType.Evdev
 constexpr int kTouchPressure = 1;
+// 3 consecutive transport failures open the breaker (a single dropped reply
+// under load must not exile a healthy channel); a 2s getStatus probe closes it.
+constexpr int kUnhealthyThreshold = 3;
+constexpr int kProbeIntervalMs = 2000;
+// Per-POST transfer timeout. Without it a hijacker/zombie that ACCEPTS but
+// never answers (TCP backlog, half-dead listener) parks every reply forever:
+// finished never fires, the breaker stays blind, and input dies silently —
+// exactly the failure the breaker exists to catch (E2E-proven gap, S108).
+// Healthy replies arrive in single-digit ms; 2s only ever fires on a dead
+// channel, and the timeout surfaces as OperationCanceledError = a failure.
+constexpr int kPostTimeoutMs = 2000;
 
 } // namespace
 
 EmulatorGrpcInput::EmulatorGrpcInput(QString host, int port, QObject *parent)
-    : QObject(parent), m_host(std::move(host)), m_port(port) {}
+    : QObject(parent), m_host(std::move(host)), m_port(port) {
+    m_probeTimer = new QTimer(this);
+    m_probeTimer->setInterval(kProbeIntervalMs);
+    connect(m_probeTimer, &QTimer::timeout, this, &EmulatorGrpcInput::probeHealth);
+}
+
+void EmulatorGrpcInput::recordTransportResult(bool ok) {
+    if (ok) {
+        m_consecutiveFailures = 0;
+        if (!m_healthy.exchange(true, std::memory_order_relaxed)) {
+            qInfo().noquote() << "[EmulatorGrpcInput] port" << m_port
+                              << "recovered; resuming gRPC input path";
+            if (m_probeTimer) m_probeTimer->stop();
+        }
+        return;
+    }
+    if (++m_consecutiveFailures >= kUnhealthyThreshold &&
+        m_healthy.exchange(false, std::memory_order_relaxed)) {
+        qWarning().noquote() << "[EmulatorGrpcInput] port" << m_port << "unhealthy after"
+                             << m_consecutiveFailures
+                             << "consecutive transport failures; input falls back to"
+                                " console/QMP/ADB until a getStatus probe succeeds";
+        if (m_probeTimer) m_probeTimer->start();
+    }
+}
+
+void EmulatorGrpcInput::probeHealth() {
+    // getStatus takes google.protobuf.Empty and has no input side effects; the
+    // reply flows through the same transport accounting as real input, so one
+    // successful probe closes the breaker.
+    post(QStringLiteral("getStatus"), QByteArray());
+}
 
 void EmulatorGrpcInput::sendKey(int evdevCode, bool down) {
     if (evdevCode <= 0) return;
@@ -134,6 +176,7 @@ void EmulatorGrpcInput::post(const QString &rpcName, const QByteArray &payload) 
     request.setRawHeader("grpc-accept-encoding", "identity");
     request.setAttribute(QNetworkRequest::Http2AllowedAttribute, true);
     request.setAttribute(QNetworkRequest::Http2DirectAttribute, true);
+    request.setTransferTimeout(kPostTimeoutMs);
 
     QNetworkReply *reply = m_net.post(request, grpcFrame(payload));
     if (reply) {
@@ -145,12 +188,17 @@ void EmulatorGrpcInput::post(const QString &rpcName, const QByteArray &payload) 
         // to also log successful posts (transport health check).
         const QString rpc = rpcName;
         const int port = m_port;
-        QObject::connect(reply, &QNetworkReply::finished, reply, [reply, rpc, port]() {
+        QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, rpc, port]() {
             const auto netErr = reply->error();
             const QVariant httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute);
             const QByteArray grpcStatus = reply->rawHeader("grpc-status");
             const bool grpcOk = grpcStatus.isEmpty() || grpcStatus == "0";
             const bool diag = qEnvironmentVariableIsSet("CHIMERA_GRPC_INPUT_DIAG");
+            // Health breaker: transport-level outcome only (connected + HTTP
+            // 200). A non-zero grpc-status means the endpoint is alive and
+            // talking gRPC — a per-RPC rejection, not channel death.
+            recordTransportResult(netErr == QNetworkReply::NoError &&
+                                  httpStatus.isValid() && httpStatus.toInt() == 200);
             if (netErr != QNetworkReply::NoError || !grpcOk) {
                 qWarning().noquote()
                     << "[EmulatorGrpcInput] POST" << rpc << "port" << port

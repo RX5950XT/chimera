@@ -13,7 +13,16 @@
 - [x] **端到端驗證**：`-Fast -SelfTest` pass（boot 35s、visible_home 48s、host 視窗 nonblack 100%、Settings 互動 ok、residual 0）。
 - [x] docs 同步：CLAUDE.md／CONTEXT.md／lessons.md／todo.md。
 
-**Review**：S107 把 fling-settle 靜止幀（單張 byte-identical）誤讀成顯示凍結——本次自己的偵測器也誤標 2 次 DIVERGENCE、下一 tick 即自行追上＝同一陷阱的活示範。連三個根因被否證（S106 埠、S107 freeze），「無法點擊」原始症狀 0 次受控重現；留 `CHIMERA_GRPC_INPUT_DIAG`＋三指標 liveness 法（producer frameN／host total／螢幕 hash 隨時間對照）備查。改動極小（僅 start-chimera.cmd + docs），免重編。
+### 第二部分 — 輸入 defense-in-depth（gRPC breaker + ADB fallback）
+
+- [x] `EmulatorGrpcInput`：3-strike transport breaker（`isHealthy()`/`recordTransportResult()`）＋ 2s `getStatus` 探測自癒 ＋ **每 POST 2s transferTimeout**（E2E 抓到：hang 型劫持下 reply 永不 finished＝breaker 全盲）。
+- [x] `InputBridge`：8 個 gRPC 分支全 gate `grpcUsable()`＝fallback 從死碼變活路。
+- [x] **Console pointer 通道實證為幻象並移除**：裸機 telnet 測 `event mouse`/`event send`（MT Type-B/含 BTN_TOUCH/縮放 0..32767 座標）全回 OK 但 guest `getevent` 零 kernel 事件；`event keydown`/`multitouch` 直接 KO。console 只留 clipboard/geo/power；`onTouchPoint`→ADB tap fallback；`onTextInput` gate 改 `isKeyboardReady()`。
+- [x] 驗證三層：unit **24/24**（新 `test_emulator_grpc_input.cpp` 含真網路 dead-port 測試）；劫持 E2E **`fallback-pass`**（hang-hijack 8554＋直開 exe：breaker 3-strike 開→點擊走 ADB→guest window 換新＝送達）；健康路徑 **`pass-gpu-direct-60`**（60fps、breaker 未觸發＝零回歸）。
+
+**Review**：S106/S107 的共同結構性缺陷（唯一通道＋fire-and-forget＋fallback 死碼）根治——「有畫面但無法點擊」不論成因從此自癒（降級模式 ADB tap ~200ms 但永遠可點、通道復原自動切回）。E2E 連抓兩個 unit tests 抓不到的缺口（hang-blind、幻象 console）＝災難路徑必須配真實故障注入。
+
+**S108 第一部分 Review**：S107 把 fling-settle 靜止幀（單張 byte-identical）誤讀成顯示凍結——本次自己的偵測器也誤標 2 次 DIVERGENCE、下一 tick 即自行追上＝同一陷阱的活示範。連三個根因被否證（S106 埠、S107 freeze），「無法點擊」原始症狀 0 次受控重現；留 `CHIMERA_GRPC_INPUT_DIAG`＋三指標 liveness 法（producer frameN／host total／螢幕 hash 隨時間對照）備查。改動極小（僅 start-chimera.cmd + docs），免重編。
 
 ## 2026-07-04 Session 107 — 「有畫面但無法點擊」拆帳＋音訊雜音〔凍結診斷已被 S108 否證〕
 

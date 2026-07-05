@@ -43,14 +43,23 @@ public:
     void setAdbConfig(const std::filesystem::path &adbPath, int adbPort,
                       const std::string &serial = {});
 
-    // Android Console input (emulator.exe port 5554, preferred over QMP/ADB)
+    // Android Console input (emulator.exe port 5554). Console is EXCLUDED
+    // from all pointer chains: on the production emulator build the `event`
+    // pointer commands return OK without injecting anything into the guest
+    // (Session 108, getevent-proven) — a phantom channel that would trap
+    // clicks ahead of the working ADB fallback. Keyboard keeps its own probe.
     void setConsoleInput(class AndroidConsoleInput *console);
-    bool hasConsoleMouse() const;
     bool hasConsoleKeyboard() const;
 
     // Emulator gRPC keyboard input (port 8554) — the low-latency keyboard
     // path; the console has no working keyboard channel.
     void setGrpcInput(class EmulatorGrpcInput *grpc) { m_grpcInput = grpc; }
+    // gRPC channel present AND its transport breaker closed. Gating every
+    // gRPC branch on this (instead of bare non-null) is what makes the
+    // console/QMP/ADB fallbacks reachable when the endpoint dies — a wired
+    // m_grpcInput is otherwise permanently non-null, so input would vanish
+    // silently ("picture but nothing responds").
+    bool grpcUsable() const;
 
     // QMP low-latency input (QEMU backend only — port 4444/4445)
     void setQmpInput(class QmpInput *qmp);
@@ -124,10 +133,6 @@ private:
     std::chrono::steady_clock::time_point m_lastGrpcWheel{};
     std::chrono::steady_clock::time_point m_lastGrpcTouchMove{};
     CoordinateMapper m_mapper;
-
-    // Multi-touch slot tracking: pointId → slot index, slot → current tracking ID
-    std::unordered_map<int, int> m_touchPointSlots;
-    std::array<int, 10> m_touchSlotIds;
 
     // Command queue for async ADB execution
     std::queue<std::string> m_queue;
