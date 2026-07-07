@@ -355,7 +355,12 @@ static bool loadSdkConfig() {
         g_adbPath = j["adb"].get<std::string>();
     }
     if (j.contains("sdk_root")) {
-        qputenv("ANDROID_SDK_ROOT", QByteArray::fromStdString(j["sdk_root"].get<std::string>()));
+        const auto sdkRoot = QByteArray::fromStdString(j["sdk_root"].get<std::string>());
+        qputenv("ANDROID_SDK_ROOT", sdkRoot);
+        // Emulator 31+ prefers ANDROID_HOME over ANDROID_SDK_ROOT; an inherited
+        // user-level ANDROID_HOME (e.g. Android Studio's AppData SDK) would win
+        // and break AVD system-image resolution.
+        qputenv("ANDROID_HOME", sdkRoot);
     }
     if (j.contains("avd_home")) {
         qputenv("ANDROID_AVD_HOME", QByteArray::fromStdString(j["avd_home"].get<std::string>()));

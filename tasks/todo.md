@@ -2,6 +2,29 @@
 
 ---
 
+## 2026-07-06 Session 109 — /goal：迭代優化超越 BlueStacks；3DMark 實測 + 16:9 橫向適配
+
+目標拆解（AVD 已是 1920×1080 landscape 16:9，適配重點在 host 呈現 + 3DMark 實跑）：
+
+- [x] **盤點＋修好啟動**：發現專案已從 `D:\Workspace_cloud\...` 搬到 `D:\Workspace\...`，所有硬編碼路徑失效→emulator FATAL「Broken AVD system path」。修 `configs/android_sdk.json`、AVD `chimera_dev.ini`/`chimera_pie64.ini`、`hardware-qemu.ini`（Workspace_cloud→Workspace）；`main.cpp` 補 `qputenv("ANDROID_HOME", sdk_root)`（原本只設 ANDROID_SDK_ROOT，被 user 層 ANDROID_HOME＝Android Studio SDK 蓋掉，emulator 36+ 優先 ANDROID_HOME）。CMakeCache 重生成（舊 cache 指向 Workspace_cloud）。emulator 恢復可 boot。
+- [x] **16:9 橫向適配＝已正確**：AVD `hw.lcd 1920x1080`、`hw.initialOrientation=landscape`＝16:9 橫向；`ChimeraWindow.qml` `guestAspect: 16/9` letterbox 呈現。3DMark 在此 16:9 橫向下正確渲染（guest screencap 佐證，非 portrait 塞中間）。無需改動。
+- [x] **3DMark 跑分＝結構性受阻（3DMark 拒絕模擬 GPU）**：所有 benchmark 頁面顯示「Sorry, your device is not compatible with this test」。逐層拆帳：① RAM——把 guest 從 4GB→12GB（`CHIMERA_INTERACTIVE_RAM_MB=12288`）解除「need 8GB」訊息，但仍不相容＝RAM 非唯一 gate。② GL——guest GLES 是 SwiftShader **CPU 軟體**渲染（`ANDROID_EMU_gles_max_version_2` 鎖 ES 2.0；GL 測試需 ES 3.1），即使解鎖也是量 CPU 非 GPU、且極慢。③ Vulkan（真 NVIDIA passthrough）——OMM 明確缺光追 feature；其餘 Vulkan 測試被 **`MyDeviceNotRecognizedException`** 擋：UL 伺服器連得到（`www.futuremark.com` 解析成功）但**拒絕識別此裝置**——`GL_RENDERER="…SwiftShader"` 洩漏是模擬器 + Vulkan device="NVIDIA GeForce RTX 3070 Ti"（桌面 GPU 非行動）。這是 3DMark 反造假結果的伺服器端驗證，非 Chimera bug、非本地可修。
+- [x] **GLESDynamicVersion 實驗（否證＋回退）**：guest 被 `advancedFeatures.ini GLESDynamicVersion=off` 鎖在 ES 2.0。試 `-feature GLESDynamicVersion`（VirtualMachine.cpp）拉到 ES 3.0。結果：① **對 3DMark compat 零影響**（名單與改動前逐項相同——證實 blocker 不是 GLES 版本回報而是模擬 GPU 被拒）；② **破壞 -Fast 共享貼圖顯示**——guest 仍正常合成（adb screencap 渲染 Settings 繁中雙欄），但 host 端 producer 凍結（`CHIMERA_PERF total` 卡在 204、effective=0），因 ES3 HWComposer 路徑改變 bridge GL→VK 同步捕捉的 ColorBuffer。**這就是專案原本關掉它的真正原因**。已回退 + code 註解記錄。
+- [x] 文件同步：todo/lessons/CONTEXT/CLAUDE/memory
+
+**Review（誠實邊界）**：本輪最大實質產出是**修好被搬移路徑打斷的啟動鏈**（emulator 根本無法 boot→恢復）。3DMark「測試效能」的目標**在此環境結構性無法達成**：3DMark 以伺服器端裝置驗證 + 本地 GL renderer 探測，主動拒絕模擬/軟體 GPU（SwiftShader GL identity + 桌面 NVIDIA Vulkan device），這是它防止無效跑分上榜的設計。唯一理論路徑＝偽造 GL_RENDERER + Vulkan device 字串騙過驗證＝深、脆、成功率低、且伺服器交叉驗證仍可能擋，屬使用者需拍板的高風險投機。16:9 橫向適配本來就正確（AVD 級）。教訓：接手先驗「專案能不能 boot」（路徑搬移是隱形殺手）；GLESDynamicVersion 與 -Fast 顯示互斥（實測記入）；第三方 app 的相容性 gate 可能是它自己的反作弊而非平台缺陷。
+
+### 2026-07-07 Session 109b — gfxstream Vulkan pNext / mesh shader crash 修復
+
+- [x] **根因**：GravityMark / Vulkan capability query 帶 `VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT` 等 pNext；gfxstream size table 認得 struct，但 `reservedunmarshal_extension_struct()` / marshal / transform / deepcopy 不完整，known-size struct 走 default abort 或半套 deepcopy。
+- [x] **修法**：`scripts/generate-chimera-vk-ext-handlers.py` 產生 POD extension struct 的 size cases、reserved marshal、regular marshal/unmarshal、**deepcopy** cases；mesh shader EXT 特例保留手寫 transform/deepcopy；`apply-chimera-gfxstream-patch.ps1` 每次 runtime build 自動套用 generator。
+- [x] **code review 修正**：補上 code review 抓到的 coverage mismatch（size table 擴了 538 POD structs，但 deepcopy 缺 380 cases）；generator `write()` 改內容相同不覆寫，避免假 mtime 造成大型 cereal TU 無謂 rebuild。
+- [x] **驗證**：generator 重跑輸出 `universe 538 POD structs; size+96/+96, reserved+380, marshal+380, deepcopy+380`；`goldfish_vk_deepcopy.cpp` autogen deepcopy cases=380；custom gfxstream runtime rebuild PASS；`chimera-ui` build PASS；`ctest -LE integration` **24/24 PASS**；兩輪 code review 最終 APPROVE。
+
+**Review**：known-size pNext struct 必須五路對稱支援（size / reserved / marshal / unmarshal / deepcopy），只消 abort 或只補首個 crash 點會把問題延後到 stream 對齊或未初始化 pNext payload。GravityMark 跑分本身仍受 3DMark 裝置驗證/反作弊阻擋；本修復解的是 gfxstream 因 capability enumeration abort 的平台 crash。
+
+---
+
 ## 2026-07-05 Session 108 — 否證 S107「-Fast 凍結」；一鍵改回 -Fast＋保留 below_normal（修「性能不穩有夠卡」）
 
 使用者回報 stock 路徑「輪到性能不穩了有夠卡」（stock ~10-19fps 本質）。

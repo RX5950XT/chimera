@@ -439,6 +439,15 @@ std::vector<std::string> buildEmulatorArgsForConfig(const VirtualMachineConfig &
         args.push_back("Vulkan");
     }
 
+    // GLESDynamicVersion stays OFF (advancedFeatures.ini default). Enabling it so
+    // the guest advertises the host's real GLES 3.0 (instead of the ES 2.0 pin)
+    // was tested Session 109 and BREAKS the -Fast shared-texture host display:
+    // the guest keeps compositing (adb screencap renders), but the host window's
+    // producer freezes (CHIMERA_PERF total stuck) because the ES3 HWComposer path
+    // changes the ColorBuffer the bridge's GL->VK sync captures. It also did NOT
+    // unblock 3DMark (its compat gate is the emulated-GPU rejection, not the GLES
+    // version report), so there is no upside to offset the display regression.
+
     // System locale is NOT set here: on the non-root google_apis_playstore image,
     // "-prop persist.sys.locale=..." is silently dropped by the qemu-props service
     // (SELinux denies setting persist.* from that context — verified S105, prop

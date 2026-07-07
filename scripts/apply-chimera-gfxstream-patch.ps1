@@ -850,7 +850,7 @@ bool FrameBuffer::Impl::postImplSync(HandleType p_colorbuffer, bool needLockAndB
         chimeraPublishFrameToShmem(colorBuffer.get(), m_framebufferWidth, m_framebufferHeight);
     }
 '@
-    # Old VkComp variant (sendPostWorkerCmd path) — intermediate state before MSVCP140 fix
+    # Old VkComp variant (sendPostWorkerCmd path) -- intermediate state before MSVCP140 fix
     $frameBufferHeadlessVkNeedleVkCompOld = @'
     colorBuffer->touch();
     const bool chimeraHeadlessVkPost =
@@ -3024,7 +3024,7 @@ if (Test-Path -LiteralPath $emuglConfig) {
 }
 
 # Session 91: std::promise/std::future/std::packaged_task crash on this host (two
-# incompatible MSVCP140.dll versions disagree on _Associated_state layout — same root
+# incompatible MSVCP140.dll versions disagree on _Associated_state layout -- same root
 # cause Session 76 fixed in frame_buffer.cpp). HWUI Vulkan's heavy per-submit fence
 # traffic drove these paths and crashed. Replace with header-only atomics / Lock+CV.
 $deviceOpTrackerH = Join-Path $vulkanDir "device_op_tracker.h"
@@ -3175,7 +3175,7 @@ if (Test-Path -LiteralPath $syncThreadCpp) {
     // Chimera: replace std::packaged_task<int>/std::future<int> (crashes in MSVCP140
     // _Associated_state on this host) with Lock+ConditionVariable to carry the result.
     // The caller blocks until the worker signals, so Result lives on the stack and is
-    // captured by pointer — no heap allocation (lighter than the original future, which
+    // captured by pointer -- no heap allocation (lighter than the original future, which
     // heap-allocates its shared state).
     struct Result {
         gfxstream::base::Lock lock;
@@ -3281,7 +3281,7 @@ enum class WorkerProcessingResult { Continue, Stop };
 
 // Chimera: per-item completion signal replacing std::promise<void>/std::future<void>.
 // std::promise::set_value() crashes on this host (two incompatible MSVCP140.dll versions
-// disagree on _Associated_state layout — same root cause Session 76 fixed in
+// disagree on _Associated_state layout -- same root cause Session 76 fixed in
 // frame_buffer.cpp). HWUI Vulkan's heavy enqueue traffic drove ThreadLoop's per-item
 // set_value() into the crash. This Lock+ConditionVariable signal touches no MSVCP140
 // shared state. enqueue() returns WorkerWaitable; callers can use the old future-style
@@ -3580,7 +3580,7 @@ foreach ($frameBufferPath in $frameBufferBlockFiles) {
             // texture stays all-zero (host window black) while every sequence/FPS
             // counter looks healthy. flushFromGl() is needed first because the
             // HWC compose path writes the target through host GL (CompositorGl)
-            // without ever marking mGlTexDirty — invalidateForVk() alone exits
+            // without ever marking mGlTexDirty -- invalidateForVk() alone exits
             // "clean" and syncs nothing. Both are no-ops when GL/VK share memory.
             colorBuffer->flushFromGl();
             colorBuffer->invalidateForVk();
@@ -3984,6 +3984,831 @@ AsyncResult FrameBuffer::Impl::composeWithCallback(uint32_t bufferSize, void* bu
 
 AsyncResult FrameBuffer::Impl::composeWithCallback(uint32_t bufferSize, void* buffer,
 '@ "frame_buffer compose timing log"
+}
+
+# --- Vulkan cereal: VK_EXT_mesh_shader extension struct support -----------------
+# Chimera: gfxstream's extension size table knows VK_EXT_mesh_shader, but the
+# generated marshal/unmarshal/transform/deepcopy handlers in this snapshot do not.
+# Apps such as GravityMark query these pNext structs and hit default abort paths.
+$vkCerealCommonDir = Join-Path $vulkanDir "cereal\common"
+$reservedMarshalingPath = Join-Path $vkCerealCommonDir "goldfish_vk_reserved_marshaling.cpp"
+$marshalingPath = Join-Path $vkCerealCommonDir "goldfish_vk_marshaling.cpp"
+$transformPath = Join-Path $vkCerealCommonDir "goldfish_vk_transform.cpp"
+$deepcopyPath = Join-Path $vkCerealCommonDir "goldfish_vk_deepcopy.cpp"
+
+if (Test-Path -LiteralPath $reservedMarshalingPath -PathType Leaf) {
+    Replace-Once $reservedMarshalingPath @'
+#endif
+#ifdef VK_EXT_color_write_enable
+void reservedunmarshal_VkPhysicalDeviceColorWriteEnableFeaturesEXT(
+'@ @'
+#endif
+#ifdef VK_EXT_mesh_shader
+void reservedunmarshal_VkPhysicalDeviceMeshShaderFeaturesEXT(
+    VulkanStream* vkStream, VkStructureType rootType,
+    VkPhysicalDeviceMeshShaderFeaturesEXT* forUnmarshaling, uint8_t** ptr) {
+    memcpy((VkStructureType*)&forUnmarshaling->sType, *ptr, sizeof(VkStructureType));
+    *ptr += sizeof(VkStructureType);
+    if (rootType == VK_STRUCTURE_TYPE_MAX_ENUM) {
+        rootType = forUnmarshaling->sType;
+    }
+    uint32_t pNext_size;
+    memcpy((uint32_t*)&pNext_size, *ptr, sizeof(uint32_t));
+    gfxstream::Stream::fromBe32((uint8_t*)&pNext_size);
+    *ptr += sizeof(uint32_t);
+    forUnmarshaling->pNext = nullptr;
+    if (pNext_size) {
+        vkStream->alloc((void**)&forUnmarshaling->pNext, sizeof(VkStructureType));
+        memcpy((void*)forUnmarshaling->pNext, *ptr, sizeof(VkStructureType));
+        *ptr += sizeof(VkStructureType);
+        VkStructureType extType = *(VkStructureType*)(forUnmarshaling->pNext);
+        vkStream->alloc((void**)&forUnmarshaling->pNext,
+                        goldfish_vk_extension_struct_size_with_stream_features(
+                            vkStream->getFeatureBits(), rootType, forUnmarshaling->pNext));
+        *(VkStructureType*)forUnmarshaling->pNext = extType;
+        reservedunmarshal_extension_struct(vkStream, rootType, (void*)(forUnmarshaling->pNext),
+                                           ptr);
+    }
+    memcpy((VkBool32*)&forUnmarshaling->taskShader, *ptr, sizeof(VkBool32));
+    *ptr += sizeof(VkBool32);
+    memcpy((VkBool32*)&forUnmarshaling->meshShader, *ptr, sizeof(VkBool32));
+    *ptr += sizeof(VkBool32);
+    memcpy((VkBool32*)&forUnmarshaling->multiviewMeshShader, *ptr, sizeof(VkBool32));
+    *ptr += sizeof(VkBool32);
+    memcpy((VkBool32*)&forUnmarshaling->primitiveFragmentShadingRateMeshShader, *ptr,
+           sizeof(VkBool32));
+    *ptr += sizeof(VkBool32);
+    memcpy((VkBool32*)&forUnmarshaling->meshShaderQueries, *ptr, sizeof(VkBool32));
+    *ptr += sizeof(VkBool32);
+}
+
+void reservedunmarshal_VkPhysicalDeviceMeshShaderPropertiesEXT(
+    VulkanStream* vkStream, VkStructureType rootType,
+    VkPhysicalDeviceMeshShaderPropertiesEXT* forUnmarshaling, uint8_t** ptr) {
+    memcpy((VkStructureType*)&forUnmarshaling->sType, *ptr, sizeof(VkStructureType));
+    *ptr += sizeof(VkStructureType);
+    if (rootType == VK_STRUCTURE_TYPE_MAX_ENUM) {
+        rootType = forUnmarshaling->sType;
+    }
+    uint32_t pNext_size;
+    memcpy((uint32_t*)&pNext_size, *ptr, sizeof(uint32_t));
+    gfxstream::Stream::fromBe32((uint8_t*)&pNext_size);
+    *ptr += sizeof(uint32_t);
+    forUnmarshaling->pNext = nullptr;
+    if (pNext_size) {
+        vkStream->alloc((void**)&forUnmarshaling->pNext, sizeof(VkStructureType));
+        memcpy((void*)forUnmarshaling->pNext, *ptr, sizeof(VkStructureType));
+        *ptr += sizeof(VkStructureType);
+        VkStructureType extType = *(VkStructureType*)(forUnmarshaling->pNext);
+        vkStream->alloc((void**)&forUnmarshaling->pNext,
+                        goldfish_vk_extension_struct_size_with_stream_features(
+                            vkStream->getFeatureBits(), rootType, forUnmarshaling->pNext));
+        *(VkStructureType*)forUnmarshaling->pNext = extType;
+        reservedunmarshal_extension_struct(vkStream, rootType, (void*)(forUnmarshaling->pNext),
+                                           ptr);
+    }
+    memcpy((uint32_t*)&forUnmarshaling->maxTaskWorkGroupTotalCount, *ptr, sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)forUnmarshaling->maxTaskWorkGroupCount, *ptr, 3 * sizeof(uint32_t));
+    *ptr += 3 * sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->maxTaskWorkGroupInvocations, *ptr, sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)forUnmarshaling->maxTaskWorkGroupSize, *ptr, 3 * sizeof(uint32_t));
+    *ptr += 3 * sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->maxTaskPayloadSize, *ptr, sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->maxTaskSharedMemorySize, *ptr, sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->maxTaskPayloadAndSharedMemorySize, *ptr,
+           sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->maxMeshWorkGroupTotalCount, *ptr, sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)forUnmarshaling->maxMeshWorkGroupCount, *ptr, 3 * sizeof(uint32_t));
+    *ptr += 3 * sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->maxMeshWorkGroupInvocations, *ptr, sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)forUnmarshaling->maxMeshWorkGroupSize, *ptr, 3 * sizeof(uint32_t));
+    *ptr += 3 * sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->maxMeshSharedMemorySize, *ptr, sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->maxMeshPayloadAndSharedMemorySize, *ptr,
+           sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->maxMeshOutputMemorySize, *ptr, sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->maxMeshPayloadAndOutputMemorySize, *ptr,
+           sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->maxMeshOutputComponents, *ptr, sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->maxMeshOutputVertices, *ptr, sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->maxMeshOutputPrimitives, *ptr, sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->maxMeshOutputLayers, *ptr, sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->maxMeshMultiviewViewCount, *ptr, sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->meshOutputPerVertexGranularity, *ptr,
+           sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->meshOutputPerPrimitiveGranularity, *ptr,
+           sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->maxPreferredTaskWorkGroupInvocations, *ptr,
+           sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((uint32_t*)&forUnmarshaling->maxPreferredMeshWorkGroupInvocations, *ptr,
+           sizeof(uint32_t));
+    *ptr += sizeof(uint32_t);
+    memcpy((VkBool32*)&forUnmarshaling->prefersLocalInvocationVertexOutput, *ptr,
+           sizeof(VkBool32));
+    *ptr += sizeof(VkBool32);
+    memcpy((VkBool32*)&forUnmarshaling->prefersLocalInvocationPrimitiveOutput, *ptr,
+           sizeof(VkBool32));
+    *ptr += sizeof(VkBool32);
+    memcpy((VkBool32*)&forUnmarshaling->prefersCompactVertexOutput, *ptr, sizeof(VkBool32));
+    *ptr += sizeof(VkBool32);
+    memcpy((VkBool32*)&forUnmarshaling->prefersCompactPrimitiveOutput, *ptr, sizeof(VkBool32));
+    *ptr += sizeof(VkBool32);
+}
+
+#endif
+#ifdef VK_EXT_color_write_enable
+void reservedunmarshal_VkPhysicalDeviceColorWriteEnableFeaturesEXT(
+'@ "reserved VK_EXT_mesh_shader struct unmarshaling"
+
+    Replace-Once $reservedMarshalingPath @'
+#endif
+#ifdef VK_EXT_color_write_enable
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COLOR_WRITE_ENABLE_FEATURES_EXT: {
+'@ @'
+#endif
+#ifdef VK_EXT_mesh_shader
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT: {
+            reservedunmarshal_VkPhysicalDeviceMeshShaderFeaturesEXT(
+                vkStream, rootType,
+                reinterpret_cast<VkPhysicalDeviceMeshShaderFeaturesEXT*>(structExtension_out), ptr);
+            break;
+        }
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT: {
+            reservedunmarshal_VkPhysicalDeviceMeshShaderPropertiesEXT(
+                vkStream, rootType,
+                reinterpret_cast<VkPhysicalDeviceMeshShaderPropertiesEXT*>(structExtension_out),
+                ptr);
+            break;
+        }
+#endif
+#ifdef VK_EXT_color_write_enable
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COLOR_WRITE_ENABLE_FEATURES_EXT: {
+'@ "reserved VK_EXT_mesh_shader extension switch"
+}
+
+if (Test-Path -LiteralPath $marshalingPath -PathType Leaf) {
+    Replace-Once $marshalingPath @'
+#endif
+#ifdef VK_EXT_color_write_enable
+void marshal_VkPhysicalDeviceColorWriteEnableFeaturesEXT(
+'@ @'
+#endif
+#ifdef VK_EXT_mesh_shader
+void marshal_VkPhysicalDeviceMeshShaderFeaturesEXT(
+    VulkanStream* vkStream, VkStructureType rootType,
+    const VkPhysicalDeviceMeshShaderFeaturesEXT* forMarshaling) {
+    (void)rootType;
+    vkStream->write((VkStructureType*)&forMarshaling->sType, sizeof(VkStructureType));
+    if (rootType == VK_STRUCTURE_TYPE_MAX_ENUM) {
+        rootType = forMarshaling->sType;
+    }
+    marshal_extension_struct(vkStream, rootType, forMarshaling->pNext);
+    vkStream->write((VkBool32*)&forMarshaling->taskShader, sizeof(VkBool32));
+    vkStream->write((VkBool32*)&forMarshaling->meshShader, sizeof(VkBool32));
+    vkStream->write((VkBool32*)&forMarshaling->multiviewMeshShader, sizeof(VkBool32));
+    vkStream->write((VkBool32*)&forMarshaling->primitiveFragmentShadingRateMeshShader,
+                    sizeof(VkBool32));
+    vkStream->write((VkBool32*)&forMarshaling->meshShaderQueries, sizeof(VkBool32));
+}
+
+void unmarshal_VkPhysicalDeviceMeshShaderFeaturesEXT(
+    VulkanStream* vkStream, VkStructureType rootType,
+    VkPhysicalDeviceMeshShaderFeaturesEXT* forUnmarshaling) {
+    (void)rootType;
+    vkStream->read((VkStructureType*)&forUnmarshaling->sType, sizeof(VkStructureType));
+    if (rootType == VK_STRUCTURE_TYPE_MAX_ENUM) {
+        rootType = forUnmarshaling->sType;
+    }
+    size_t pNext_size;
+    pNext_size = vkStream->getBe32();
+    forUnmarshaling->pNext = nullptr;
+    if (pNext_size) {
+        vkStream->alloc((void**)&forUnmarshaling->pNext, sizeof(VkStructureType));
+        vkStream->read((void*)forUnmarshaling->pNext, sizeof(VkStructureType));
+        VkStructureType extType = *(VkStructureType*)(forUnmarshaling->pNext);
+        vkStream->alloc((void**)&forUnmarshaling->pNext,
+                        goldfish_vk_extension_struct_size_with_stream_features(
+                            vkStream->getFeatureBits(), rootType, forUnmarshaling->pNext));
+        *(VkStructureType*)forUnmarshaling->pNext = extType;
+        unmarshal_extension_struct(vkStream, rootType, (void*)(forUnmarshaling->pNext));
+    }
+    vkStream->read((VkBool32*)&forUnmarshaling->taskShader, sizeof(VkBool32));
+    vkStream->read((VkBool32*)&forUnmarshaling->meshShader, sizeof(VkBool32));
+    vkStream->read((VkBool32*)&forUnmarshaling->multiviewMeshShader, sizeof(VkBool32));
+    vkStream->read((VkBool32*)&forUnmarshaling->primitiveFragmentShadingRateMeshShader,
+                   sizeof(VkBool32));
+    vkStream->read((VkBool32*)&forUnmarshaling->meshShaderQueries, sizeof(VkBool32));
+}
+
+void marshal_VkPhysicalDeviceMeshShaderPropertiesEXT(
+    VulkanStream* vkStream, VkStructureType rootType,
+    const VkPhysicalDeviceMeshShaderPropertiesEXT* forMarshaling) {
+    (void)rootType;
+    vkStream->write((VkStructureType*)&forMarshaling->sType, sizeof(VkStructureType));
+    if (rootType == VK_STRUCTURE_TYPE_MAX_ENUM) {
+        rootType = forMarshaling->sType;
+    }
+    marshal_extension_struct(vkStream, rootType, forMarshaling->pNext);
+    vkStream->write((uint32_t*)&forMarshaling->maxTaskWorkGroupTotalCount, sizeof(uint32_t));
+    vkStream->write((uint32_t*)forMarshaling->maxTaskWorkGroupCount, 3 * sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->maxTaskWorkGroupInvocations, sizeof(uint32_t));
+    vkStream->write((uint32_t*)forMarshaling->maxTaskWorkGroupSize, 3 * sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->maxTaskPayloadSize, sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->maxTaskSharedMemorySize, sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->maxTaskPayloadAndSharedMemorySize,
+                    sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->maxMeshWorkGroupTotalCount, sizeof(uint32_t));
+    vkStream->write((uint32_t*)forMarshaling->maxMeshWorkGroupCount, 3 * sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->maxMeshWorkGroupInvocations, sizeof(uint32_t));
+    vkStream->write((uint32_t*)forMarshaling->maxMeshWorkGroupSize, 3 * sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->maxMeshSharedMemorySize, sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->maxMeshPayloadAndSharedMemorySize,
+                    sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->maxMeshOutputMemorySize, sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->maxMeshPayloadAndOutputMemorySize,
+                    sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->maxMeshOutputComponents, sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->maxMeshOutputVertices, sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->maxMeshOutputPrimitives, sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->maxMeshOutputLayers, sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->maxMeshMultiviewViewCount, sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->meshOutputPerVertexGranularity,
+                    sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->meshOutputPerPrimitiveGranularity,
+                    sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->maxPreferredTaskWorkGroupInvocations,
+                    sizeof(uint32_t));
+    vkStream->write((uint32_t*)&forMarshaling->maxPreferredMeshWorkGroupInvocations,
+                    sizeof(uint32_t));
+    vkStream->write((VkBool32*)&forMarshaling->prefersLocalInvocationVertexOutput,
+                    sizeof(VkBool32));
+    vkStream->write((VkBool32*)&forMarshaling->prefersLocalInvocationPrimitiveOutput,
+                    sizeof(VkBool32));
+    vkStream->write((VkBool32*)&forMarshaling->prefersCompactVertexOutput, sizeof(VkBool32));
+    vkStream->write((VkBool32*)&forMarshaling->prefersCompactPrimitiveOutput, sizeof(VkBool32));
+}
+
+void unmarshal_VkPhysicalDeviceMeshShaderPropertiesEXT(
+    VulkanStream* vkStream, VkStructureType rootType,
+    VkPhysicalDeviceMeshShaderPropertiesEXT* forUnmarshaling) {
+    (void)rootType;
+    vkStream->read((VkStructureType*)&forUnmarshaling->sType, sizeof(VkStructureType));
+    if (rootType == VK_STRUCTURE_TYPE_MAX_ENUM) {
+        rootType = forUnmarshaling->sType;
+    }
+    size_t pNext_size;
+    pNext_size = vkStream->getBe32();
+    forUnmarshaling->pNext = nullptr;
+    if (pNext_size) {
+        vkStream->alloc((void**)&forUnmarshaling->pNext, sizeof(VkStructureType));
+        vkStream->read((void*)forUnmarshaling->pNext, sizeof(VkStructureType));
+        VkStructureType extType = *(VkStructureType*)(forUnmarshaling->pNext);
+        vkStream->alloc((void**)&forUnmarshaling->pNext,
+                        goldfish_vk_extension_struct_size_with_stream_features(
+                            vkStream->getFeatureBits(), rootType, forUnmarshaling->pNext));
+        *(VkStructureType*)forUnmarshaling->pNext = extType;
+        unmarshal_extension_struct(vkStream, rootType, (void*)(forUnmarshaling->pNext));
+    }
+    vkStream->read((uint32_t*)&forUnmarshaling->maxTaskWorkGroupTotalCount, sizeof(uint32_t));
+    vkStream->read((uint32_t*)forUnmarshaling->maxTaskWorkGroupCount, 3 * sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->maxTaskWorkGroupInvocations, sizeof(uint32_t));
+    vkStream->read((uint32_t*)forUnmarshaling->maxTaskWorkGroupSize, 3 * sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->maxTaskPayloadSize, sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->maxTaskSharedMemorySize, sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->maxTaskPayloadAndSharedMemorySize,
+                   sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->maxMeshWorkGroupTotalCount, sizeof(uint32_t));
+    vkStream->read((uint32_t*)forUnmarshaling->maxMeshWorkGroupCount, 3 * sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->maxMeshWorkGroupInvocations, sizeof(uint32_t));
+    vkStream->read((uint32_t*)forUnmarshaling->maxMeshWorkGroupSize, 3 * sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->maxMeshSharedMemorySize, sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->maxMeshPayloadAndSharedMemorySize,
+                   sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->maxMeshOutputMemorySize, sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->maxMeshPayloadAndOutputMemorySize,
+                   sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->maxMeshOutputComponents, sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->maxMeshOutputVertices, sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->maxMeshOutputPrimitives, sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->maxMeshOutputLayers, sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->maxMeshMultiviewViewCount, sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->meshOutputPerVertexGranularity,
+                   sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->meshOutputPerPrimitiveGranularity,
+                   sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->maxPreferredTaskWorkGroupInvocations,
+                   sizeof(uint32_t));
+    vkStream->read((uint32_t*)&forUnmarshaling->maxPreferredMeshWorkGroupInvocations,
+                   sizeof(uint32_t));
+    vkStream->read((VkBool32*)&forUnmarshaling->prefersLocalInvocationVertexOutput,
+                   sizeof(VkBool32));
+    vkStream->read((VkBool32*)&forUnmarshaling->prefersLocalInvocationPrimitiveOutput,
+                   sizeof(VkBool32));
+    vkStream->read((VkBool32*)&forUnmarshaling->prefersCompactVertexOutput, sizeof(VkBool32));
+    vkStream->read((VkBool32*)&forUnmarshaling->prefersCompactPrimitiveOutput, sizeof(VkBool32));
+}
+
+#endif
+#ifdef VK_EXT_color_write_enable
+void marshal_VkPhysicalDeviceColorWriteEnableFeaturesEXT(
+'@ "VK_EXT_mesh_shader marshal/unmarshal functions"
+
+    Replace-Once $marshalingPath @'
+#endif
+#ifdef VK_EXT_color_write_enable
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COLOR_WRITE_ENABLE_FEATURES_EXT: {
+            marshal_VkPhysicalDeviceColorWriteEnableFeaturesEXT(
+'@ @'
+#endif
+#ifdef VK_EXT_mesh_shader
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT: {
+            marshal_VkPhysicalDeviceMeshShaderFeaturesEXT(
+                vkStream, rootType,
+                reinterpret_cast<const VkPhysicalDeviceMeshShaderFeaturesEXT*>(structExtension));
+            break;
+        }
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT: {
+            marshal_VkPhysicalDeviceMeshShaderPropertiesEXT(
+                vkStream, rootType,
+                reinterpret_cast<const VkPhysicalDeviceMeshShaderPropertiesEXT*>(structExtension));
+            break;
+        }
+#endif
+#ifdef VK_EXT_color_write_enable
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COLOR_WRITE_ENABLE_FEATURES_EXT: {
+            marshal_VkPhysicalDeviceColorWriteEnableFeaturesEXT(
+'@ "VK_EXT_mesh_shader marshal extension switch"
+
+    Replace-Once $marshalingPath @'
+#endif
+#ifdef VK_EXT_color_write_enable
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COLOR_WRITE_ENABLE_FEATURES_EXT: {
+            unmarshal_VkPhysicalDeviceColorWriteEnableFeaturesEXT(
+'@ @'
+#endif
+#ifdef VK_EXT_mesh_shader
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT: {
+            unmarshal_VkPhysicalDeviceMeshShaderFeaturesEXT(
+                vkStream, rootType,
+                reinterpret_cast<VkPhysicalDeviceMeshShaderFeaturesEXT*>(structExtension_out));
+            break;
+        }
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT: {
+            unmarshal_VkPhysicalDeviceMeshShaderPropertiesEXT(
+                vkStream, rootType,
+                reinterpret_cast<VkPhysicalDeviceMeshShaderPropertiesEXT*>(structExtension_out));
+            break;
+        }
+#endif
+#ifdef VK_EXT_color_write_enable
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COLOR_WRITE_ENABLE_FEATURES_EXT: {
+            unmarshal_VkPhysicalDeviceColorWriteEnableFeaturesEXT(
+'@ "VK_EXT_mesh_shader unmarshal extension switch"
+}
+
+if (Test-Path -LiteralPath $transformPath -PathType Leaf) {
+    Replace-Once $transformPath @'
+#endif
+#ifdef VK_EXT_color_write_enable
+void transform_tohost_VkPhysicalDeviceColorWriteEnableFeaturesEXT(
+'@ @'
+#endif
+#ifdef VK_EXT_mesh_shader
+void transform_tohost_VkPhysicalDeviceMeshShaderFeaturesEXT(
+    VkDecoderGlobalState* resourceTracker, VkPhysicalDeviceMeshShaderFeaturesEXT* toTransform) {
+    (void)resourceTracker;
+    (void)toTransform;
+    if (toTransform->pNext) {
+        transform_tohost_extension_struct(resourceTracker, (void*)(toTransform->pNext));
+    }
+}
+
+void transform_fromhost_VkPhysicalDeviceMeshShaderFeaturesEXT(
+    VkDecoderGlobalState* resourceTracker, VkPhysicalDeviceMeshShaderFeaturesEXT* toTransform) {
+    (void)resourceTracker;
+    (void)toTransform;
+    if (toTransform->pNext) {
+        transform_fromhost_extension_struct(resourceTracker, (void*)(toTransform->pNext));
+    }
+}
+
+void transform_tohost_VkPhysicalDeviceMeshShaderPropertiesEXT(
+    VkDecoderGlobalState* resourceTracker, VkPhysicalDeviceMeshShaderPropertiesEXT* toTransform) {
+    (void)resourceTracker;
+    (void)toTransform;
+    if (toTransform->pNext) {
+        transform_tohost_extension_struct(resourceTracker, (void*)(toTransform->pNext));
+    }
+}
+
+void transform_fromhost_VkPhysicalDeviceMeshShaderPropertiesEXT(
+    VkDecoderGlobalState* resourceTracker, VkPhysicalDeviceMeshShaderPropertiesEXT* toTransform) {
+    (void)resourceTracker;
+    (void)toTransform;
+    if (toTransform->pNext) {
+        transform_fromhost_extension_struct(resourceTracker, (void*)(toTransform->pNext));
+    }
+}
+
+#endif
+#ifdef VK_EXT_color_write_enable
+void transform_tohost_VkPhysicalDeviceColorWriteEnableFeaturesEXT(
+'@ "VK_EXT_mesh_shader transform functions"
+
+    Replace-Once $transformPath @'
+#endif
+#ifdef VK_EXT_color_write_enable
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COLOR_WRITE_ENABLE_FEATURES_EXT: {
+            transform_tohost_VkPhysicalDeviceColorWriteEnableFeaturesEXT(
+'@ @'
+#endif
+#ifdef VK_EXT_mesh_shader
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT: {
+            transform_tohost_VkPhysicalDeviceMeshShaderFeaturesEXT(
+                resourceTracker,
+                reinterpret_cast<VkPhysicalDeviceMeshShaderFeaturesEXT*>(structExtension_out));
+            break;
+        }
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT: {
+            transform_tohost_VkPhysicalDeviceMeshShaderPropertiesEXT(
+                resourceTracker,
+                reinterpret_cast<VkPhysicalDeviceMeshShaderPropertiesEXT*>(structExtension_out));
+            break;
+        }
+#endif
+#ifdef VK_EXT_color_write_enable
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COLOR_WRITE_ENABLE_FEATURES_EXT: {
+            transform_tohost_VkPhysicalDeviceColorWriteEnableFeaturesEXT(
+'@ "VK_EXT_mesh_shader transform_tohost switch"
+
+    Replace-Once $transformPath @'
+#endif
+#ifdef VK_EXT_color_write_enable
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COLOR_WRITE_ENABLE_FEATURES_EXT: {
+            transform_fromhost_VkPhysicalDeviceColorWriteEnableFeaturesEXT(
+'@ @'
+#endif
+#ifdef VK_EXT_mesh_shader
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT: {
+            transform_fromhost_VkPhysicalDeviceMeshShaderFeaturesEXT(
+                resourceTracker,
+                reinterpret_cast<VkPhysicalDeviceMeshShaderFeaturesEXT*>(structExtension_out));
+            break;
+        }
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT: {
+            transform_fromhost_VkPhysicalDeviceMeshShaderPropertiesEXT(
+                resourceTracker,
+                reinterpret_cast<VkPhysicalDeviceMeshShaderPropertiesEXT*>(structExtension_out));
+            break;
+        }
+#endif
+#ifdef VK_EXT_color_write_enable
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COLOR_WRITE_ENABLE_FEATURES_EXT: {
+            transform_fromhost_VkPhysicalDeviceColorWriteEnableFeaturesEXT(
+'@ "VK_EXT_mesh_shader transform_fromhost switch"
+}
+
+if (Test-Path -LiteralPath $deepcopyPath -PathType Leaf) {
+    Replace-Once $deepcopyPath @'
+#endif
+#ifdef VK_EXT_color_write_enable
+void deepcopy_VkPhysicalDeviceColorWriteEnableFeaturesEXT(
+'@ @'
+#endif
+#ifdef VK_EXT_mesh_shader
+void deepcopy_VkPhysicalDeviceMeshShaderFeaturesEXT(
+    Allocator* alloc, VkStructureType rootType,
+    const VkPhysicalDeviceMeshShaderFeaturesEXT* from,
+    VkPhysicalDeviceMeshShaderFeaturesEXT* to) {
+    (void)alloc;
+    (void)rootType;
+    *to = *from;
+    if (rootType == VK_STRUCTURE_TYPE_MAX_ENUM) {
+        rootType = from->sType;
+    }
+    const void* from_pNext = from;
+    size_t pNext_size = 0u;
+    while (!pNext_size && from_pNext) {
+        from_pNext = static_cast<const VkBaseOutStructure*>(from_pNext)->pNext;
+        pNext_size = goldfish_vk_extension_struct_size(rootType, from_pNext);
+    }
+    to->pNext = nullptr;
+    if (pNext_size) {
+        to->pNext = (void*)alloc->alloc(pNext_size);
+        deepcopy_extension_struct(alloc, rootType, from_pNext, (void*)(to->pNext));
+    }
+}
+
+void deepcopy_VkPhysicalDeviceMeshShaderPropertiesEXT(
+    Allocator* alloc, VkStructureType rootType,
+    const VkPhysicalDeviceMeshShaderPropertiesEXT* from,
+    VkPhysicalDeviceMeshShaderPropertiesEXT* to) {
+    (void)alloc;
+    (void)rootType;
+    *to = *from;
+    if (rootType == VK_STRUCTURE_TYPE_MAX_ENUM) {
+        rootType = from->sType;
+    }
+    const void* from_pNext = from;
+    size_t pNext_size = 0u;
+    while (!pNext_size && from_pNext) {
+        from_pNext = static_cast<const VkBaseOutStructure*>(from_pNext)->pNext;
+        pNext_size = goldfish_vk_extension_struct_size(rootType, from_pNext);
+    }
+    to->pNext = nullptr;
+    if (pNext_size) {
+        to->pNext = (void*)alloc->alloc(pNext_size);
+        deepcopy_extension_struct(alloc, rootType, from_pNext, (void*)(to->pNext));
+    }
+}
+
+#endif
+#ifdef VK_EXT_color_write_enable
+void deepcopy_VkPhysicalDeviceColorWriteEnableFeaturesEXT(
+'@ "VK_EXT_mesh_shader deepcopy functions"
+
+    Replace-Once $deepcopyPath @'
+#endif
+#ifdef VK_EXT_color_write_enable
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COLOR_WRITE_ENABLE_FEATURES_EXT: {
+            deepcopy_VkPhysicalDeviceColorWriteEnableFeaturesEXT(
+'@ @'
+#endif
+#ifdef VK_EXT_mesh_shader
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT: {
+            deepcopy_VkPhysicalDeviceMeshShaderFeaturesEXT(
+                alloc, rootType,
+                reinterpret_cast<const VkPhysicalDeviceMeshShaderFeaturesEXT*>(structExtension),
+                reinterpret_cast<VkPhysicalDeviceMeshShaderFeaturesEXT*>(structExtension_out));
+            break;
+        }
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT: {
+            deepcopy_VkPhysicalDeviceMeshShaderPropertiesEXT(
+                alloc, rootType,
+                reinterpret_cast<const VkPhysicalDeviceMeshShaderPropertiesEXT*>(structExtension),
+                reinterpret_cast<VkPhysicalDeviceMeshShaderPropertiesEXT*>(structExtension_out));
+            break;
+        }
+#endif
+#ifdef VK_EXT_color_write_enable
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COLOR_WRITE_ENABLE_FEATURES_EXT: {
+            deepcopy_VkPhysicalDeviceColorWriteEnableFeaturesEXT(
+'@ "VK_EXT_mesh_shader deepcopy switch"
+}
+
+# --- frame_buffer.cpp: force-enable GlDirectMem alongside Vulkan ----------------
+# Guest Vulkan HOST_VISIBLE/coherent memory requires the GLDirectMem host feature;
+# the ini value never reaches the DLL (cross-DLL FeatureSet copy is a no-op), so
+# force it at the same site that forces Vulkan/EglOnEgl. Without this any real
+# Vulkan app aborts in the guest encoder on its first vkAllocateMemory.
+$modernFrameBufferFeatures = Join-Path $hostDir "frame_buffer.cpp"
+if (Test-Path -LiteralPath $modernFrameBufferFeatures -PathType Leaf) {
+    Replace-Text $modernFrameBufferFeatures @'
+    impl->m_features.EglOnEgl.setEnabled(true);
+    impl->m_features.Vulkan.setEnabled(true);
+'@ @'
+    impl->m_features.EglOnEgl.setEnabled(true);
+    impl->m_features.Vulkan.setEnabled(true);
+    // GlDirectMem: required for guest Vulkan HOST_VISIBLE/coherent memory. Without it the
+    // guest encoder (libvulkan_enc createCoherentMemory) aborts with "Unsupported virtual
+    // memory feature" on the first vkAllocateMemory of any real Vulkan app (GravityMark).
+    // The emulator ini's GLDirectMem never reaches us (cross-DLL FeatureSet copy is a no-op),
+    // so force it here like Vulkan/EglOnEgl. Kill switch: CHIMERA_GFXSTREAM_NO_DIRECT_MEM=1.
+    if (gfxstream::base::getEnvironmentVariable("CHIMERA_GFXSTREAM_NO_DIRECT_MEM") != "1") {
+        impl->m_features.GlDirectMem.setEnabled(true);
+        std::fprintf(stderr, "[chimera-gfxstream] Impl::Create: GlDirectMem force-enabled\n");
+        std::fflush(stderr);
+    }
+    // Batched descriptor-set updates (requires QueueSubmitWithCommands). The guest's
+    // non-batched path blind-deepcopies VkWriteDescriptorSet including pointers the spec
+    // allows to be garbage for the given descriptorType -> SIGSEGV in the prebuilt
+    // libvulkan_enc (GravityMark's first vkUpdateDescriptorSets). The batched path reifies
+    // writes per descriptorType and never touches ignored fields. Both features are "on"
+    // in the SDK ini; they only read as off here because the cross-DLL FeatureSet copy is
+    // a no-op. Kill switch: CHIMERA_GFXSTREAM_NO_BATCHED_DESCRIPTOR=1.
+    if (gfxstream::base::getEnvironmentVariable("CHIMERA_GFXSTREAM_NO_BATCHED_DESCRIPTOR") !=
+        "1") {
+        impl->m_features.VulkanQueueSubmitWithCommands.setEnabled(true);
+        impl->m_features.VulkanBatchedDescriptorSetUpdate.setEnabled(true);
+        std::fprintf(stderr,
+                     "[chimera-gfxstream] Impl::Create: QueueSubmitWithCommands + "
+                     "BatchedDescriptorSetUpdate force-enabled\n");
+        std::fflush(stderr);
+    }
+'@ "frame_buffer GlDirectMem force-enable"
+}
+
+# --- FeatureSet copy: same-build value copy by name ------------------------------
+# The stock copy ctor/operator= were replaced (tree-only, S101 era) with no-ops to
+# survive the emulator's cross-DLL FeatureSet (incompatible vtable). That silently
+# dropped every same-DLL copy too: VkEmulation::setFeatures() became a no-op, so
+# renderControl advertised features (guest side) the Vulkan decoder never saw --
+# guest/host seqno protocol split => stream misalignment AV. Copy plain values by
+# name when both sides are the same build (same feature count); keep defaults for
+# the cross-DLL set.
+$featuresHeader = Join-Path $root "host\features\include\gfxstream\host\Features.h"
+if (Test-Path -LiteralPath $featuresHeader -PathType Leaf) {
+    Replace-Text $featuresHeader @'
+    void setReason(std::string reasonStr) { reason = reasonStr; }
+    const std::string& getReason() const { return reason; }
+    const std::string& getName() const { return name; }
+
+    virtual bool parseValue(std::string_view strValue) = 0;
+'@ @'
+    void setReason(std::string reasonStr) { reason = reasonStr; }
+    const std::string& getReason() const { return reason; }
+    const std::string& getName() const { return name; }
+
+    // Chimera: non-virtual plain-data access so FeatureSet copies can transfer
+    // values by name without calling through the source object's vtable (which
+    // may belong to another DLL build with an incompatible layout).
+    const FeatureValue& rawValue() const { return value; }
+    void setRawValue(const FeatureValue& v) { value = v; }
+
+    virtual bool parseValue(std::string_view strValue) = 0;
+'@ "Features.h rawValue accessors"
+}
+
+$featuresCpp = Join-Path $root "host\features\features.cpp"
+if (Test-Path -LiteralPath $featuresCpp -PathType Leaf) {
+    Replace-FirstAvailable $featuresCpp @(@'
+FeatureSet::FeatureSet(const FeatureSet& rhs) : FeatureSet() {
+    // Cannot safely copy from the emulator's FeatureSet across the DLL boundary:
+    // the emulator's FeatureInfoBase objects may have an incompatible vtable layout
+    // (different SDK build), and calling any virtual method through rhs's pointers
+    // causes an AV. Use our own default features; callers that need specific flags
+    // must enable them explicitly after construction (see FrameBuffer::Impl::Create).
+    std::fprintf(stderr, "[chimera-gfxstream] FeatureSet copy ctor: skipping cross-DLL copy "
+                 "(our=%zu rhs=%zu) -- using defaults\n", map.size(), rhs.map.size());
+    std::fflush(stderr);
+}
+
+FeatureSet& FeatureSet::operator=(const FeatureSet& rhs) {
+    // No-op: see FeatureSet(const FeatureSet&) comment above.
+    return *this;
+}
+'@, @'
+FeatureSet::FeatureSet(const FeatureSet& rhs) : FeatureSet() { *this = rhs; }
+FeatureSet& FeatureSet::operator=(const FeatureSet& rhs) {
+    for (auto& [name, featureInfo] : map) {
+        featureInfo->parseValue(rhs.map.find(name)->second->getValueReadable());
+        featureInfo->setReason(rhs.map.find(name)->second->getReason());
+    }
+    return *this;
+}
+'@) @'
+// Chimera: copy feature VALUES by name using only non-virtual plain-data access.
+// The emulator's FeatureSet may come from another DLL build whose FeatureInfoBase
+// vtable layout differs (calling rhs's virtual methods AVs -- the original bug), but
+// its std::map and FeatureValue members are plain MSVC STL data and safe to read.
+// The previous fix made copies unconditional no-ops, which silently dropped every
+// ini/emulator feature and split host state (renderControl advertised features the
+// Vulkan decoder never saw -- guest/host seqno protocol mismatch => stream AV).
+static void chimeraCopyFeatureValuesByName(FeatureSet& dst, const FeatureSet& src) {
+    dst.guestVulkanMaxApiVersion = src.guestVulkanMaxApiVersion;
+    if (dst.map.size() != src.map.size()) {
+        // Different feature count == different build == member offsets of rhs's
+        // FeatureInfoBase cannot be trusted either. Keep the old behavior for the
+        // emulator's cross-DLL set: defaults + explicit force-sets in FrameBuffer.
+        std::fprintf(stderr,
+                     "[chimera-gfxstream] FeatureSet copy: cross-DLL set (our=%zu rhs=%zu) -- "
+                     "using defaults\n",
+                     dst.map.size(), src.map.size());
+        std::fflush(stderr);
+        return;
+    }
+    size_t copied = 0;
+    for (auto& [name, info] : dst.map) {
+        if (!info) continue;
+        auto it = src.map.find(name);
+        if (it == src.map.end() || !it->second) continue;
+        info->setRawValue(it->second->rawValue());
+        ++copied;
+    }
+    std::fprintf(stderr,
+                 "[chimera-gfxstream] FeatureSet copy: %zu/%zu values copied by name\n",
+                 copied, dst.map.size());
+    std::fflush(stderr);
+}
+
+FeatureSet::FeatureSet(const FeatureSet& rhs) : FeatureSet() {
+    chimeraCopyFeatureValuesByName(*this, rhs);
+}
+
+FeatureSet& FeatureSet::operator=(const FeatureSet& rhs) {
+    chimeraCopyFeatureValuesByName(*this, rhs);
+    return *this;
+}
+'@ "FeatureSet same-build value copy"
+}
+
+# --- Vulkan boxed handles: tolerate ignored-handle sentinels --------------------
+# Some prebuilt guest Vulkan encoder paths send ignored/none handles as low32
+# 0xFFFFFFFF, sometimes preserving a high32 tag/slot (for example 0x00000001FFFFFFFF).
+# Treat those as null at the shared unbox point instead of killing the emulator.
+$boxedHandlesCpp = Join-Path $root "host\vulkan\vulkan_boxed_handles.cpp"
+if (Test-Path -LiteralPath $boxedHandlesCpp -PathType Leaf) {
+    Replace-Text $boxedHandlesCpp @'
+#include "vulkan_boxed_handles.h"
+
+#include "vk_decoder_global_state.h"
+'@ @'
+#include "vulkan_boxed_handles.h"
+
+#include <atomic>
+
+#include "vk_decoder_global_state.h"
+'@ "vulkan_boxed_handles atomic include"
+
+    Replace-FirstAvailable $boxedHandlesCpp @(@'
+            } else if ((uint64_t)(uintptr_t)boxed == 0xFFFFFFFFull) {
+                // Chimera: guest-side sentinel for "ignored/none" handles (seen from the
+                // prebuilt guest encoder, e.g. QSRI/ignored-handle paths). Killing the whole
+                // emulator over it turns one bad handle into a total session loss; treat it
+                // like VK_NULL_HANDLE and let the host driver report any real error.
+                static std::atomic<int> sChimeraSentinelUnbox{0};
+                if (sChimeraSentinelUnbox.fetch_add(1) % 100 == 0) {
+                    GFXSTREAM_ERROR("Ignoring sentinel unbox of %s 0xFFFFFFFF (count=%d)",
+                                    GetTypeStr<VkObjectT>(),
+                                    sChimeraSentinelUnbox.load());
+                }
+'@, @'
+            } else {
+                GFXSTREAM_FATAL("Failed to unbox %s %p", GetTypeStr<VkObjectT>(), boxed);
+            }
+'@) @'
+            } else if (((uint64_t)(uintptr_t)boxed & 0xFFFFFFFFull) == 0xFFFFFFFFull) {
+                // Chimera: guest-side sentinel for "ignored/none" handles (seen from the
+                // prebuilt guest encoder, e.g. QSRI/ignored-handle paths). Some encoders
+                // preserve a high32 tag/slot, so match the low32 sentinel rather than only
+                // the exact 0xFFFFFFFF value. Killing the whole emulator over it turns one
+                // bad handle into a total session loss; treat it like VK_NULL_HANDLE and let
+                // the host driver report any real error.
+                static std::atomic<int> sChimeraSentinelUnbox{0};
+                const int count = sChimeraSentinelUnbox.fetch_add(1) + 1;
+                if (count % 100 == 1) {
+                    GFXSTREAM_ERROR("Ignoring sentinel unbox of %s %p (count=%d)",
+                                    GetTypeStr<VkObjectT>(), boxed, count);
+                }
+            } else {
+                GFXSTREAM_FATAL("Failed to unbox %s %p", GetTypeStr<VkObjectT>(), boxed);
+            }
+'@ "vulkan_boxed_handles ignored-handle sentinel"
+}
+
+# --- Vulkan decoder: never echo guest fd placeholder on QSRI failure -----------
+# If vkQueueSignalReleaseImageANDROID returns before the ANB path overwrites the
+# out-param, the generated decoder echoes the guest's incoming placeholder (0).
+# Android's QueuePresentKHR then treats fd 0 as a real fence and fdsan aborts in
+# ARM64 apps running through libndk_translation (GravityMark). Default to -1.
+$vkDecoderCpp = Join-Path $root "host\vulkan\vk_decoder.cpp"
+if (Test-Path -LiteralPath $vkDecoderCpp -PathType Leaf) {
+    Replace-Text $vkDecoderCpp @'
+                vkReadStream->alloc((void**)&pNativeFenceFd, sizeof(int));
+                memcpy((int*)pNativeFenceFd, *readStreamPtrPtr, sizeof(int));
+                *readStreamPtrPtr += sizeof(int);
+                if (m_logCalls) {
+'@ @'
+                vkReadStream->alloc((void**)&pNativeFenceFd, sizeof(int));
+                memcpy((int*)pNativeFenceFd, *readStreamPtrPtr, sizeof(int));
+                *readStreamPtrPtr += sizeof(int);
+                // Chimera: never echo the guest's incoming fd placeholder back on failure.
+                // Android's QueuePresentKHR treats fd 0 as a real fence and fdsan aborts.
+                *pNativeFenceFd = -1;
+                if (m_logCalls) {
+'@ "vk_decoder QSRI native fence default"
+}
+
+# The mesh-shader blocks above cover the first observed crash; the size table
+# knows ~400 more struct types than the marshaling switches (mixed-generation
+# snapshot). The generator synthesizes handlers for every missing plain-POD
+# struct (all VkPhysicalDevice*Features/Properties) so blind capability queries
+# cannot abort the emulator.
+$vkExtGen = Join-Path $PSScriptRoot "generate-chimera-vk-ext-handlers.py"
+if (Test-Path -LiteralPath $vkExtGen -PathType Leaf) {
+    & python $vkExtGen $root
+    if ($LASTEXITCODE -ne 0) {
+        throw "chimera vk extension handler generation failed"
+    }
 }
 
 Write-Host "Applied Chimera gfxstream shared texture patch to $root"

@@ -67,9 +67,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-chimera-gfxs
 - **日常互動可用性 verifier**（非 GL60 synthetic）：`powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-interactive-ui.ps1 -Mode Fast -SyntheticScroll -MeasureSeconds 25`。`-GuestVulkan` 只設 `CHIMERA_GUEST_VULKAN=1`（emulator 加 `-feature Vulkan`）；**不再有 skiavk setprop/restart**（user image 上不可能成功，半套用會黑屏；歷史上的「GuestVulkan 對照」數字實際採樣到的是 pre-setprop GLES process，不可引用）。量測 Home→Settings→sustained scroll→app switch，輸出 `CHIMERA_DISPLAY`/`CHIMERA_INT`/`CHIMERA_INT_PRIO`。所有 runtime verifier/self-test 必須走 `ChimeraVerifyCommon.ps1` 的 `Resolve-EmulatorConsolePort`（0=自挑 free console/ADB pair；非 0 必須 even）與 cmdline-filtered `Stop-ChimeraProcesses`；不可硬寫 `emulator-5554` 或全域 kill `emulator/qemu-system*`。`adb input swipe` 只代表測試注入路徑，不能外推成實際滑鼠手感；一次性 host mouse-drag probe 曾量到 `guestMax=116.7 / render=57.4 / dup=0`，但該測法會搶使用者滑鼠，**禁止再用**，後續若要量 host input 必須新增不移動實體游標的 internal synthetic touch hook。
 - emulator priority / 互動資源 env：`CHIMERA_INTERACTIVE_PRIORITY`（`idle|below_normal|normal`，雙擊 `start-chimera.cmd` 走預設 `below_normal`（S108：護 host audio）；`-InteractiveFirst`=normal、`-AudioFirst`=idle）、`CHIMERA_INTERACTIVE_CPUS`/`CHIMERA_INTERACTIVE_RAM_MB`（預設 4/4096，但 normalizer floor `>=4/4096`）。`CHIMERA_DISPLAY` log 一行印實際 path/priority/cpus/ram。
 - 測試失敗 `0xC0000135` → Qt DLL 未在 PATH
-- **Unit tests** (23/23): config-manager, input-mapper, instance-manager, virtual-machine, qemu-backend,
+- **Unit tests** (24/24): config-manager, input-mapper, instance-manager, virtual-machine, qemu-backend,
   graphics-framebuffer, adb-framebuffer-capture, grpc-framebuffer-capture, shared-memory-framebuffer-capture, shared-d3d11-texture-capture,
-  qmp-input, process-launcher, android-console-input, coordinate-mapper,
+  qmp-input, emulator-grpc-input, process-launcher, android-console-input, coordinate-mapper,
   clipboard-bridge, location-simulator, device-spoofer, macro-engine, gamepad-manager, audio-bridge,
   file-utils, ui-main-port-contract, runtime-source-contract
 - **Integration tests** (`tests/integration/`, 3 個): 需要 env vars

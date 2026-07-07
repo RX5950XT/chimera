@@ -2,7 +2,7 @@
   "instances": [
     {
       "cpus": 4,
-      "dataDir": "D:\\Workspace_cloud\\Personal_Project\\chimera\\instances\\chimera_dev",
+      "dataDir": "D:\\Workspace\\Personal_Project\\chimera\\instances\\chimera_dev",
       "deviceProfile": "Samsung Galaxy S24 Ultra",
       "dpi": 320,
       "enableAudio": false,

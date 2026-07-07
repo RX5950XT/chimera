@@ -7,7 +7,29 @@
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 **引擎決策（最重要）**：生產引擎 = `emulator.exe`（Google QEMU+WHPX fork）；`--qemu-backend`（stock QEMU 11 + Cuttlefish）與 `--hcs-backend`（Hyper-V HCS）= legacy R&D，保留不刪。BlueStacks 輸入路徑更正：`BstkDrv.sys` 是 network/filter driver 非 input driver；BlueStacks 走 `HD-Bridge-Native.dll` → virtio-input，Chimera 等效路徑是 emulator gRPC + Console `event` protocol。
 
-## 2026-07-05 — Session 108 — 否證 S107「-Fast 顯示凍結」；一鍵改回 -Fast＋保留 below_normal
+## 2026-07-07 — Session 109b — gfxstream Vulkan pNext / mesh shader abort 修復
+
+GravityMark 進入 Vulkan capability enumeration 時帶 `VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT` / properties 等 pNext。這棵 gfxstream snapshot 的 `goldfish_vk_extension_structs.cpp` 已知道很多 extension struct size，但 generated cereal switches 不完整：known-size struct 進 `reservedunmarshal_extension_struct()` / marshal / unmarshal / deepcopy 時可能 default abort 或半套處理。
+
+**修法**：新增/擴充 `scripts/generate-chimera-vk-ext-handlers.py`，從 `vulkan_core.h` 建 enum↔struct mapping，對 POD-only struct（scalar/fixed arrays；pointer/union/handle 跳過）自動補：
+- `goldfish_vk_extension_struct_size()` + `_with_stream_features()` missing size cases
+- `goldfish_vk_reserved_marshaling.cpp` 的 `reservedunmarshal_*` + switch cases
+- `goldfish_vk_marshaling.cpp` 的 `marshal_*` / `unmarshal_*` + switch cases
+- `goldfish_vk_deepcopy.cpp` 的 `deepcopy_*` + switch cases
+
+mesh shader EXT 特例在 `apply-chimera-gfxstream-patch.ps1` 保留手寫區塊（含 transform/deepcopy），其他 POD struct 由 generator 補齊；build script 每次 custom runtime build 會先套 patch + generator。
+
+**code review 抓到並已修的洞**：第一版 generator 只補 size/reserved/marshal/unmarshal，沒有補 deepcopy。這會讓 538 個 POD struct 進 size table 後，deepcopy 流程從「size=0 跳過」變成「alloc pNext，`deepcopy_extension_struct` default return」，留下未初始化 payload。已補上 `deepcopy` generation，實際生成 autogen deepcopy cases=380。另 `write()` 改為內容相同不覆寫，避免每次 patch 都更新大型 cereal TU mtime 造成無謂 rebuild。
+
+**驗證**：
+- generator 重跑：`chimera-vk-ext-autogen: universe 538 POD structs; size+96/+96, reserved+380, marshal+380, deepcopy+380; skipped 170 (pointer/unknown fields)`。
+- `goldfish_vk_deepcopy.cpp` autogen deepcopy cases=380，mesh shader manual deepcopy 仍在。
+- custom gfxstream runtime rebuild PASS（manifest written to `build/chimera-gfxstream-runtime/lib64/chimera-gfxstream-shared-texture.json`）。
+- `cmake --build build --config Release --target chimera-ui` PASS。
+- `ctest --test-dir build -C Release --output-on-failure -LE integration` **24/24 PASS**。
+- 二次 code review：無重大問題，APPROVE。
+
+**誠實邊界**：這修的是 gfxstream 對 known Vulkan pNext capability structs 的平台 crash/abort，不代表 3DMark 跑分已可完成；3DMark 本身仍以裝置驗證/反作弊拒絕模擬 GPU（詳 S109 前半段）。
 
 使用者回報切 stock 後「性能不穩有夠卡」（stock gRPC ~10-19fps 本質）。重啟 S107 留下的「-Fast ColorBuffer 凍結」修復工作，但先驗證前提——結果**前提是錯的**。
 
