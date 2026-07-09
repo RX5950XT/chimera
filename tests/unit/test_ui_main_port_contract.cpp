@@ -22,6 +22,32 @@ private slots:
         QVERIFY2(!block.contains(QStringLiteral(", 5555,")),
                  "adb display fallback must not hardcode emulator-5554/ADB 5555");
     }
+    void sharedTextureKeepsGrpcFallbackWired() {
+        QFile file(QStringLiteral(CHIMERA_SOURCE_DIR) + QStringLiteral("/src/host/ui/main.cpp"));
+        QVERIFY2(file.open(QIODevice::ReadOnly | QIODevice::Text), "could not open src/host/ui/main.cpp");
+        const QString source = QString::fromUtf8(file.readAll());
+        const int start = source.indexOf(QStringLiteral("if (!hcsBackendMode && !qemuBackendMode && !noEmulator"));
+        QVERIFY2(start >= 0, "gRPC capture wiring condition not found");
+        const int end = source.indexOf(QStringLiteral(") {"), start);
+        QVERIFY2(end > start, "gRPC capture wiring condition end not found");
+        const QString condition = source.mid(start, end - start);
+        QVERIFY2(!condition.contains(QStringLiteral("!sharedTextureCapture")),
+                 "shared texture mode must keep gRPC fallback wired so a stalled producer does not freeze the visible guest");
+    }
+
+    void stalledSharedTextureRevivesGrpcCapture() {
+        QFile file(QStringLiteral(CHIMERA_SOURCE_DIR) + QStringLiteral("/src/host/ui/main.cpp"));
+        QVERIFY2(file.open(QIODevice::ReadOnly | QIODevice::Text), "could not open src/host/ui/main.cpp");
+        const QString source = QString::fromUtf8(file.readAll());
+        const int watchdog = source.indexOf(QStringLiteral("kSharedTextureStallMs"));
+        QVERIFY2(watchdog >= 0, "shared texture stall watchdog not found");
+        // Without a revival path a stalled gfxstream producer freezes the host frame,
+        // which is indistinguishable from dead input (the reported bug).
+        const int start = source.indexOf(QStringLiteral("grpcCapture->start()"), watchdog);
+        QVERIFY2(start > watchdog, "stall watchdog must restart the gRPC capture");
+        QVERIFY2(source.indexOf(QStringLiteral("lastSharedTextureFrameMs"), watchdog) > watchdog,
+                 "stall watchdog must key off the last shared texture frame timestamp");
+    }
 };
 
 QTEST_MAIN(TestUiMainPortContract)

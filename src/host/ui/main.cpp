@@ -1,5 +1,6 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
+#include <QDateTime>
 #include <QTimer>
 #include <QProcess>
 #include <QDebug>
@@ -1464,6 +1465,7 @@ int main(int argc, char *argv[]) {
     chimera::graphics::WindowD3D11Capture *windowD3D11Capture = nullptr;
     auto androidBootReady = std::make_shared<bool>(false);
     auto sharedTextureReceivedFrame = std::make_shared<bool>(false);
+    auto lastSharedTextureFrameMs = std::make_shared<qint64>(0);
     auto shmemReceivedFrame = std::make_shared<bool>(false);
     auto windowCaptureReceivedFrame = std::make_shared<bool>(false);
     const QString sharedTextureMetadataName = QString::fromLocal8Bit(
@@ -1505,8 +1507,9 @@ int main(int argc, char *argv[]) {
         sharedTextureCapture->setIntervalMs(16);
         wireCapture(sharedTextureCapture, true);
         QObject::connect(sharedTextureCapture, &chimera::graphics::FramebufferCapture::sharedD3D11TextureReady,
-                         &app, [sharedTextureReceivedFrame]() {
+                         &app, [sharedTextureReceivedFrame, lastSharedTextureFrameMs]() {
             *sharedTextureReceivedFrame = true;
+            *lastSharedTextureFrameMs = QDateTime::currentMSecsSinceEpoch();
         });
 
         auto *sharedTextureRetryTimer = new QTimer(&app);
@@ -1574,12 +1577,13 @@ int main(int argc, char *argv[]) {
         requireEmuglSharedTexture ||
         requireGfxstreamSharedTexture;
 
-    // gRPC is the default production capture when no shared D3D11 texture path is wired.
-    // Shmem and window D3D11 paths hand off via signals (wired below), so gRPC provides
-    // frames until a higher-quality path delivers. --allow-raw-capture-fallback enables
-    // MMAP/screenrecord diagnostic variants instead of the default unary gRPC path.
+    // gRPC is the always-on safety capture for emulator.exe. Shared D3D11 remains
+    // the preferred path, but its gfxstream producer can stop publishing after boot
+    // while guest input still works; keeping this backup alive prevents a stale host
+    // frame from looking like dead clicks. --allow-raw-capture-fallback enables MMAP /
+    // screenrecord diagnostic variants instead of the default unary gRPC path.
     if (!hcsBackendMode && !qemuBackendMode && !noEmulator && emulatorStarted && streamCapture &&
-        !strictGpuCapture && !sharedTextureCapture) {
+        !strictGpuCapture) {
         const char *transportEnv = std::getenv("CHIMERA_GRPC_TRANSPORT");
         const char *videoTransportEnv = std::getenv("CHIMERA_VIDEO_TRANSPORT");
         const bool useScreenrecordVideo = videoTransportEnv &&
@@ -1628,13 +1632,6 @@ int main(int argc, char *argv[]) {
         }
         *grpcCaptureForInput = grpcUnaryCapture;
         wireCapture(grpcCapture, true);
-        if (sharedTextureCapture) {
-            QObject::connect(sharedTextureCapture, &chimera::graphics::FramebufferCapture::sharedD3D11TextureReady,
-                             &app, [grpcCapture]() {
-                if (grpcCapture->isRunning())
-                    grpcCapture->stop();
-            });
-        }
         if (sharedMemoryCapture) {
             QObject::connect(sharedMemoryCapture, &chimera::graphics::FramebufferCapture::frameReady,
                              &app, [grpcCapture]() {
@@ -1648,6 +1645,38 @@ int main(int argc, char *argv[]) {
                 if (grpcCapture->isRunning())
                     grpcCapture->stop();
             });
+        }
+
+        // Shared-texture stall watchdog. The gfxstream producer can stop publishing
+        // long after its first frame (observed: repeated "Failed to find ColorBuffer"
+        // then no further "published sequence"). The guest and the input path stay
+        // healthy, so the host just shows a frozen frame and every click looks
+        // ignored. Revive the gRPC capture when frames stop, park it again when the
+        // producer recovers — only one capture may drive GuestDisplay at a time.
+        if (sharedTextureCapture && grpcCapture) {
+            // An idle guest legitimately publishes no frames (static screen = correct
+            // no-redraw), so any threshold trades idle churn against stall-detect
+            // latency. Measured idle gaps on Home reach ~3s; 6s keeps the fallback
+            // parked while idle and still recovers a truly dead producer promptly.
+            constexpr qint64 kSharedTextureStallMs = 6000;
+            auto *stallWatchdog = new QTimer(&app);
+            stallWatchdog->setInterval(1000);
+            QObject::connect(stallWatchdog, &QTimer::timeout, &app,
+                             [grpcCapture, sharedTextureReceivedFrame, lastSharedTextureFrameMs]() {
+                if (!*sharedTextureReceivedFrame) return;
+                const qint64 idleMs =
+                    QDateTime::currentMSecsSinceEpoch() - *lastSharedTextureFrameMs;
+                if (idleMs > kSharedTextureStallMs) {
+                    if (!grpcCapture->isRunning() && grpcCapture->start()) {
+                        qWarning() << "Shared texture producer stalled for" << idleMs
+                                   << "ms; resuming gRPC capture so the guest stays visible";
+                    }
+                } else if (grpcCapture->isRunning()) {
+                    qDebug() << "Shared texture producer recovered; parking gRPC capture";
+                    grpcCapture->stop();
+                }
+            });
+            stallWatchdog->start();
         }
 
         if (!g_adbPath.empty() && app.arguments().contains(QStringLiteral("--adb-display-fallback"))) {
@@ -1924,6 +1953,10 @@ int main(int argc, char *argv[]) {
                 return;
             }
             if (sharedTextureCapture && *sharedTextureReceivedFrame) {
+                // Shared texture is live: park the gRPC capture (the two capture
+                // sources clear each other's state in GuestDisplay, so only one may
+                // run at a time). The stall watchdog below revives it if the
+                // gfxstream producer later stops publishing.
                 grpcRetryTimer->stop();
                 if (grpcCapture->isRunning())
                     grpcCapture->stop();

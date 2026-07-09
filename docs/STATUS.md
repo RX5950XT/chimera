@@ -2,10 +2,11 @@
 
 > 目前狀態快照。歷程與根因記錄見 `CONTEXT.md`；架構決策與 feature flags 見 `CLAUDE.md`。
 
-**日期**：2026-07-08（Session 110）
+**日期**：2026-07-09（Session 111）
 **Build**：Release PASS（MSVC + Qt 6.8.3）
-**Tests**：`ctest -LE integration` **24/24 PASS**（S110 再驗 7.84s）；3 integration tests 需 emulator 運行中
-**維護**：S110 code review——S108 輸入（3-strike breaker/ADB 自癒）、S109b gfxstream pNext 產生器逐行審為乾淨（五路對稱、確定性、idempotent），無死碼可清（`-prop`/`legacy`/`Q_UNUSED` 皆刻意註解/rollback/Qt 樁，R&D 路徑明訂保留不刪）；清 `tmp/` loose 診斷檔 9.1MB + `scripts/__pycache__`
+**Tests**：`ctest -LE integration` **24/24 PASS**（S111 再驗 8.45s）；3 integration tests 需 emulator 運行中
+**定位**：目前不是可投入日常使用的產品級模擬器；主要是 AI-assisted Android emulator experiment / gfxstream 與 host-shell 整合整活專案。
+**維護**：S111 更正「有畫面但點不動」真根因——輸入已進 guest kernel，實際是 `-Fast` shared-texture producer 停更導致 host 顯示舊畫面；已保留 unary gRPC capture fallback 作保命更新，並重寫 README 降調。
 
 ## 現況總覽
 

@@ -1,36 +1,65 @@
 # Project Chimera
 
-**Chimera** 是一款 Windows 上的開源 Android 模擬器，面向手遊玩家，參考 BlueStacks / LDPlayer 的功能與體驗。
+Chimera 是一個 Windows Android 模擬器實驗專案。它目前**不能當作真正可投入日常使用的模擬器**，更像是拿 Android Emulator / QEMU / gfxstream / Qt host shell 來測試 AI 輔助開發、圖形管線改造與自動化驗證的「整活」專案。
 
-> 以 fork/patch Android Emulator + gfxstream + QEMU/WHPX 作為 headless 相容核心，外層只保留單一 Chimera 視窗；無強制雲端、無廣告、無數據收集。
+請不要把它當成 BlueStacks、LDPlayer、MuMu 這類成熟產品的替代品。它可以開機、能看到 Android，也有不少功能雛形；但穩定性、輸入、顯示、啟動速度與長時間使用都還不可靠。
+
+---
+
+## 目前定位
+
+- **用途**：AI 開發實驗、Windows host / Android guest 整合研究、gfxstream/shared texture 測試、娛樂性整活。
+- **不適合**：日常手遊、帳號登入、長時間掛機、正式 benchmark、可靠工作流、任何需要穩定性的用途。
+- **現況**：能跑，但經常需要除錯；最近仍出現「畫面有、看似點不動」這類阻斷使用的問題。
+
+---
+
+## 已知最大問題
+
+### 1. 顯示會停在舊畫面
+
+最近一次實測確認：使用者覺得「完全點不動」時，輸入其實已經送進 guest kernel，`getevent` 能看到 multitouch event；真正壞的是 `-Fast` shared-texture 顯示 producer 停止發佈新幀，host 視窗停在舊畫面，所以看起來像點擊沒反應。
+
+目前已加 gRPC unary capture 作為 shared-texture 停更時的保命 fallback，但這是穩定性補丁，不代表顯示管線已成熟。
+
+### 2. 啟動慢
+
+冷開機通常仍是數十秒等級。Quick Boot snapshot 有做過，但不是預設保證路徑；snapshot、ADB、AVD 狀態都可能讓啟動時間波動。
+
+### 3. `-Fast` 不是可靠產品路徑
+
+`-Fast` 使用自訂 gfxstream runtime + D3D11 shared texture。這條路徑是本專案最有趣的部分，也是最不穩的部分：效能、畫面更新、ColorBuffer lifecycle、fallback 都還在修。
+
+### 4. benchmark 結果不能當真實產品能力
+
+歷史上曾多次把「計數器看起來正常」誤判成「可見畫面真的正常」。現在所有性能數字都只能當開發診斷，不代表實際可用體驗。
 
 ---
 
 ## 一鍵啟動
 
 ```bat
-:: 倉庫根目錄，雙擊或執行：
 start-chimera.cmd
 ```
 
-- **預設（雙擊 `start-chimera.cmd`）**：最快可用路徑，等同 `start-chimera.ps1 -Fast -InteractiveFirst`。使用自訂 gfxstream shared-texture runtime + `-feature Vulkan`（Vulkan app 直達實體 GPU）+ normal priority；一般 Android UI 可見可互動，互動實測有效約 **43 FPS**（Session 101）。
-- **`-Stock`（fallback）**：SDK emulator + gRPC 顯示路徑。一般 Android 首頁 / app 正常渲染、輸入完整，但 FPS 較低（push-based 內容約 4–17），只作保守 fallback / 診斷。
-- **`-Fast`（custom shared-texture runtime）**：`postFrameDirectGpu`（GL→VK 內容同步 → GPU blit → D3D11 shared texture）。**Session 101 更正**：更早版本的「1080p/60 嚴格可見 PASS」量的是零幀 blit 節奏（shared texture 實際發佈全零、host 視窗黑）；修復三層 bug（compose 不標 dirty / OPAQUE import 無 aliasing / consumer 缺 AcquireSync）後畫面真實可見，GLES 內容每幀付 GL readback 同步成本，連續渲染 60 需 guest Vulkan-backed 內容（zero-copy 路徑，尚未單獨基準）。
+等同執行：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-chimera.ps1 -Fast
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-chimera.ps1 -Fast -InteractiveFirst -SelfTest   # 驗證雙擊預設快路徑：開機→驗 1080p→截圖→清理
 ```
 
----
+常用參數：
 
-## 系統需求
+```powershell
+# 預設實驗快路徑：自訂 gfxstream shared texture + fallback
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-chimera.ps1 -Fast
 
-- **OS**：Windows 10/11，啟用 Hyper-V + Windows Hypervisor Platform
-- **CPU**：VT-x / AMD-V + SLAT（EPT/NPT）
-- **GPU**：支援 D3D11 / Vulkan 的獨立顯卡（custom 60fps 路徑建議 NVIDIA / AMD）
-- **RAM**：16 GB 建議；**磁碟**：20 GB
-- **建置工具**：Visual Studio 2022 Community（MSVC）、Qt 6.8.3 msvc2022_64
+# 保守低 FPS 診斷路徑：stock gRPC 顯示
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-chimera.ps1 -Stock
+
+# 自測：啟動、截圖、互動、清理
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-chimera.ps1 -Fast -SelfTest
+```
 
 ---
 
@@ -40,89 +69,41 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-chimera.ps1 -F
 & "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" amd64
 cmake -B build -S . -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH=C:/Qt/6.8.3/msvc2022_64
 cmake --build build --config Release
-ctest --test-dir build -C Release --output-on-failure -LE integration   # 23/23
+ctest --test-dir build -C Release --output-on-failure -LE integration
+```
 
-# custom gfxstream 60fps runtime（選用）
+自訂 gfxstream runtime：
+
+```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-chimera-gfxstream-runtime.ps1
 ```
 
-詳見 [docs/BUILD.md](docs/BUILD.md)。
-
 ---
 
-## 顯示架構
+## 架構簡述
 
-```
-Chimera (Host Windows, 單一 Qt6/QML 視窗)
-  Input    InputBridge → emulator gRPC sendTouch/sendKey（console/QMP/ADB fallback）
-  Display  ┌─ stock：headless emulator + gRPC getScreenshot（1920×1080，可用，低 FPS）
-           └─ custom gfxstream runtime：
-                postFrameDirectGpu：GLES 合成內容先 GL→VK 同步（flushFromGl+invalidateForVk）
-                → GPU blit → D3D11 shared texture（keyed mutex）→ host 以 AcquireSync+私有副本取樣
-                （互動 UI 實測 ~43 eff FPS；Vulkan-backed 內容走 zero-copy 直通）
-  Audio    WASAPI shared-mode
-  Engine   Android Emulator / gfxstream / QEMU + WHPX（headless，-no-window）
-              └─ Android guest（x86_64 + libndk_translation ARM→x86）
+```text
+Windows Qt/QML host
+  ├─ InputBridge：mouse/key/touch → emulator gRPC，必要時退 ADB
+  ├─ Display：gfxstream D3D11 shared texture；保命 fallback 為 gRPC screenshot
+  ├─ Audio：WASAPI / emulator audio
+  └─ Instance：Android Emulator / QEMU / WHPX / AVD lifecycle
+
+Android guest
+  └─ Google Play x86_64 image + Chimera Launcher
 ```
 
-**重要**：正式路徑強制 headless（`-no-window`），不外露、不多開原生 Android Emulator 視窗。原生視窗嵌入 / window capture 僅作為本機 unsafe 診斷（需多重 opt-in flag）。顯示尺寸固定維持至少 1920×1080，不以降解析度換取假 FPS。
-
-### host GLES / 一般 UI 修正（Session 88）
-
-**根因（log 實證）**：custom runtime headless 下 prebuilt emulator 仍把 GLES mode 報為 `host`；但實際 underlying EGL/GLES 會落到 bundled **SwiftShader ES**。renderer enum 仍為 HOST 時，gfxstream translator 會發出桌面 `#version 330 core` compositor shader，被 SwiftShader ES compiler 拒絕（`'core' : invalid version directive`）→ SurfaceFlinger 合成空畫面 → 一般 UI 黑屏。
-
-**已修正**：`-Fast` 啟動時設定 `CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES=1`，custom gfxstream backend 在此 gate 下只關閉 headless HOST 的 core-profile shader emission，讓一般 UI 走 SwiftShader ES shader path，同時保留 renderer identity 與 direct-VK shared-texture path。驗證：`start-chimera.ps1 -Fast -SelfTest` PASS，1920×1080 Chimera Launcher 截圖約 76 KB、Settings 可互動、0 residual process。
-
-**ANGLE / D3D11 狀態**：ANGLE headless + D3D11 + NVIDIA 可初始化，也能消除 shader version error；但 SurfaceFlinger 後續 draw 會在 ANGLE `libGLESv2.dll` 內 AV（`glDrawArrays`，program 28/31），新版 ANGLE 亦同。故正式修法採 SwiftShader ES compositor path；direct-VK shared-texture 60fps path 仍保留給連續渲染內容。
-
 ---
 
-## 功能（BlueStacks parity，production 路徑）
+## 測試入口
 
-| 類別 | 功能 |
-|------|------|
-| 核心 | Android boot (QEMU+WHPX)、headless 顯示內嵌、多開（批次啟停） |
-| 輸入 | 鍵盤 / 滑鼠 / 觸控 / 手把(XInput)、多點觸控(MT Type-B)、IME、鍵位映射匯入匯出、巨集錄製播放 |
-| 顯示 | FPS lock(30/60/90/120)、Screen resize/DPI/rotation、效能 HUD(FPS/Lat/Drop)、十字準心游標 |
-| App | APK/OBB 安裝、launch/stop/uninstall/clear、釘選常用應用、Chimera Launcher 首頁 |
-| 系統 | Root mode、裝置偽裝(5 旗艦)、剪貼簿同步、檔案分享(push/pull)、網路 Proxy / 網速模擬 |
-| 模擬 | GPS(geo fix+route)、感應器(acc/gyro/mag)、震動、電池、Shake、Rotate |
-| 媒體 | 螢幕錄影、截圖、Audio(WASAPI) |
-| 體驗 | Eco mode、Boss Key、Trim Memory、Mute、快捷鍵 |
+```powershell
+ctest --test-dir build -C Release --output-on-failure -LE integration
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-interactive-ui.ps1 -Mode Fast -GuestVulkan -SyntheticScroll
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify-true-1080p60.ps1 -RuntimeKind Gfxstream
+```
 
-完整對照見 [CLAUDE.md](CLAUDE.md)。
-
-### 常用快捷鍵
-
-| 快捷鍵 | 功能 | 快捷鍵 | 功能 |
-|--------|------|--------|------|
-| `Ctrl+Shift+S` | 截圖 | `Ctrl+Shift+R` | 錄影 |
-| `Ctrl+Shift+A` | 鍵位配置 | `Ctrl+Shift+7` | 巨集 |
-| `Ctrl+Shift+8` | 多開管理 | `Ctrl+Shift+X` | Boss Key |
-| `Ctrl+Shift+T` | Trim Memory | `Ctrl+Shift+M` | Mute |
-| `F11` / `Esc` | 全螢幕 / 離開 | `Ctrl+1~9` | 切換實例 |
-
----
-
-## 現況與邊界（誠實版，Session 104）
-
-- **日常可用**：`start-chimera.cmd` 預設最快可用路徑（custom gfxstream shared texture + `-feature Vulkan` + normal priority）。host 視窗真實可見、可互動；一般 UI 於此配置實測**穩定 ~57–60 FPS**（`pass-gpu-direct-60`、effMin 54）。`-Stock` 只作保守 fallback / 診斷（~4–17 FPS）。
-- **穩定 60 定調（Session 104）**：逐幀實測否證「host present 是天花板」——normal priority 下 host 端 1:1 追 guest（consumer 恆 0.1ms、非 vsync 量化）。負載掃描（gl60 heavyIters 0/48/128/256）證 **frame pacing 對負載不變**：每級整條管線 lockstep（`guest==stream==render`）、零掉幀零重複——重 GLES 填充只乾淨降到穩定較低幀率（SwiftShader CPU-fill floor），**不造成抖動**；Vulkan 遊戲直達 GPU 繞過此牆。瓶頸＝GL→VK readback 架構 floor，rock-solid 60 需 guest VK-native 合成（skiavk blocked）。144Hz 螢幕上 60fps 本質 2.4× pulldown judder，顯示端最平滑＝改 **120Hz**。
-- **畫面糊已修（Session 102）**：1080p texture 縮小顯示時 `QSGSimpleTextureNode` node-level filtering 預設 Nearest（且覆寫 per-texture 設定，原三處 `setFiltering()` 全 no-op）→ 文字筆畫殘缺。改 node `setFiltering(Linear)` + letterbox rect snap 到 device-pixel 格。縮小本質損失細節，完全銳利需 ≥1:1 顯示。
-- **60fps 定案為 frame-pacing boundary（Session 102）**：全鏈逐段計時實證 **~57fps 是 vsync 邊緣的 frame-pacing boundary，非單一可修瓶頸**——host consumer（AcquireSync+CopyResource）恆 **0.1ms**（最佳、零空間）、guest **34% CPU**（非 compute-bound），瓶頸在每幀 post 付 glReadPixels(3–4ms)+2 次 VK submit+wait 偶超 16.7ms。A/B 換 CPU-direct post 使 guest production 升乾淨 60.0 但 effective 仍 ~57（瓶頸只**位移**到 host windowed-DWM present，非消失）。真 60 需 guest **Vulkan-backed** 內容（消 readback，尚未單獨基準）**且** host present pacing 對齊——兩者缺一都停在 boundary。
-- **歷史 60fps 宣稱已更正（Session 101）**：S85–S99 的 GPU-direct「1080p/60 嚴格可見 PASS」量的是**零幀 blit 的節奏**——shared texture 實際發佈全零、host 視窗全黑；當時所有 gate 只驗 guest 端 ADB 截圖與 host 端計數器。三層 bug（HWC compose 不標 `mGlTexDirty`→kVk image 空、`OPAQUE_WIN32` 匯入無 aliasing、consumer 缺 keyed-mutex AcquireSync）已全修，SelfTest 新增 host 視窗像素 gate（`host_window_nonblack_pct`）防再犯。
-- **skiavk UI 切換不可行（Session 100 定案）**：此 playstore user image 無 root，framework restart 必失敗，半套用＝app 視窗全黑；`CHIMERA_GUEST_VULKAN=1` 只等於 `-feature Vulkan`（Vulkan app/遊戲直達實體 GPU）。
-- **emulator idle 自殺已修（Session 101）**：`-idle-grpc-timeout 300` 已移除——shared-texture 顯示不走 gRPC，掛機 5 分鐘 VM 不再靜默關機。
-- **背景音樂干擾**：雙擊預設 `-InteractiveFirst`（normal priority，最順但較影響 host audio）；要保護背景音樂改用 `start-chimera.ps1 -Fast -AudioFirst`。
-- **量測紀律**：任何「可見」宣稱必須含 host 視窗像素證據（`Get-HostWindowPixelStats`）；guest ADB 截圖與 FPS 計數器在顯示鏈斷裂時仍會全綠。
-
----
-
-## 授權
-
-- 核心程式（`src/host/`, `src/common/`）：**Apache 2.0**
-- 虛擬化層（`src/virtualization/qemu/`）：**GPL v2**（QEMU 子模組）
-- 第三方（`third_party/`）：依各自授權
+這些測試只能證明特定路徑在當下機器狀態下通過；不能保證一般使用穩定。
 
 ---
 
@@ -130,11 +111,19 @@ Chimera (Host Windows, 單一 Qt6/QML 視窗)
 
 | 文件 | 內容 |
 |------|------|
-| [CLAUDE.md](CLAUDE.md) | 架構決策、功能對照、feature flags、已知問題 |
-| [CONTEXT.md](CONTEXT.md) | 開發歷程與 session 紀錄 |
-| [AGENTS.md](AGENTS.md) | Build / 測試 / Git / Coding 標準 |
-| [tasks/todo.md](tasks/todo.md) | 當前任務規劃與回顧 |
+| [CLAUDE.md](CLAUDE.md) | AI agent 工作參考、架構決策、已知問題 |
+| [CONTEXT.md](CONTEXT.md) | 開發歷程與每次修正紀錄 |
+| [AGENTS.md](AGENTS.md) | Build、測試、Git、疑難排解 |
+| [docs/STATUS.md](docs/STATUS.md) | 狀態快照 |
 
 ---
 
-*Project Chimera — Open Source Windows Android Emulator（主要由 AI Agent 自動化開發）*
+## 授權
+
+- `src/host/`, `src/common/`：Apache 2.0
+- `src/virtualization/qemu/`：GPL v2（QEMU / emulator fork）
+- `third_party/`：依各自授權
+
+---
+
+*Project Chimera — AI-assisted Android emulator experiment. Not a production-ready emulator.*

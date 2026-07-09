@@ -1,3 +1,12 @@
+## 2026-07-09 — Session 111：「點不動」要先證「畫面在不在更新」；fallback 只有在會被觸發時才算存在
+
+- **使用者說「點不動」時，先分「輸入沒送達」與「畫面沒更新」——後者長得一模一樣**。連續三個 session（S106 埠、S107 凍結、S108 breaker）都往輸入方向修，因為沒人在同一次現場同時量三件事。本輪一次量完就結案：host log `sendTouch ... http200 grpc-status0`（送出）＋ guest `adb shell getevent -lt` 收到 `virtio_input_multi_touch_1` 的 `ABS_MT_POSITION/PRESSURE/TRACKING_ID` down/up（送達 kernel）＋ `am start` 能改 guest screencap 但 host `CHIMERA_PERF total` 不動（畫面死）。**Rule**：症狀是「點了沒反應」時，最先做的不是讀輸入碼，而是**用 ADB 從 guest 側製造一個必然的畫面變化**（`am start` Settings），看 host total 有沒有前進；不前進＝顯示問題，讀輸入碼是浪費。
+- **`getevent` 是輸入送達的唯一 oracle，且它便宜**。S108 已用它證出 console 是幻象通道，但本輪一開始我仍先去讀 `mapToGuest`/breaker/埠推導。**Rule**：輸入鏈只要能開 adb，第一個動作就是 `getevent`；它一次同時否證「Qt 沒收到」「座標算錯」「埠打歪」「breaker 誤開」四個假設。
+- **fallback 的存在性不等於可達性——要驗「它真的會被跑到」**。第一版修法移除了 `!sharedTextureCapture` 的 wiring 排除，live 測也看到 `fallback=grpc-unary` 且 total 前進，看起來成功；但 code review 抓到 retry timer 裡還有第二條 `grpcCapture->stop()`。我的現場沒炸只是因為 gRPC 先拿到第一幀讓 timer 提早 `return`＝**時序僥倖**。**Rule**：改 fallback 時 grep 所有會 `stop()`/停用它的地方（不只你改的那一處）；「live 測有動」可能是別的原因造成的，要能說出它為什麼被觸發。
+- **兩個 capture source 不能同時餵同一個 sink**：`GuestDisplay::setFrame()` 清 `m_sharedD3D11TextureName`、`setSharedD3D11Texture()` 清 `m_frame`。原本「第一幀就停 gRPC」不是偷懶，是這個互斥的必要條件。所以正解是 **stall watchdog 二選一切換**，不是「兩條都常駐」。**Rule**：想讓 fallback「一直開著保命」前，先確認 sink 支不支援多來源；不支援就做 watchdog 切換，別讓兩個 source 互相清狀態。
+- **「沒有新幀」無法區分 idle 與 dead——任何 stall 門檻都是取捨，要量了才知道**。閒置 Home 本來就不重繪（S102/S103 已記），2s 門檻在閒置時每 2–3 秒誤觸一次（實測 5 次啟停），6s 降到 1 次。**Rule**：做 liveness watchdog 時，先量「健康 idle 的最長無幀間隔」再定門檻，並在文件寫清楚「最壞情況會看到 N 秒舊畫面」；別假裝門檻是根治。
+- **subagent 在 worktree 裡讀到的是修補前的樹**：第一個 reviewer 回報「修補不存在」，因為 `isolation: worktree` 給的是乾淨副本。**Rule**：要 review 未提交的工作樹改動，要嘛不開 worktree 隔離，要嘛先 commit；否則 reviewer 會誠實地告訴你「找不到你說的修補」。
+
 ## 2026-07-07 — Session 109b：gfxstream known-size pNext struct 必須五路對稱支援；generator 要內容冪等
 
 - **gfxstream pNext extension struct 不能只補 size/marshal/reserved，`deepcopy_extension_struct` 也必須同步補 case**。本輪 GravityMark / Vulkan capability query 先撞 `VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT` unknown abort；補 mesh shader + POD autogen 後，code review 抓到更深的洞：generator 把 538 個 POD struct 加進 `goldfish_vk_extension_struct_size*`，但 deepcopy 仍缺其中 380 個 case。這會把原本「size=0 跳過」變成「alloc 了 pNext payload，deepcopy default 直接 return，留下未初始化資料」。**Rule**：在 gfxstream cereal 補 known pNext struct 時，五條路要同一個 universe 對稱：`goldfish_vk_extension_struct_size*`、`reservedunmarshal_extension_struct`、`marshal_extension_struct`、`unmarshal_extension_struct`、`deepcopy_extension_struct`；缺任何一條都不是修好，只是把 crash/錯位延後。

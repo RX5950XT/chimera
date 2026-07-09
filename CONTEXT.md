@@ -7,7 +7,36 @@
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 **引擎決策（最重要）**：生產引擎 = `emulator.exe`（Google QEMU+WHPX fork）；`--qemu-backend`（stock QEMU 11 + Cuttlefish）與 `--hcs-backend`（Hyper-V HCS）= legacy R&D，保留不刪。BlueStacks 輸入路徑更正：`BstkDrv.sys` 是 network/filter driver 非 input driver；BlueStacks 走 `HD-Bridge-Native.dll` → virtio-input，Chimera 等效路徑是 emulator gRPC + Console `event` protocol。
 
-## 2026-07-08 — Session 110 — code review + 清死碼審查 + 垃圾清理 + 持續測試（無程式碼變更）
+## 2026-07-09 — Session 111 — 「有畫面但點不動」真根因更正 + fallback 保命 + README 降調
+
+使用者回報再次出現「打開了、有畫面、但完全點不動」，並要求加快開啟速度、最後重寫 README 刪掉冠冕堂皇宣稱，明講此專案目前只是 AI 開發/整活實驗，不能真正投入使用。
+
+**真根因更正（重要）**：這次不是 S106 的埠、不是 S108 的 gRPC input breaker，也不是 Qt hit-test/座標映射。現場以真實一鍵路徑 `start-chimera.cmd`（`-Fast`）加 `CHIMERA_LOG_PATH` + `CHIMERA_GRPC_INPUT_DIAG` 重現：
+- host 日誌證實滑鼠進 `GuestDisplay/InputBridge` 並送出 `sendTouch id=0 guest=(...) pressure=1/0`；`POST sendTouch port 8570 OK http=200 grpc-status=0`。
+- guest 端 `adb shell getevent -lt` 同步捕到 `virtio_input_multi_touch_1` 的 `ABS_MT_POSITION_X/Y`、`ABS_MT_PRESSURE`、`TRACKING_ID` down/up＝**觸控確實進 guest kernel**。
+- `adb shell input tap` / `am start -a android.settings.SETTINGS` 能改變 guest screencap，但 host `CHIMERA_PERF total` 停在 118/122、shared texture 沒有新 `published sequence`；`Failed to find ColorBuffer ... invalidateGl/invalidateVk` 後 producer 不再 publish。
+- 結論：使用者看到的是**舊畫面**，所以點擊看起來完全沒反應；真正壞的是 `-Fast` shared-texture 顯示 producer 停更。S110/CLAUDE 先前「ColorBuffer 是無害噪音」的結論在這個現場被否證：它可能不是唯一因，但它與 producer 停更同窗出現，且停更後 input/guest 都仍活著。
+
+**修法（保命，不宣稱根治 gfxstream）**：`src/host/ui/main.cpp`
+1. gRPC unary capture 在 shared texture 模式下**照樣建立**（原本被 `!sharedTextureCapture` 排除）。
+2. 新增 **shared-texture stall watchdog**（1s tick）：以 `lastSharedTextureFrameMs` 為準，超過 `kSharedTextureStallMs`（6s）沒有新幀就 `grpcCapture->start()` 保命；producer 恢復發幀即 `stop()` 停回。
+
+**為何不是「兩條 capture 同時常駐」**：`GuestDisplay::setFrame()` 會清掉 `m_sharedD3D11TextureName`，`setSharedD3D11Texture()` 會清掉 `m_frame`——兩個 capture 同時餵會互相清狀態、在兩個不同延遲的來源間跳動。所以同一時間只能有一個 capture 驅動 GuestDisplay，watchdog 負責切換。（第一版修法漏了 retry timer 裡第二條 `grpcCapture->stop()`，是 code review 抓出來的；當時現場沒炸只是因為 gRPC 先拿到第一幀、timer 提早 return＝時序僥倖。）
+
+**驗證**：
+| 項目 | 結果 |
+|------|------|
+| regression test RED→GREEN | contract 測試先 FAIL（wiring 排除 fallback / 無 watchdog），修後 PASS |
+| unit | `ctest -LE integration` **24/24 PASS** |
+| live：真根因重現 | shared texture 停在 `published sequence=240`；ADB 開 Settings 改變 guest screencap，但修前 host `CHIMERA_PERF total` 完全不動 |
+| live：watchdog 生效 | `Shared texture producer stalled for 6664 ms; resuming gRPC capture` → `producer recovered; parking gRPC capture`；host total **126→215** |
+
+**誠實限制**：閒置靜止畫面本來就沒有新幀（guest 正確不重繪），watchdog 無法從「沒幀」本身分辨 idle 與 dead，因此門檻只是取捨——2s 門檻在閒置 Home 每 2–3 秒誤觸一次（實測 5 次啟停），改 6s 後降到 1 次。真正 dead 的 producer 永不發幀，所以任何門檻都會救回來；代價是最壞情況下有最多 6 秒的舊畫面，以及 fallback 期間只有 stock gRPC 的低 FPS。這是可用性補丁，**不是** gfxstream ColorBuffer 生命週期的根治。
+
+**啟動速度方向（尚未完整實作）**：冷 boot 仍約 36s（本輪 log：`Boot completed in 36541 ms`）+ post-boot setup/launcher/home 顯示；Quick Boot 是最大槓桿但預設未開。短期若要加速，應把 Quick Boot snapshot 做成安全的一鍵預設或更可靠的 opt-in，而不是再追 shared-texture 60fps。先修可用性，再談速度。
+
+**README**：已重寫成誠實版：明講 Chimera 目前不是可投入日常/正式使用的模擬器，而是 AI-assisted Android emulator experiment / 整活專案；刪除 BlueStacks parity / production-ready 口吻，保留建置、啟動、架構與已知限制。
+
 
 使用者要求「審查代碼、精簡清死碼（不要額外產出 BUG）、更新文件、清理專案垃圾檔、持續測試功能與性能」。
 
