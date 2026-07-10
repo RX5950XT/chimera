@@ -102,13 +102,13 @@
 | 輸入 | virtio-input HAL | ✅ gRPC sendTouch＋3-strike breaker＋ADB fallback（結構性自癒） | 持平（fallback 韌性反而較好） |
 | Guest 3D（遊戲） | 實體 GPU | ✅ Vulkan app 直達 NVIDIA（S91） | 持平（Vulkan 路徑） |
 | **Guest 2D UI 合成** | 實體 GPU GLES | ❌ SwiftShader CPU（ES2 pin）；互動 scroll eff ~49-57 | **主要落差**（skiavk 牆） |
-| **啟動時間** | ~10-20s | ❌ 冷 boot ~36s、visible_home ~49s；Quick Boot 9.5s 但 opt-in | **可修**（P1：Quick Boot 預設化） |
-| **穩定性** | 成熟 | ⚠ -Fast producer 偶發停更（S111 watchdog 保命；S112 起 postImpl 停更有診斷 log） | 可診斷、未根治 |
+| **啟動時間** | ~10-20s | ✅ Quick Boot 預設化：載入 7.5–8.6s（首次/換組態冷開 ~34s；跨 flavor 自動 invalidate 防 brick，S112c） | **持平**（已進 BlueStacks 區間） |
+| **穩定性** | 成熟 | ✅ 停更真根因根治（RefCountPipe，S112；A/B 因果定案）＋watchdog 保命＋跨組態 snapshot brick 修（S112c）；35s 放置後真實點擊 gate pass | 接近持平（30-min soak gate 待跑） |
 | 乾淨度 | 廣告＋遙測＋捆綁 | ✅ 純 open-source、無廣告無遙測 | **Chimera 勝** |
 | 客製性 | 封閉 | ✅ 全開源可改（launcher/debloat/spoof） | **Chimera 勝** |
 
 **「超越」的可量測 gate（誠實版）**：
-1. 開機到可互動 < 15s（Quick Boot 預設化＋fallback 安全）
+1. ✅ 開機到可互動 < 15s——S112 預設化實測 7.5–8.6s（unclean exit/換組態自動退冷開＝fallback 安全，S112c flavor marker）
 2. 一般 UI 互動 sustained 60fps（需 guest UI 合成離開 SwiftShader——候選：CompositorVk/root image/ANGLE host-GLES，皆為深水區）
 3. 30 分鐘連續使用零停更、零 crash（S112 soak 為基準）
 4. 點擊→guest 反應 < 50ms（gRPC 路徑已達；ADB fallback ~200ms 屬降級模式）

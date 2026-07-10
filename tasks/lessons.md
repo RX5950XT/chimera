@@ -4,6 +4,7 @@
 - **emulator 的 default_boot 相容檢查看不到 DLL 與 env**：只驗 CLI/AVD config，換 gfxstream runtime 或 renderer env 完全不 invalidate。修在匯聚點 `VirtualMachine::start()`：`chimera_display_flavor.txt` marker（emulatorPath+GUEST_VULKAN+SWIFTSHADER_ES），flavor 變＝刪 `default_boot` 退一次冷開。A/B `pass-flavor-marker-ab`（stock 存→-Fast 載＝原 brick 場景→invalidation＋冷開活；同 flavor→8.6s 快載、無誤清）。
 - **guest brick 時 `adb shell` 會永久 hang（devices 卻回 device）**：等待迴圈裡的裸 `adb shell getprop` 把整個腳本吊死 14 分鐘、deadline 全失效。**Rule**：PS 腳本對可能死掉的 guest 呼叫 adb shell，一律 `Start-Job`+`Wait-Job -Timeout` 包裝；「adb devices=device」只證 transport 活著，不證 guest 活著。
 - **evdev 對未變化的 ABS 值去重**：對同一座標點第二次，touch down 只有 `TRACKING_ID`/`PRESSURE`/`SYN`，**不帶 `POSITION_X/Y`**——用「有沒有座標」判送達會誤判。**Rule**：kernel 送達證據認 `ABS_MT_TRACKING_ID != ffffffff`（down），座標當可選；或每輪點不同座標。
+- **「從 A 路徑推導 B 工具位置」的 helper 會在路徑來源多樣化後靜默失效**：`adbPathForConfig`＝`emulatorPath.parent².../platform-tools/adb.exe`，stock SDK 成立、custom runtime（`build\chimera-gfxstream-runtime\`）不成立→graceful `adb emu kill` 靜默 false→按 X 關窗永遠 TerminateProcess＝snapshot 永不存、`-Fast` 日常全冷開（7.5s 承諾只在 verifier 外部 emu kill 下成立過）。**Rule**：推導失敗要有 fallback 鏈（SDK root/env）；graceful-shutdown 這類關鍵副作用失敗至少要 qWarning，不可無聲降級。驗證要走**真實使用者動作**（WM_CLOSE）而非只有腳本的外部 kill。
 - **PS5.1 腳本含 CJK 必炸兩層**：無 BOM UTF-8 的 .ps1 被當 ANSI 讀（字面字串爛掉）＋`cmd /c adb shell cat` 以 console codepage 解碼 UTF-8 輸出（內容爛掉）。**Rule**：跨語系比對一律 `adb pull`＋`[IO.File]::ReadAllText(..., UTF8)`，目標字串用 `[char]0xXXXX` 組。
 
 ## 2026-07-10 — Session 112：RefCountPipe 失衡＝「idle 後停更」真根因；重現器要涵蓋「靜止窗」；feature 預設 false 的債會選擇性爆炸

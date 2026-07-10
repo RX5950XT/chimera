@@ -377,8 +377,23 @@ void applyAvdHardwareConfig(const VirtualMachineConfig &config) {
 }
 
 std::filesystem::path adbPathForConfig(const VirtualMachineConfig &config) {
-    if (config.emulatorPath.empty()) return {};
-    return config.emulatorPath.parent_path().parent_path() / "platform-tools" / "adb.exe";
+    std::error_code ec;
+    if (!config.emulatorPath.empty()) {
+        const auto derived =
+            config.emulatorPath.parent_path().parent_path() / "platform-tools" / "adb.exe";
+        if (std::filesystem::exists(derived, ec)) return derived;
+    }
+    // Custom runtimes (build\chimera-gfxstream-runtime\emulator.exe) have no
+    // platform-tools sibling; without this SDK fallback the graceful Quick Boot
+    // stop ("adb emu kill") silently degrades to TerminateProcess under -Fast,
+    // so closing the window never saves default_boot and every next launch is a
+    // full cold boot (S112c).
+    const auto sdkRoot = sdkRootForConfig(config);
+    if (!sdkRoot.empty()) {
+        const auto sdkAdb = sdkRoot / "platform-tools" / "adb.exe";
+        if (std::filesystem::exists(sdkAdb, ec)) return sdkAdb;
+    }
+    return {};
 }
 
 std::string adbSerialForConfig(const VirtualMachineConfig &config) {
@@ -736,6 +751,10 @@ bool VirtualMachine::stop() {
             }
         }
         if (!exited) {
+            if (m_config.quickBoot) {
+                qWarning() << "Quick Boot graceful stop failed; terminating emulator"
+                           << "(default_boot snapshot will NOT be saved; next boot is cold)";
+            }
             ProcessLauncher::terminate(hProc);
             ProcessLauncher::waitForExit(hProc, 10000);
         }

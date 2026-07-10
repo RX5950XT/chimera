@@ -29,10 +29,20 @@
 - [x] A/B `pass-flavor-marker-ab`（marker 缺失→清＋冷開活；stock→-Fast＝原 brick 場景→invalidation＋冷開活；同 flavor→8.6s 快載活無誤清）；unit 24/24
 - [x] 人類保真度 gate：真實 WM_LBUTTONDOWN→getevent 映射→點 launcher「設定」；round1 全過（kernel+focus+幀 90→138）；round2（35s 放置後）kernel touch 捕獲+Settings 重開+幀 168→206＝使用者場景成立（parser 曾因 evdev 同座標去重誤判，已修）
 - [x] 音訊：驗證改 `CHIMERA_INTERACTIVE_PRIORITY=idle` 跑護使用者音樂；程式碼不碰 priority
+- [x] **第二 bug：按 X 關窗永不存 snapshot**（使用者實際關閉時 mtime 未動抓到）——`adbPathForConfig` 對 custom runtime 推出不存在的 adb→graceful kill 靜默 false→TerminateProcess。修＝SDK fallback＋graceful 失敗 qWarning。E2E `pass-close-saves-quickboot`（WM_CLOSE→存檔→8.5s 快載 alive）；unit 24/24
+- [x] 競品表 §9 更新（啟動✅持平、穩定性✅接近持平、gate #1 ✅）；gate #2 深水區盤點寫入 P3
 
 ### P2 — BlueStacks 對照盤點（研究已有 docs/references/competitor-emulator-smoothness.md）
 - [ ] 更新競品對照：目前差距清單（guest GPU ✅、輸入 ✅、present ✅；剩：穩定性、啟動速度、日常可用性）
 - [ ] 定義「超越」的可量測指標並記錄現狀 baseline
+
+### P3（下一 session 深水區）— gate #2「一般 UI sustained 60fps」＝guest 2D 合成離開 SwiftShader
+盤點（2026-07-10，唯讀）：
+- [ ] 候選 A：ANGLE host-GLES（DLL 內 `CHIMERA_GFXSTREAM_HEADLESS_ANGLE=1` 已 codified）——S87/88 牆＝SF `glDrawArrays` 在 ANGLE libGLESv2 內 AV（新版 ANGLE 也重現）。S91 修的 MSVCP140 三處與 S109b pNext 皆與此 AV 無關，牆大概率仍在；重測成本＝一次 boot＋可能 guest SF crash-loop
+- [ ] 候選 B：skiavk 全局 UI——S100 定案死路（user image 無 root、framework restart 不可行、半套用黑屏），**禁再試**
+- [ ] 候選 C：guest ES3（GLESDynamicVersion）——S112 重測 135s 健康（S109 破壞敘事可能已被 S109b 連帶修掉）；HWUI 在 ES3 有較快路徑，可能小幅改善 SwiftShader fill；成本低、上限也低
+- [ ] 候選 D：host-side composition offload（hwcomposer→host CompositorVk/NVIDIA）——未探勘；只省 SF 合成不省 HWUI 繪製，需先量 SF vs HWUI 佔比
+- [ ] 執行前提：使用者不在用機器（反覆 boot 會干擾音訊）；先跑 C 量收益，再決定是否碰 A/D
 
 ### 完成前驗證
 - [ ] ctest 24/24、SelfTest pass、文件同步（CLAUDE/CONTEXT/lessons/todo）
