@@ -18,7 +18,7 @@
       "name": "chimera_dev",
       "processPriority": "below_normal",
       "qmpPort": 5554,
-      "quickBoot": false,
+      "quickBoot": true,
       "ramMB": 4096,
       "width": 1920
     }

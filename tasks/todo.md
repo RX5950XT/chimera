@@ -31,6 +31,7 @@
 - [x] 音訊：驗證改 `CHIMERA_INTERACTIVE_PRIORITY=idle` 跑護使用者音樂；程式碼不碰 priority
 - [x] **第二 bug：按 X 關窗永不存 snapshot**（使用者實際關閉時 mtime 未動抓到）——`adbPathForConfig` 對 custom runtime 推出不存在的 adb→graceful kill 靜默 false→TerminateProcess。修＝SDK fallback＋graceful 失敗 qWarning。E2E `pass-close-saves-quickboot`（WM_CLOSE→存檔→8.5s 快載 alive）；unit 24/24
 - [x] 競品表 §9 更新（啟動✅持平、穩定性✅接近持平、gate #1 ✅）；gate #2 深水區盤點寫入 P3
+- [x] **gate #3 ✅ `pass-soak-30min`**：production stack 30 分鐘混合使用（6 輪 3min 操作＋2min 放置→驗恢復）——6/6 全過、producer →9746 全程推進、watchdog 24/24 成對良性、無 crash
 
 ### P2 — BlueStacks 對照盤點（研究已有 docs/references/competitor-emulator-smoothness.md）
 - [ ] 更新競品對照：目前差距清單（guest GPU ✅、輸入 ✅、present ✅；剩：穩定性、啟動速度、日常可用性）

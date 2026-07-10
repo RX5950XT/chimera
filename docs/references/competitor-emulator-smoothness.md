@@ -103,14 +103,14 @@
 | Guest 3D（遊戲） | 實體 GPU | ✅ Vulkan app 直達 NVIDIA（S91） | 持平（Vulkan 路徑） |
 | **Guest 2D UI 合成** | 實體 GPU GLES | ❌ SwiftShader CPU（ES2 pin）；互動 scroll eff ~49-57 | **主要落差**（skiavk 牆） |
 | **啟動時間** | ~10-20s | ✅ Quick Boot 預設化：載入 7.5–8.6s（首次/換組態冷開 ~34s；跨 flavor 自動 invalidate 防 brick，S112c） | **持平**（已進 BlueStacks 區間） |
-| **穩定性** | 成熟 | ✅ 停更真根因根治（RefCountPipe，S112；A/B 因果定案）＋watchdog 保命＋跨組態 snapshot brick 修（S112c）；35s 放置後真實點擊 gate pass | 接近持平（30-min soak gate 待跑） |
+| **穩定性** | 成熟 | ✅ 停更真根因根治（RefCountPipe，S112；A/B 因果定案）＋watchdog 保命＋跨組態 snapshot brick 修（S112c）；35s 放置後真實點擊 gate pass；**30-min 混合使用 soak pass**（6×操作+放置循環全過） | **持平** |
 | 乾淨度 | 廣告＋遙測＋捆綁 | ✅ 純 open-source、無廣告無遙測 | **Chimera 勝** |
 | 客製性 | 封閉 | ✅ 全開源可改（launcher/debloat/spoof） | **Chimera 勝** |
 
 **「超越」的可量測 gate（誠實版）**：
 1. ✅ 開機到可互動 < 15s——S112 預設化實測 7.5–8.6s（unclean exit/換組態自動退冷開＝fallback 安全，S112c flavor marker）
 2. 一般 UI 互動 sustained 60fps——**S112c 定性更正**：一般 UI scroll 下 guest 已 60fps（effFps 54.3、限制在 host stream/render＝below_normal 的音訊取捨；normal priority 可 59-60，S104）；ES3（GLESDynamicVersion）A/B 零收益不採用。SwiftShader 只在重 fill 是牆且 Vulkan 遊戲已繞過→深水候選（ANGLE host-GLES draw AV/CompositorVk）對日常 UI 收益上限低。**現有解＝`-InteractiveFirst`（要 60 換音訊競爭）**
-3. 30 分鐘連續使用零停更、零 crash（S112 soak 為基準）
+3. ✅ 30 分鐘連續使用零停更、零 crash——S112c 實測 `pass-soak-30min`：6 輪（3min 操作＋2min 放置→驗恢復）全過、producer 全程推進（→9746）、watchdog 24 觸發/24 恢復成對（良性 idle）、無 crash 無 adb 死亡
 4. 點擊→guest 反應 < 50ms（gRPC 路徑已達；ADB fallback ~200ms 屬降級模式）
 5. 已達成且競品做不到：無廣告、無遙測、全開源、可完全客製 guest
 
