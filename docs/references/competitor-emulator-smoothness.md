@@ -93,5 +93,26 @@
 - **distance to general-UI 60**：guest 軟體牆已破；剩下是 host render（安靜機器可達 60，gl60 已證）+ push-based cadence + 每幀 gfxstream Vulkan marshalling 開銷。要 BlueStacks 級全程 60 仍需收斂這些，但不再卡在「軟體 vs 硬體渲染」這道牆。
 - 驗證：final runtime rebuild PASS（verified source commit `d60d3457ac1f1188b5782ccc23bde2c124a7c77b` → SDK build id `15261927`）；gl60 60fps **非回歸**（`min 59.6/avg 60.0`）、ctest 20/20、Fast SelfTest PASS、0 residual、final DLL md5 `FDF55A3EF314262F5BEA76760B9D454B`。
 
+## 9. 現況對照與「超越 BlueStacks」可量測指標（2026-07-10 S112 盤點）
+
+| 維度 | BlueStacks | Chimera 現況 | 差距定性 |
+|------|-----------|--------------|---------|
+| 引擎 | fork QEMU+Hypervisor | ✅ 同級（emulator.exe QEMU+WHPX） | 持平 |
+| Host 顯示 present | 直接 swapchain | ✅ GPU-direct shared texture；gl60 連續渲染 60fps（normal priority）| 持平 |
+| 輸入 | virtio-input HAL | ✅ gRPC sendTouch＋3-strike breaker＋ADB fallback（結構性自癒） | 持平（fallback 韌性反而較好） |
+| Guest 3D（遊戲） | 實體 GPU | ✅ Vulkan app 直達 NVIDIA（S91） | 持平（Vulkan 路徑） |
+| **Guest 2D UI 合成** | 實體 GPU GLES | ❌ SwiftShader CPU（ES2 pin）；互動 scroll eff ~49-57 | **主要落差**（skiavk 牆） |
+| **啟動時間** | ~10-20s | ❌ 冷 boot ~36s、visible_home ~49s；Quick Boot 9.5s 但 opt-in | **可修**（P1：Quick Boot 預設化） |
+| **穩定性** | 成熟 | ⚠ -Fast producer 偶發停更（S111 watchdog 保命；S112 起 postImpl 停更有診斷 log） | 可診斷、未根治 |
+| 乾淨度 | 廣告＋遙測＋捆綁 | ✅ 純 open-source、無廣告無遙測 | **Chimera 勝** |
+| 客製性 | 封閉 | ✅ 全開源可改（launcher/debloat/spoof） | **Chimera 勝** |
+
+**「超越」的可量測 gate（誠實版）**：
+1. 開機到可互動 < 15s（Quick Boot 預設化＋fallback 安全）
+2. 一般 UI 互動 sustained 60fps（需 guest UI 合成離開 SwiftShader——候選：CompositorVk/root image/ANGLE host-GLES，皆為深水區）
+3. 30 分鐘連續使用零停更、零 crash（S112 soak 為基準）
+4. 點擊→guest 反應 < 50ms（gRPC 路徑已達；ADB fallback ~200ms 屬降級模式）
+5. 已達成且競品做不到：無廣告、無遙測、全開源、可完全客製 guest
+
 ---
 *建立：2026-06-28；更新：2026-06-30 Session 91（前段：Venus 三層實測；後段：修 3 個 MSVCP140 future crash → app HWUI Vulkan 渲染成功、~2× guest throughput、軟體牆打破；DLL md5 FDF55A3EF314262F5BEA76760B9D454B、3 crash 修正 codified 進 patch script；gl60 60fps 非回歸 min 59.6/avg 60.0；ctest 20/20；Fast SelfTest PASS）。探測腳本：`tmp/venus-probe*.ps1`、`tmp/venus-measure.ps1`、`tmp/venus-hwui*.ps1`；end-to-end `verify-interactive-ui.ps1 -GuestVulkan`。*

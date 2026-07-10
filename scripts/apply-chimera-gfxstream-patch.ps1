@@ -3984,6 +3984,35 @@ AsyncResult FrameBuffer::Impl::composeWithCallback(uint32_t bufferSize, void* bu
 
 AsyncResult FrameBuffer::Impl::composeWithCallback(uint32_t bufferSize, void* buffer,
 '@ "frame_buffer compose timing log"
+
+    # postImpl silent-fail logging: if the guest posts a ColorBuffer handle that was
+    # erased host-side, every post drops here with no log — the only unlogged way the
+    # -Fast headless producer can stop publishing while the guest stays alive (S111
+    # stall signature). Throttled ERROR makes a field stall diagnosable.
+    Replace-Text $modernFrameBufferTiming @'
+    if (!colorBuffer) {
+        return AsyncResult::FAIL_AND_CALLBACK_NOT_SCHEDULED;
+    }
+
+    std::optional<AutoLock> lock;
+'@ @'
+    if (!colorBuffer) {
+        // Chimera: this was the only unlogged way the -Fast headless producer can
+        // stop publishing while the guest stays alive (S111 stall signature: guest
+        // renders + input lands, host shared texture frozen). If the guest keeps
+        // posting a handle that was erased host-side, every post drops here
+        // silently. Log it loudly (throttled) so a field stall is diagnosable.
+        static std::atomic<uint64_t> sMissingPostCbLogs{0};
+        const uint64_t logCount = ++sMissingPostCbLogs;
+        if (logCount == 1 || logCount == 60 || (logCount % 600) == 0) {
+            GFXSTREAM_ERROR("post: Failed to find ColorBuffer %d (dropped posts count=%llu)",
+                            p_colorbuffer, (unsigned long long)logCount);
+        }
+        return AsyncResult::FAIL_AND_CALLBACK_NOT_SCHEDULED;
+    }
+
+    std::optional<AutoLock> lock;
+'@ "frame_buffer postImpl missing-CB logging"
 }
 
 # --- Vulkan cereal: VK_EXT_mesh_shader extension struct support -----------------
@@ -4615,6 +4644,39 @@ if (Test-Path -LiteralPath $modernFrameBufferFeatures -PathType Leaf) {
         std::fflush(stderr);
     }
 '@ "frame_buffer GlDirectMem force-enable"
+
+    # RefCountPipe: the running emulator hosts the "refcount" pipe service
+    # (advancedFeatures.ini RefCountPipe=on) and the API-34 guest gralloc manages
+    # ColorBuffer lifetime purely through it. The cross-DLL FeatureSet copy no-op
+    # left this false, running legacy refcounting against a guest that never sends
+    # rcOpen/CloseColorBuffer: every headless post transiently dropped the display
+    # target to refcount 0 (10s delayed close); >=10s of guest idle then any buffer
+    # close swept the LIVE display CB away and every later post of that handle was
+    # silently dropped = the S111 "frozen picture, guest alive" field stall.
+    Replace-Text $modernFrameBufferFeatures @'
+    // CHIMERA_GFXSTREAM_GUEST_VK_ONLY=1: Vulkan-only composition, skip EGL/GLES entirely.
+'@ @'
+    // RefCountPipe: the cross-DLL FeatureSet copy is a no-op, so this defaulted to
+    // false -- but the prebuilt emulator DOES host the "refcount" pipe service
+    // (advancedFeatures.ini RefCountPipe=on) and the API-34 guest gralloc manages
+    // ColorBuffer lifetime purely through it (it never sends rcOpen/CloseColorBuffer).
+    // With the flag false the legacy refcount machinery runs against a guest that
+    // never participates: post-O ColorBuffers are created with refcount=0 and every
+    // headless post transiently drops them to 0 and queues a 10s delayed close.
+    // Active posting rescues them each frame, but >=10s of guest idle (a static
+    // screen) leaves the LIVE display target expired; the next buffer-close sweep
+    // erases it and every subsequent post of that handle is silently dropped --
+    // the "picture frozen but guest alive" field stall (S111/S112). Setting the
+    // flag true matches the running emulator: lifetime is driven only by the
+    // refcount pipe (onLastColorBufferRef), which fires only on the true last
+    // guest reference. Kill switch: CHIMERA_GFXSTREAM_NO_REFCOUNT_PIPE=1.
+    if (gfxstream::base::getEnvironmentVariable("CHIMERA_GFXSTREAM_NO_REFCOUNT_PIPE") != "1") {
+        impl->m_refCountPipeEnabled = true;
+        std::fprintf(stderr, "[chimera-gfxstream] Impl::Create: RefCountPipe force-enabled\n");
+        std::fflush(stderr);
+    }
+    // CHIMERA_GFXSTREAM_GUEST_VK_ONLY=1: Vulkan-only composition, skip EGL/GLES entirely.
+'@ "frame_buffer RefCountPipe force-enable"
 }
 
 # --- FeatureSet copy: same-build value copy by name ------------------------------

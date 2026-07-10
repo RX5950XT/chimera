@@ -2,11 +2,11 @@
 
 > 目前狀態快照。歷程與根因記錄見 `CONTEXT.md`；架構決策與 feature flags 見 `CLAUDE.md`。
 
-**日期**：2026-07-09（Session 111）
+**日期**：2026-07-10（Session 112）
 **Build**：Release PASS（MSVC + Qt 6.8.3）
 **Tests**：`ctest -LE integration` **24/24 PASS**（S111 再驗 8.45s）；3 integration tests 需 emulator 運行中
 **定位**：目前不是可投入日常使用的產品級模擬器；主要是 AI-assisted Android emulator experiment / gfxstream 與 host-shell 整合整活專案。
-**維護**：S111 更正「有畫面但點不動」真根因——輸入已進 guest kernel，實際是 `-Fast` shared-texture producer 停更導致 host 顯示舊畫面；已保留 unary gRPC capture fallback 作保命更新，並重寫 README 降調。
+**維護**：S112 根治「有畫面但點不動」——真根因＝gfxstream `m_refCountPipeEnabled` 硬編 false 的 RefCountPipe 失衡（guest 靜止 ≥10s 後 display CB 被 delayed-close sweep 銷毀→producer 永久停更）。已 force true（kill switch `CHIMERA_GFXSTREAM_NO_REFCOUNT_PIPE=1`）；同 build A/B 定案（fix 3/3 GREEN、killswitch 2/2 RED）、SelfTest pass、production idle-recovery gate pass。S111 watchdog 保留為 belt-and-suspenders。啟動鈴聲（guest 充電/解鎖音）已於首次開機設定關閉。
 
 ## 現況總覽
 

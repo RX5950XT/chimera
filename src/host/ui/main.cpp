@@ -720,6 +720,14 @@ static void applyGuestFirstBootSetup() {
         "settings", "put", "global", "setup_wizard_has_run", "1", ";",
         // Keep screen on while charging (emulator always "charging")
         "settings", "put", "global", "stay_on_while_plugged_in", "3", ";",
+        // Silence the startup chime: the emulator battery reports "AC plugged in"
+        // on every boot, which plays the charging-started sound; keyguard dismiss
+        // below plays the unlock sound. Both read as a mystery "ringtone" on the
+        // host at launch. Touch sound effects are also pointless in an emulator.
+        "settings", "put", "secure", "charging_sounds_enabled", "0", ";",
+        "settings", "put", "global", "charging_sounds_enabled", "0", ";",
+        "settings", "put", "system", "lockscreen_sounds_enabled", "0", ";",
+        "settings", "put", "system", "sound_effects_enabled", "0", ";",
         // Disable annoying "Select home app" dialog by accepting the default
         "settings", "put", "secure", "default_input_method",
             "com.google.android.inputmethod.latin/com.android.inputmethod.latin.LatinIME", ";",

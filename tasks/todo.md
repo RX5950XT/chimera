@@ -2,6 +2,37 @@
 
 ---
 
+## 2026-07-10 Session 112 — /goal：修好整個專案讓它真正可投入使用；研究並超越 BlueStacks
+
+目標拆解（依「真正可用」的阻斷程度排序）：
+
+### P0 — 根治 `-Fast` shared-texture producer 停更（S111 只做了 watchdog 保命）
+- [x] 讀 gfxstream tree：post 鏈＝guest rcFBPost/compose → `postImpl`（frame_buffer.cpp:3100）→ headless 分支 kVk borrow → `bridge.postFrameDirectGpu`。**發現唯一無 log 的靜默失敗點**：`postImpl` 開頭 `m_colorbuffers` 找不到 posted handle 直接 `return FAIL`（無任何 log）＝guest 持續 post 已被 host 銷毀的 handle 時 producer 永久停更且無診斷痕跡。已補 throttled ERROR（tree + patch script 同步）＋ rebuild runtime。
+- [x] 「published sequence=240」非確定性訊號（log 節流 %240，S107/S111 撞同數字是巧合）。
+- [x] 直開 emulator 診斷 harness（`diag-producer-stall.ps1`）：注意 **`-gpu swiftshader_indirect` 會把 VK ICD 也拉成 SwiftShader**→bridge D3D11 import 走 null fn ptr＝RIP=0 崩潰（生產是 `-gpu host`，headless GLES 由 DLL 內退 SwiftShader、VK 留 NVIDIA）。baseline（-gpu host）60s 全程健康：seq 240→1200、kvk 100→600、droppedPosts=0、screen hash 變化。
+- [x] GLESDynamicVersion 135s 實測**健康**（S109 的 ES3 破壞敘事在 producer 層不成立，可能被 S109b 修復連帶解掉）——ES3 不是重現器。
+- [x] 15.5 分鐘 production soak（chimera-ui + synthetic scroll）：hostTotal 453→35089 全程健康、無 stall；但 **`invalidateGl` 對缺失 handle（34/37/39/41）累計 45000 次（~45/s）**＝SF 每幀 `rcBindTexture` 綁到已被 host 銷毀的 layer CB＝CB 生命週期失衡的旁證。
+- [x] **RefCountPipe 失衡發現**：DLL 因 cross-DLL FeatureSet no-op 把 `m_refCountPipeEnabled` 硬編 false，但 emulator `advancedFeatures.ini RefCountPipe=on` 且 guest gralloc 走 pipe 模式（不送 rcOpen/Close）→ legacy refcount 機制對不參與的 guest 亂記帳（post-O create refcount=0、headless post 每幀瞬時歸 0 進 10s delayed-close）。已修：`Impl::Create` force `m_refCountPipeEnabled=true`（kill switch `CHIMERA_GFXSTREAM_NO_REFCOUNT_PIPE=1`）＋patch script 同步。
+- [x] **確定性重現達成（重大）**：直開 emulator（-gpu host）→ boot 後有一段 ~10-20s 完全靜止窗 → **producer 永久停更**（3 輪 idle repro 全中：seq 卡住、guest screencap/focus 完全健康＝S111 現場複製）。droppedPosts=0＝post 指令根本沒到 postImpl（否證「handle 消失被丟」形態）。forensics：apps 持續渲染（app_time_stats 活躍）、SF 有 latch、SystemUI swap 曾卡 16s、SF `pendingHwVsyncState=Disabled`＝**display present（rcFBPost）鏈死掉**，疑 display chain fence/vsync 卡住。
+- [x] 判別完成：killswitch A/B 顯示 rcFBPost/postImpl **照走**、seq/kvk 凍結＝publish 段死（非 guest 停送）；fix 模式三計數全程 lockstep。
+- [x] **修根因 RED→GREEN 定案**：未修 3/3 停更；fix 3/3 GREEN；**同 build kill switch（`CHIMERA_GFXSTREAM_NO_REFCOUNT_PIPE=1`）2/2 RED＝A/B 因果證明**。patch script 同步＋冪等驗證（首版手改與 script 不一致造成 block 重複＋em-dash 編碼壞掉，已 dedup/ASCII 化並重建乾淨 runtime）。
+- [x] 驗證：unit **24/24 PASS**；SelfTest **result=pass**（boot 35s、visible_home 48s、guest+host nonblack 100%、interactivity ok、residual 0）；**idle-recovery gate `pass-idle-recovery`**（production stack 30s 放置×2 輪、恢復操作 host total 118→228→266）＝使用者案發情境直接驗證。
+- [x] 使用者插件需求：啟動鈴聲＝guest 充電提示音/解鎖音 → `applyGuestFirstBootSetup` 加 `charging_sounds_enabled=0`（secure+global）、`lockscreen_sounds_enabled=0`、`sound_effects_enabled=0`；chimera-ui rebuild 過、SelfTest 全綠（音效設定為持久 /data，下次 boot 生效）
+
+### P1 — 啟動速度（冷 boot ~36s、visible_home ~49s；Quick Boot 實測 9.5s 但 opt-in）
+- [ ] 評估 Quick Boot 設為安全一鍵預設（失敗自動退 full boot）或可靠 opt-in
+
+### P2 — BlueStacks 對照盤點（研究已有 docs/references/competitor-emulator-smoothness.md）
+- [ ] 更新競品對照：目前差距清單（guest GPU ✅、輸入 ✅、present ✅；剩：穩定性、啟動速度、日常可用性）
+- [ ] 定義「超越」的可量測指標並記錄現狀 baseline
+
+### 完成前驗證
+- [ ] ctest 24/24、SelfTest pass、文件同步（CLAUDE/CONTEXT/lessons/todo）
+
+---
+
+---
+
 ## 2026-07-06 Session 109 — /goal：迭代優化超越 BlueStacks；3DMark 實測 + 16:9 橫向適配
 
 目標拆解（AVD 已是 1920×1080 landscape 16:9，適配重點在 host 呈現 + 3DMark 實跑）：

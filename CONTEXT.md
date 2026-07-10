@@ -7,6 +7,32 @@
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 **引擎決策（最重要）**：生產引擎 = `emulator.exe`（Google QEMU+WHPX fork）；`--qemu-backend`（stock QEMU 11 + Cuttlefish）與 `--hcs-backend`（Hyper-V HCS）= legacy R&D，保留不刪。BlueStacks 輸入路徑更正：`BstkDrv.sys` 是 network/filter driver 非 input driver；BlueStacks 走 `HD-Bridge-Native.dll` → virtio-input，Chimera 等效路徑是 emulator gRPC + Console `event` protocol。
 
+## 2026-07-10 — Session 112 — /goal「修好專案真正可用」：停更真根因根治（RefCountPipe）＋確定性重現器＋消音
+
+使用者 /goal「修好整個專案讓它真正可投入使用、研究並超越 BlueStacks」。本輪把連續六個 session（S106/107/108/111）反覆誤判的「有畫面但點不動」**根治**。
+
+**根因（gfxstream `m_refCountPipeEnabled` 硬編 false 的 RefCountPipe 失衡）**：
+- 這棵 DLL 因 cross-DLL FeatureSet copy no-op 把全部 feature 預設 false、只補「馬上壞」的（EglOnEgl/Vulkan/GlDirectMem/QueueSubmitWithCommands）。`RefCountPipe` 因「幾乎能動」潛伏：emulator 端 `advancedFeatures.ini RefCountPipe=on`（hosts refcount pipe service）、API-34 guest gralloc 走 pipe 模式（**從不送 rcOpen/CloseColorBuffer**），host 卻跑 legacy refcount。
+- 後果：post-O ColorBuffer 建立時 refcount=0；headless `postImpl` 每幀 `++`→`dec` 瞬時歸 0→排入 **10 秒 delayed-close**；活躍時下一幀 `markOpened` 救回，**guest 靜止 ≥10s 後 display 鏈 CB 被 sweep 銷毀→producer 永久停更**＝使用者「放著回來就點不動」。歷來 verifier 從不讓 guest 靜止 10 秒＝15+ session 的結構性盲區。
+- 旁證：15.5 分鐘 production soak 中 `invalidateGl` 對缺失 handle 累計 **45000 次（~45/s）**＝SF 每幀 `rcBindTexture` 綁到已被 host 銷毀的 layer CB。
+
+**修法**：`frame_buffer.cpp Impl::Create` force `m_refCountPipeEnabled = true`（比照其他 force-enabled features；kill switch `CHIMERA_GFXSTREAM_NO_REFCOUNT_PIPE=1`）；patch script 同步（ASCII-only，注意 em-dash 會被 Write-TextFile 編碼壞掉＋Replace-Text 的 needle 若還在 replacement 尾端會重複插入——首版手改與 script 不逐位元一致造成 block 重複，已 dedup 並驗證冪等）。
+
+**驗證（同 build A/B 因果定案）**：
+| 項目 | 結果 |
+|------|------|
+| 確定性重現器（boot→20s 靜止→操作；`svc power stayon true` 排除螢幕睡眠擬態） | 未修 runtime **3/3 停更**（guest screencap/focus 健康、seq 凍結、dropped=0） |
+| fix build | **3/3 GREEN**：rcFBPost=postImpl=kvk 全程 lockstep、seq 一路 240→1200 |
+| 同 build + kill switch | **2/2 RED**（idle 後 rcFBPost/postImpl 照走、seq/kvk 凍結）＝A/B 因果證明 |
+| unit | `ctest -LE integration` **24/24 PASS** |
+| SelfTest（-Fast、新 runtime＋新 chimera-ui） | host 視窗截圖健康（launcher 中文首頁、guest 渲染、75/79KB 非黑）；console 輸出被 harness 吞掉故 dedup 重建後重跑一次留檔 |
+
+**新診斷資產**：`rcFBPost` → `postImpl` → `published sequence` 三層 throttled 計數（1/60/%600）＋ `postImpl` missing-CB log（原本唯一無 log 的靜默失敗點）——下次任何停更可直接分層定位（guest 沒送／到了沒進／進了沒發佈）。診斷腳本 `diag-idle-stall.ps1`／`diag-producer-stall.ps1`（scratchpad；直開 emulator 必用 `-gpu host`，`swiftshader_indirect` 會把 VK ICD 拉成 SwiftShader→D3D11 import null fn ptr＝RIP=0 崩潰）。
+
+**其他**：① S109「GLESDynamicVersion 破壞 -Fast 顯示」直開重測 135s 健康＝敘事可能已被 S109b 修復連帶解掉（未進一步改預設，ini 仍 off）。② 使用者插件需求「啟動鈴聲」＝guest 充電提示音（emulator 每次 boot「剛插 AC」）＋解鎖音：`applyGuestFirstBootSetup` 加 `charging_sounds_enabled=0`（secure+global）、`lockscreen_sounds_enabled=0`、`sound_effects_enabled=0`。③ 競品對照與「超越 BlueStacks」可量測指標寫入 `docs/references/competitor-emulator-smoothness.md` §9。
+
+**誠實邊界**：killswitch RED 中「post 完成但 publish 停、handle lookup 不 miss」的最後一段微觀機制未逐指令釘死（疑 guest 同 resource id 重建 CB／外層 else CPU 發佈靜默失敗）；但同 build A/B 已證因果，且 RefCountPipe=true 是 stock 模擬器本來就在跑的正確組態。S111 watchdog 保留為 belt-and-suspenders。
+
 ## 2026-07-09 — Session 111 — 「有畫面但點不動」真根因更正 + fallback 保命 + README 降調
 
 使用者回報再次出現「打開了、有畫面、但完全點不動」，並要求加快開啟速度、最後重寫 README 刪掉冠冕堂皇宣稱，明講此專案目前只是 AI 開發/整活實驗，不能真正投入使用。
