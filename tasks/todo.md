@@ -22,6 +22,14 @@
 ### P1 — 啟動速度（冷 boot ~34s → Quick Boot 預設化後 7.5s）
 - [x] **Quick Boot 一鍵預設化完成**：named `-snapshot` 會回捲磁碟（資料遺失）→ 改 AVD default Quick Boot（quickBoot=true＝零 snapshot 旗標、emulator 自管 default_boot；unclean exit 自動冷開不回捲）＋ `stop()` 優雅 `adb emu kill` 等存檔（≤20s）＋ `start-chimera.ps1` 預設 `CHIMERA_QUICK_BOOT=1`（`-NoQuick`/SelfTest 除外）。unit contract 更新（斷言零 snapshot 旗標）；verifier 改 full→seed→quick 三階段。**實測 full 34.3s / quick 7.5s result=pass**；unit 24/24。
 
+### P1b — Quick Boot 跨組態 snapshot 污染 brick（S112c，使用者「確定人類可以正常點擊」時抓到）
+- [x] 症狀：stock flavor（verify-quick-boot 直開 exe）存的 `default_boot` 被一鍵 `-Fast` 載入＝guest 整台掛死（load 回報成功、adb shell 永久 hang、qemu 零 CPU、host total 卡 1）
+- [x] 隔離實驗 `pass-fast-quickboot-selfconsistent`：純 -Fast 冷開 32.5s→載入 8.5s 活→再載入 8.5s 活＝-Fast quick boot 本身可靠，問題只在跨 flavor
+- [x] 修法：`VirtualMachine::start()` display-flavor marker（`chimera_display_flavor.txt`＝emulatorPath+GUEST_VULKAN+SWIFTSHADER_ES），flavor 變→刪 default_boot 冷開一次；涵蓋所有啟動路徑
+- [x] A/B `pass-flavor-marker-ab`（marker 缺失→清＋冷開活；stock→-Fast＝原 brick 場景→invalidation＋冷開活；同 flavor→8.6s 快載活無誤清）；unit 24/24
+- [x] 人類保真度 gate：真實 WM_LBUTTONDOWN→getevent 映射→點 launcher「設定」；round1 全過（kernel+focus+幀 90→138）；round2（35s 放置後）kernel touch 捕獲+Settings 重開+幀 168→206＝使用者場景成立（parser 曾因 evdev 同座標去重誤判，已修）
+- [x] 音訊：驗證改 `CHIMERA_INTERACTIVE_PRIORITY=idle` 跑護使用者音樂；程式碼不碰 priority
+
 ### P2 — BlueStacks 對照盤點（研究已有 docs/references/competitor-emulator-smoothness.md）
 - [ ] 更新競品對照：目前差距清單（guest GPU ✅、輸入 ✅、present ✅；剩：穩定性、啟動速度、日常可用性）
 - [ ] 定義「超越」的可量測指標並記錄現狀 baseline

@@ -278,6 +278,44 @@ std::filesystem::path sdkRootForConfig(const VirtualMachineConfig &config) {
                                        : config.emulatorPath.parent_path().parent_path();
 }
 
+// The emulator's own default_boot compatibility check only sees CLI/AVD config.
+// It cannot see which gfxstream runtime DLL (stock vs custom shared-texture) or
+// display env flags a snapshot was saved under — loading a snapshot saved under a
+// different display flavor hangs the restored guest on the gltransport pipe
+// (S112: stock-saved default_boot restored under -Fast = adb-dead brick). Keep a
+// flavor marker next to the AVD and drop default_boot whenever it changes.
+std::string displayFlavorForConfig(const VirtualMachineConfig &config) {
+    const char *vk = std::getenv("CHIMERA_GUEST_VULKAN");
+    const char *ses = std::getenv("CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES");
+    return config.emulatorPath.string() + "|vk=" + (vk ? vk : "") +
+           "|ses=" + (ses ? ses : "");
+}
+
+void invalidateQuickBootOnDisplayFlavorChange(const VirtualMachineConfig &config) {
+    const std::filesystem::path cfgPath = avdConfigPath(config);
+    if (cfgPath.empty()) return;
+    const std::filesystem::path avdDir = cfgPath.parent_path();
+    const std::filesystem::path marker = avdDir / "chimera_display_flavor.txt";
+    const std::string flavor = displayFlavorForConfig(config);
+
+    std::string previous;
+    if (std::ifstream in(marker); in.is_open()) {
+        std::getline(in, previous);
+    }
+    if (previous == flavor) return;
+
+    std::error_code ec;
+    const auto removed =
+        std::filesystem::remove_all(avdDir / "snapshots" / "default_boot", ec);
+    if (removed > 0) {
+        qWarning() << "Quick Boot snapshot invalidated (display flavor changed);"
+                   << "next boot is a cold boot";
+    }
+    if (std::ofstream out(marker, std::ios::trunc); out.is_open()) {
+        out << flavor << '\n';
+    }
+}
+
 void applyAvdHardwareConfig(const VirtualMachineConfig &config) {
     const std::filesystem::path path = avdConfigPath(config);
     std::error_code ec;
@@ -565,6 +603,9 @@ bool VirtualMachine::start() {
     terminateStaleVmPortOwners(m_config);
     removeStaleAvdLocks(m_config);
     applyAvdHardwareConfig(m_config);
+    if (m_config.quickBoot) {
+        invalidateQuickBootOnDisplayFlavorChange(m_config);
+    }
 
     auto onStdout = [](const std::string &line) {
         if (!line.empty()) qDebug() << "emulator:" << QString::fromStdString(line);

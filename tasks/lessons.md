@@ -1,3 +1,11 @@
+## 2026-07-10 — Session 112c：verifier 必須跑出貨 flavor；跨組態 snapshot 會 brick；adb 對死 guest 永久 hang；evdev 去重
+
+- **verifier 跑的組態必須等於出貨組態，否則 pass 是假的**：`verify-quick-boot.ps1` 直接 `Start-Process chimera-ui.exe`＝stock runtime flavor，三階段 pass；但一鍵預設是 `-Fast`（custom gfxstream DLL＋`CHIMERA_GUEST_VULKAN`）——它存的 `default_boot` 被 -Fast 載入後 **guest 整台 brick**（load 回報成功、adb shell 永久 hang、qemu 幾乎零 CPU）。**Rule**：任何「預設化」的 gate 必須在出貨 flavor 下重跑一次才算數；「同一份程式、不同 env」就是不同受測物。
+- **emulator 的 default_boot 相容檢查看不到 DLL 與 env**：只驗 CLI/AVD config，換 gfxstream runtime 或 renderer env 完全不 invalidate。修在匯聚點 `VirtualMachine::start()`：`chimera_display_flavor.txt` marker（emulatorPath+GUEST_VULKAN+SWIFTSHADER_ES），flavor 變＝刪 `default_boot` 退一次冷開。A/B `pass-flavor-marker-ab`（stock 存→-Fast 載＝原 brick 場景→invalidation＋冷開活；同 flavor→8.6s 快載、無誤清）。
+- **guest brick 時 `adb shell` 會永久 hang（devices 卻回 device）**：等待迴圈裡的裸 `adb shell getprop` 把整個腳本吊死 14 分鐘、deadline 全失效。**Rule**：PS 腳本對可能死掉的 guest 呼叫 adb shell，一律 `Start-Job`+`Wait-Job -Timeout` 包裝；「adb devices=device」只證 transport 活著，不證 guest 活著。
+- **evdev 對未變化的 ABS 值去重**：對同一座標點第二次，touch down 只有 `TRACKING_ID`/`PRESSURE`/`SYN`，**不帶 `POSITION_X/Y`**——用「有沒有座標」判送達會誤判。**Rule**：kernel 送達證據認 `ABS_MT_TRACKING_ID != ffffffff`（down），座標當可選；或每輪點不同座標。
+- **PS5.1 腳本含 CJK 必炸兩層**：無 BOM UTF-8 的 .ps1 被當 ANSI 讀（字面字串爛掉）＋`cmd /c adb shell cat` 以 console codepage 解碼 UTF-8 輸出（內容爛掉）。**Rule**：跨語系比對一律 `adb pull`＋`[IO.File]::ReadAllText(..., UTF8)`，目標字串用 `[char]0xXXXX` 組。
+
 ## 2026-07-10 — Session 112：RefCountPipe 失衡＝「idle 後停更」真根因；重現器要涵蓋「靜止窗」；feature 預設 false 的債會選擇性爆炸
 
 - **「偶發」bug 的重現器必須涵蓋使用情境的全空間——歷來 verifier 從不讓 guest 靜止 ≥10 秒，所以 15+ session 抓不到 idle 觸發的停更**。本輪把「boot 後留一段 20s 完全靜止窗、再恢復操作」寫進 repro，立刻 3/3 確定性重現 S111 現場（guest screencap/focus 健康、producer 停更、dropped=0）。**Rule**：使用者說「放著一陣子回來就壞」，重現器就要真的「放著」；連續驅動的壓力測試對 idle 觸發的 bug 是結構性盲區。

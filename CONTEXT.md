@@ -7,6 +7,26 @@
 Windows Android 模擬器，競品目標是 BlueStacks。純 open-source 元件，無雲端依賴、無廣告、無遙測。
 **引擎決策（最重要）**：生產引擎 = `emulator.exe`（Google QEMU+WHPX fork）；`--qemu-backend`（stock QEMU 11 + Cuttlefish）與 `--hcs-backend`（Hyper-V HCS）= legacy R&D，保留不刪。BlueStacks 輸入路徑更正：`BstkDrv.sys` 是 network/filter driver 非 input driver；BlueStacks 走 `HD-Bridge-Native.dll` → virtio-input，Chimera 等效路徑是 emulator gRPC + Console `event` protocol。
 
+## 2026-07-10 — Session 112c — Quick Boot 跨組態 snapshot 污染 brick＋人類保真度點擊 gate
+
+使用者：「你要確定現在是人類可以正常使用點擊的模擬器欸」＋「開啟時音樂有雜音，修復時別讓它再出現」。做人類保真度驗證時當場抓到 P1（Quick Boot 預設化）的驗證盲區並根治。
+
+**症狀**：一鍵 `-Fast` 啟動，`Loading snapshot 'default_boot'... Successfully loaded (950ms)`，但 guest 整台掛死——adb `devices` 回 device 卻 `shell getprop` 永久 hang、qemu 713s uptime 只用 4.4s CPU、host `CHIMERA_PERF total` 卡 1。**與 RefCountPipe 停更完全不同**：那是 producer 停更（guest 活的），這是 guest 本體 brick。
+
+**根因＝跨 display flavor 的 snapshot 污染**：`verify-quick-boot.ps1` 直接跑 `chimera-ui.exe`＝stock runtime flavor（無 CHIMERA_EMULATOR_PATH/GUEST_VULKAN），14:57 存下 stock flavor 的 `default_boot`；一鍵 `-Fast` 用 custom gfxstream DLL 載入它→guest 在 gltransport pipe 上等一個狀態對不上的 renderer＝永久 hang。emulator 自身的 default_boot 相容檢查只看 CLI/AVD config，**看不到 DLL 與 env flavor 差異**（`compatible.pb` 0 bytes）。S112 P1 的「7.5s pass」實測其實只驗過 stock flavor＝盲區。
+
+**隔離實驗（qb-fast-experiment）**：清光 snapshots，純 `-Fast` 三階段：冷開 32.5s 活→graceful stop 存檔→載入 8.5s 活→再載入 8.5s 活＝`pass-fast-quickboot-selfconsistent`。**`-Fast` 的 quick boot 本身完全可靠**，問題只在跨 flavor。
+
+**修法（匯聚點，所有啟動路徑生效）**：`VirtualMachine.cpp` 新增 `displayFlavorForConfig`（emulatorPath+`CHIMERA_GUEST_VULKAN`+`CHIMERA_GFXSTREAM_HEADLESS_SWIFTSHADER_ES`）＋`invalidateQuickBootOnDisplayFlavorChange`：AVD 目錄旁 `chimera_display_flavor.txt` marker，launch 時（quickBoot on）flavor 與 marker 不符→刪 `snapshots/default_boot`＋log `Quick Boot snapshot invalidated`＋改寫 marker＝跨組態自動退一次冷開，永不 brick。
+
+**A/B 驗證（qb-flavor-ab）＝`pass-flavor-marker-ab`**：① marker 缺失＋fast snapshot→stock 啟動：清＋冷開 38.3s 活、marker=stock；② stock snapshot→`-Fast` 啟動（**原 brick 場景**）：invalidation 記錄＋冷開 31.8s 活；③ `-Fast` 再啟動：8.6s 快載活、`snapshot_loaded=True`、無誤清。unit 24/24。
+
+**人類保真度 gate（verify-human-click）**：真實 Windows `WM_LBUTTONDOWN/UP`（PostMessage，不搶實體滑鼠）→兩點探測用 guest `getevent` 原始值回推 host client→guest 仿射映射→`uiautomator dump` 找 launcher「設定」入口 bounds→精準點擊。round1（新鮮）：kernelTouch=True、focus 切到 Settings、host total 90→138；round2（**放置 35s 後再點＝歷史凍結場景**）：guest kernel 捕獲 touch down/up（`TRACKING_ID`/`PRESSURE`/`SYN` @375.2s）、focus 重開 Settings、host total 168→206＝S112 RefCountPipe 修法在真實使用者場景成立。（gate 腳本三個儀器 bug 依序修正：① PS5.1 無 BOM UTF-8＋CP950 console 吃壞「設定」regex→adb pull＋UTF-8 讀檔＋code point 組字串；② guest brick 時 adb shell 永久 hang→等待迴圈包 Start-Job timeout；③ **evdev 對未變化 ABS 值去重**——round2 點同座標，DOWN 不帶 `POSITION_X/Y`，parser 硬要求座標＝誤判 kernelTouch=False；改以 TRACKING_ID down 為送達證據。）
+
+**音訊**：本輪程式碼修改不碰 priority；驗證改用 `CHIMERA_INTERACTIVE_PRIORITY=idle`（AudioFirst）跑以免測試期間干擾使用者音樂。Quick Boot 本身把開機噪音窗口 34s→8.5s。
+
+**教訓**：① verifier 必須跑出貨 flavor（stock-only 驗證蓋不住 `-Fast` 預設）；② guest brick 時 `adb shell` 永久 hang——所有等待迴圈的 adb 呼叫要包 timeout（Start-Job + Wait-Job）；③ 「adb devices 回 device」不等於 guest 活著。
+
 ## 2026-07-10 — Session 112 — /goal「修好專案真正可用」：停更真根因根治（RefCountPipe）＋確定性重現器＋消音
 
 使用者 /goal「修好整個專案讓它真正可投入使用、研究並超越 BlueStacks」。本輪把連續六個 session（S106/107/108/111）反覆誤判的「有畫面但點不動」**根治**。
