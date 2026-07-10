@@ -40,7 +40,8 @@
 盤點（2026-07-10，唯讀）：
 - [ ] 候選 A：ANGLE host-GLES（DLL 內 `CHIMERA_GFXSTREAM_HEADLESS_ANGLE=1` 已 codified）——S87/88 牆＝SF `glDrawArrays` 在 ANGLE libGLESv2 內 AV（新版 ANGLE 也重現）。S91 修的 MSVCP140 三處與 S109b pNext 皆與此 AV 無關，牆大概率仍在；重測成本＝一次 boot＋可能 guest SF crash-loop
 - [ ] 候選 B：skiavk 全局 UI——S100 定案死路（user image 無 root、framework restart 不可行、半套用黑屏），**禁再試**
-- [ ] 候選 C：guest ES3（GLESDynamicVersion）——S112 重測 135s 健康（S109 破壞敘事可能已被 S109b 連帶修掉）；HWUI 在 ES3 有較快路徑，可能小幅改善 SwiftShader fill；成本低、上限也低
+- [x] 候選 C：guest ES3（GLESDynamicVersion）——**A/B 實測零收益**（baseline effFps 54.3/effMin 44.5 vs ES3 52.9/41.5，變異內略差；guest 兩者皆 60）；全程顯示健康＝S109「ES3 弄壞 -Fast」正式否證（真兇＝RefCountPipe）。不採用
+- [x] **關鍵觀察（改變 gate #2 的定性）**：一般 UI scroll 下 guest 已 60fps，限制在 host stream/render ~53-54＝below_normal priority 的音訊取捨（S104：normal priority 可 59-60）。SwiftShader 只在重 fill（遊戲）是牆、而 Vulkan 遊戲已繞過→候選 A/D 對日常 UI 的收益上限很低，深挖性價比差；要 60 的使用者用 `-InteractiveFirst` 即可
 - [ ] 候選 D：host-side composition offload（hwcomposer→host CompositorVk/NVIDIA）——未探勘；只省 SF 合成不省 HWUI 繪製，需先量 SF vs HWUI 佔比
 - [ ] 執行前提：使用者不在用機器（反覆 boot 會干擾音訊）；先跑 C 量收益，再決定是否碰 A/D
 

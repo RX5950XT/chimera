@@ -109,7 +109,7 @@
 
 **「超越」的可量測 gate（誠實版）**：
 1. ✅ 開機到可互動 < 15s——S112 預設化實測 7.5–8.6s（unclean exit/換組態自動退冷開＝fallback 安全，S112c flavor marker）
-2. 一般 UI 互動 sustained 60fps（需 guest UI 合成離開 SwiftShader——候選：CompositorVk/root image/ANGLE host-GLES，皆為深水區）
+2. 一般 UI 互動 sustained 60fps——**S112c 定性更正**：一般 UI scroll 下 guest 已 60fps（effFps 54.3、限制在 host stream/render＝below_normal 的音訊取捨；normal priority 可 59-60，S104）；ES3（GLESDynamicVersion）A/B 零收益不採用。SwiftShader 只在重 fill 是牆且 Vulkan 遊戲已繞過→深水候選（ANGLE host-GLES draw AV/CompositorVk）對日常 UI 收益上限低。**現有解＝`-InteractiveFirst`（要 60 換音訊競爭）**
 3. 30 分鐘連續使用零停更、零 crash（S112 soak 為基準）
 4. 點擊→guest 反應 < 50ms（gRPC 路徑已達；ADB fallback ~200ms 屬降級模式）
 5. 已達成且競品做不到：無廣告、無遙測、全開源、可完全客製 guest
