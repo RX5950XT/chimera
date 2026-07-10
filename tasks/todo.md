@@ -19,8 +19,8 @@
 - [x] 驗證：unit **24/24 PASS**；SelfTest **result=pass**（boot 35s、visible_home 48s、guest+host nonblack 100%、interactivity ok、residual 0）；**idle-recovery gate `pass-idle-recovery`**（production stack 30s 放置×2 輪、恢復操作 host total 118→228→266）＝使用者案發情境直接驗證。
 - [x] 使用者插件需求：啟動鈴聲＝guest 充電提示音/解鎖音 → `applyGuestFirstBootSetup` 加 `charging_sounds_enabled=0`（secure+global）、`lockscreen_sounds_enabled=0`、`sound_effects_enabled=0`；chimera-ui rebuild 過、SelfTest 全綠（音效設定為持久 /data，下次 boot 生效）
 
-### P1 — 啟動速度（冷 boot ~36s、visible_home ~49s；Quick Boot 實測 9.5s 但 opt-in）
-- [ ] 評估 Quick Boot 設為安全一鍵預設（失敗自動退 full boot）或可靠 opt-in
+### P1 — 啟動速度（冷 boot ~34s → Quick Boot 預設化後 7.5s）
+- [x] **Quick Boot 一鍵預設化完成**：named `-snapshot` 會回捲磁碟（資料遺失）→ 改 AVD default Quick Boot（quickBoot=true＝零 snapshot 旗標、emulator 自管 default_boot；unclean exit 自動冷開不回捲）＋ `stop()` 優雅 `adb emu kill` 等存檔（≤20s）＋ `start-chimera.ps1` 預設 `CHIMERA_QUICK_BOOT=1`（`-NoQuick`/SelfTest 除外）。unit contract 更新（斷言零 snapshot 旗標）；verifier 改 full→seed→quick 三階段。**實測 full 34.3s / quick 7.5s result=pass**；unit 24/24。
 
 ### P2 — BlueStacks 對照盤點（研究已有 docs/references/competitor-emulator-smoothness.md）
 - [ ] 更新競品對照：目前差距清單（guest GPU ✅、輸入 ✅、present ✅；剩：穩定性、啟動速度、日常可用性）

@@ -147,14 +147,15 @@ function Wait-AndroidBoot {
     throw "$Label did not reach sys.boot_completed=1 within ${TimeoutSec}s"
 }
 
-function Save-Snapshot {
-    Write-Host "saving_snapshot=$script:SnapshotName"
-    Invoke-Adb -Arguments @("-s", $script:Serial, "emu", "avd", "snapshot", "save", $script:SnapshotName) | Out-Null
-}
-
 function Stop-Emulator {
+    # Graceful "emu kill" first and WAIT for exit: with Quick Boot active the
+    # emulator writes its default_boot snapshot on this signal; force-killing
+    # during the save leaves the snapshot unsaved (next boot falls back to cold).
     Invoke-Adb -Arguments @("-s", $script:Serial, "emu", "kill") -IgnoreExit | Out-Null
-    Start-Sleep -Seconds 2
+    $deadline = (Get-Date).AddSeconds(25)
+    while ((Get-Date) -lt $deadline -and @(Get-ChimeraProcesses).Count -gt 0) {
+        Start-Sleep -Seconds 1
+    }
     Stop-ChimeraProcesses
     Wait-NoChimeraProcesses -TimeoutSec 30
     Remove-StaleAvdLocks
@@ -217,13 +218,19 @@ try {
     Write-Host "phase=full_boot"
     $fullProcess = Start-Chimera -QuickBoot $false
     $fullBootSec = Wait-AndroidBoot -Label "full_boot" -TimeoutSec $BootTimeoutSec -AppProcess $fullProcess
-    Save-Snapshot
+    Stop-Emulator
+
+    # Seed: a Quick Boot session cold-boots (no default_boot yet) and saves the
+    # snapshot on the graceful stop. Only the SECOND Quick Boot launch measures
+    # the actual snapshot-load speed.
+    Write-Host "phase=quick_boot_seed"
+    $seedProcess = Start-Chimera -QuickBoot $true
+    Wait-AndroidBoot -Label "quick_boot_seed" -TimeoutSec $BootTimeoutSec -AppProcess $seedProcess | Out-Null
     Stop-Emulator
 
     Write-Host "phase=quick_boot"
     $quickProcess = Start-Chimera -QuickBoot $true
     $quickBootSec = Wait-AndroidBoot -Label "quick_boot" -TimeoutSec $QuickBootTimeoutSec -AppProcess $quickProcess
-    Save-Snapshot
     Stop-Emulator
 
     if ($quickBootSec -gt $MaxQuickBootSec) {

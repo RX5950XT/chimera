@@ -477,11 +477,14 @@ std::vector<std::string> buildEmulatorArgsForConfig(const VirtualMachineConfig &
     args.push_back("-netfast");
 
     if (config.quickBoot) {
-        args.push_back("-snapshot");
-        args.push_back(kQuickBootSnapshotName);
-        if (!truthyEnv("CHIMERA_SAVE_QUICK_BOOT")) {
-            args.push_back("-no-snapshot-save");
-        }
+        // AVD default Quick Boot: pass NO snapshot flags. The emulator manages its
+        // "default_boot" snapshot itself — save on clean exit, auto-invalidate on
+        // config/image change, cold boot (never a disk revert) after an unclean
+        // exit. A named "-snapshot X" is wrong here: loading it reverts the qcow2
+        // disk to the save point, so a crash between saves silently loses guest
+        // data. CHIMERA_SAVE_QUICK_BOOT additionally saves the legacy named
+        // snapshot on stop() for the quick-boot verifier; it is not needed for
+        // the default flow.
     } else {
         args.push_back("-no-snapstorage");
         args.push_back("-no-snapshot");
@@ -674,14 +677,21 @@ bool VirtualMachine::stop() {
     if (void *claimed = InterlockedExchangePointer(&m_processHandle, nullptr)) {
         const HANDLE hProc = static_cast<HANDLE>(claimed);
         bool exited = false;
-        if (m_config.quickBoot && truthyEnv("CHIMERA_SAVE_QUICK_BOOT")) {
-            const bool saved = runAdbEmuCommand(
-                m_config, {"avd", "snapshot", "save", kQuickBootSnapshotName}, 30000);
-            if (!saved) {
-                qWarning() << "Quick Boot snapshot save failed; falling back to emulator kill";
+        if (m_config.quickBoot) {
+            if (truthyEnv("CHIMERA_SAVE_QUICK_BOOT")) {
+                // Legacy named snapshot for the quick-boot verifier only.
+                const bool saved = runAdbEmuCommand(
+                    m_config, {"avd", "snapshot", "save", kQuickBootSnapshotName}, 30000);
+                if (!saved) {
+                    qWarning() << "Quick Boot snapshot save failed; falling back to emulator kill";
+                }
             }
+            // Graceful shutdown so the emulator writes its default Quick Boot
+            // snapshot ("default_boot"); a hard TerminateProcess would skip the
+            // save and force the next launch back to a full cold boot. The wait
+            // covers the RAM snapshot write; on timeout we still terminate.
             if (runAdbEmuCommand(m_config, {"kill"}, 5000)) {
-                exited = ProcessLauncher::waitForExit(hProc, 15000) >= 0;
+                exited = ProcessLauncher::waitForExit(hProc, 20000) >= 0;
             }
         }
         if (!exited) {

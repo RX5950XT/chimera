@@ -66,6 +66,10 @@ param(
     [switch]$AudioFirst,
     [switch]$InteractiveFirst,
     [switch]$SelfTest,
+    # Quick Boot (AVD default_boot snapshot) is the launch default: cold boot the
+    # first time, save on clean exit, then ~10s resumes. -NoQuick forces a full
+    # cold boot (and disables the exit-time snapshot save).
+    [switch]$NoQuick,
     [ValidateRange(30, 600)]
     [int]$SelfTestBootSec = 200,
     [string]$Configuration = "Release"
@@ -156,7 +160,17 @@ if ($customAvailable) {
 }
 
 $env:CHIMERA_EMULATOR_CONSOLE_PORT = "$ConsolePort"
-Remove-Item Env:\CHIMERA_QUICK_BOOT -ErrorAction SilentlyContinue  # default full boot
+# Quick Boot default (S112): AVD default_boot snapshot — cold boot when absent,
+# save on clean exit (graceful "adb emu kill" in VirtualMachine::stop()), ~10s
+# resume afterwards. Never a named "-snapshot" load (that would revert guest
+# data on load). -NoQuick opts back into a full cold boot. SelfTest keeps full
+# boot so its boot-time numbers stay comparable across sessions.
+if ($NoQuick -or $SelfTest) {
+    Remove-Item Env:\CHIMERA_QUICK_BOOT -ErrorAction SilentlyContinue  # full cold boot
+} else {
+    $env:CHIMERA_QUICK_BOOT = "1"
+    Write-Host "boot=quick (AVD default_boot; first launch cold-boots then saves on exit; -NoQuick for full boot)"
+}
 
 # --- Process-priority sugar (host audio <-> interactive FPS trade-off) --------
 # These just export CHIMERA_INTERACTIVE_PRIORITY, which chimera-ui resolves.

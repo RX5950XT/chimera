@@ -39,7 +39,7 @@ private slots:
         QVERIFY(!containsArg(args, "-snapshot"));
     }
 
-    void quickBootUsesNamedSnapshot() {
+    void quickBootUsesAvdDefaultQuickBoot() {
         VirtualMachineConfig cfg;
         cfg.name = "UnitTest";
         cfg.avdName = "chimera_dev";
@@ -48,10 +48,16 @@ private slots:
         const VirtualMachine vm(cfg);
         const auto args = vm.buildEmulatorArgs();
 
-        QVERIFY(containsArg(args, "-snapshot"));
-        QVERIFY(containsArg(args, "chimera_quickboot"));
-        QVERIFY(containsArg(args, "-no-snapshot-save"));
+        // AVD default Quick Boot = NO snapshot flags at all: the emulator manages
+        // "default_boot" itself (save on clean exit, cold boot after unclean exit,
+        // never a disk revert). A named "-snapshot" would revert guest data on
+        // load, so it must never come back (S112).
+        QVERIFY(!containsArg(args, "-snapshot"));
+        QVERIFY(!containsArg(args, "chimera_quickboot"));
+        QVERIFY(!containsArg(args, "-no-snapstorage"));
         QVERIFY(!containsArg(args, "-no-snapshot"));
+        QVERIFY(!containsArg(args, "-no-snapshot-load"));
+        QVERIFY(!containsArg(args, "-no-snapshot-save"));
     }
 
     void quickBootCanBeDisabled() {

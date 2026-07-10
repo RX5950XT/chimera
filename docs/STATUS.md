@@ -13,7 +13,7 @@
 - **生產引擎**：`emulator.exe`（Google QEMU+WHPX fork），headless（`-no-window`）強制；`--qemu-backend` / `--hcs-backend` / `--cuttlefish` 為 legacy R&D。
 - **BlueStacks parity**：核心功能同等級（boot/input/multi-touch/IME/gamepad/macro/keymap/APK/OBB/GPS/感應器/電池/錄影/截圖/剪貼簿/proxy/網速/device spoofing/multi-instance/audio/快捷鍵等，完整清單見 `CLAUDE.md`）。
 - **一鍵啟動**：`start-chimera.cmd` = `start-chimera.ps1 -Fast`（custom gfxstream shared texture + `-feature Vulkan`；priority 預設 below_normal 護 host audio，S108 定案）；`-InteractiveFirst` 換最順（normal priority、音訊代價）、`-Stock` 為保守 fallback（gRPC，~4–17 FPS）。
-- **啟動時間**：`boot≈33s`、`visible_home≈49s`（Session 100 SelfTest）；boot 期間有 placeholder 不裸黑；Quick Boot snapshot（更快）維持 opt-in。
+- **啟動時間**：S112 起 Quick Boot 為一鍵預設（AVD default_boot；首次冷開 ~34s＋關閉時自動存檔，之後 **~7.5s**；`-NoQuick` 可回全冷開）。boot 期間有 placeholder 不裸黑。
 
 ## 顯示路徑（-Fast，Session 101 修復後）
 
