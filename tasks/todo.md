@@ -34,8 +34,8 @@
 - [x] **gate #3 ✅ `pass-soak-30min`**：production stack 30 分鐘混合使用（6 輪 3min 操作＋2min 放置→驗恢復）——6/6 全過、producer →9746 全程推進、watchdog 24/24 成對良性、無 crash
 
 ### P2 — BlueStacks 對照盤點（研究已有 docs/references/competitor-emulator-smoothness.md）
-- [ ] 更新競品對照：目前差距清單（guest GPU ✅、輸入 ✅、present ✅；剩：穩定性、啟動速度、日常可用性）
-- [ ] 定義「超越」的可量測指標並記錄現狀 baseline
+- [x] 更新競品對照 §9：8 維度中 6 項持平/勝出（引擎/present/輸入/guest 3D/啟動/穩定性），僅一般 UI 60fps 為主要落差
+- [x] 5 個可量測「超越」gate 定義完成，現況：#1 開機<15s ✅、#3 30min 零停更 ✅、#4 點擊延遲 ✅、#5 開源無廣告 ✅、#2 一般 UI 60fps 未達（priority 取捨，非架構牆）
 
 ### P3（下一 session 深水區）— gate #2「一般 UI sustained 60fps」＝guest 2D 合成離開 SwiftShader
 盤點（2026-07-10，唯讀）：
